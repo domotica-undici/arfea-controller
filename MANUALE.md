@@ -58,56 +58,55 @@ backup/ripristino, rete, reboot dell'OS e aggiornamenti, via REST API e web UI.
 
 ## 2. Installazione da zero
 
-### 2.1 Prerequisiti
-- Board ARM (ODROID-C4/Armbian) o server Ubuntu, con accesso root/sudo.
+### 2.1 Prerequisiti (centralina già preparata)
+
+L'installer assume un host **già pronto**:
+- Docker + plugin `docker compose` installati e attivi.
+- Cartella dati `/opt/docker_store`; per OpenHAB i file devono essere di
+  proprietà **UID/GID 9001**.
+- Eventuali **porte seriali** (Z-Wave/Zigbee/Modbus/Thread) già identificate.
+- `curl`, `tar`/`xz`, `python3`; esecuzione come **root** (sudo).
 - Rete con uscita internet (pull immagini Docker).
-- Per installazione manuale: Docker + Docker Compose già installati e
-  `/opt/docker_store` esistente.
 
-### 2.2 Installazione automatica (consigliata)
+> **Provisioning host**: se parti da una board vergine devi prima preparare OS,
+> utenti (`openhab` uid/gid 9001), Docker ed eventuale VPN. Questa fase è
+> specifica dell'hardware e **non** è coperta da questo repository.
 
-Lo script `preparaArfea-armbian-1.sh` fa il setup completo. Lavora in **due fasi**
-separate da un riavvio (Docker richiede un reboot dopo l'installazione).
+### 2.2 Installazione (`install.sh`)
 
-1. **Genera il tarball di deploy** (contiene controller + skeleton + migrazioni):
-   ```bash
-   # sul PC
-   ./script/build-update-tarball.sh script/
-   ls -la script/arfea-controller.tar.xz
-   ```
-2. **Copia sulla board** script di setup **e** tarball nella stessa cartella:
-   ```bash
-   # sul PC
-   scp script/preparaArfea-armbian-1.sh script/arfea-controller.tar.xz utente@board:/root/
-   ```
-3. **Fase 1** (pre-reboot, breve — OS update, hostname `arfea`, utente `openhab`
-   uid/gid 9001, patch ttyAML1 su ODROID-C4, Docker+buildx → **reboot automatico**):
-   ```bash
-   # sulla board
-   sudo bash preparaArfea-armbian-1.sh
-   ```
-4. Dopo il reboot, **Fase 2** (rilancia lo **stesso** script): setup interattivo,
-   deploy stack, admin OpenHAB, import widget UI, registrazione su arfea-manager:
-   ```bash
-   # sulla board
-   sudo bash preparaArfea-armbian-1.sh
-   ```
+Da una copia del repository, sulla centralina preparata:
 
-Il **setup interattivo** (fase 2) chiede:
-- **API Key** (generata automaticamente, personalizzabile)
-- **WebDAV**: URL, utente, password per il backup remoto
-- **IP VPN** della centralina
-- **arfea-manager**: nome centralina e URL del manager per la registrazione
-- **Porte seriali OpenHAB**: mapping device host → container
-- **Componenti opzionali**: habapp, zwave-js-ui, zigbee2mqtt, node-red, **otbr**
-  (Thread+Matter, con relativi device seriali)
+```bash
+sudo ./script/install.sh
+```
 
-Se scegli **otbr**, lo script configura anche: IPv6 (`accept_ra=2` + forwarding),
-IPv6 nel Docker daemon, regola udev per nRF52840 (`/dev/ttyTHREAD`),
-`avahi-utils`/`bluez`/`snapd` e `chip-tool` via snap (commissioning Matter).
+L'installer chiede (o legge da variabili d'ambiente): **API Key** (generata se
+non fornita), **URL OTA** e **manifest `releases.json`** (opzionali; vuoti =
+funzione OTA disattivata), **WebDAV** per il backup (opzionale), **servizi
+opzionali** (habapp, zwave-js-ui, zigbee2mqtt, node-red, otbr) e i relativi
+**device seriali**. Poi crea le cartelle, configura `arfea.yml`, deploya lo
+skeleton OpenHAB, avvia lo stack, crea l'utente admin OpenHAB (password
+**generata** e salvata solo in locale in
+`/opt/docker_store/arfea-controller/.credentials`, chmod 600) e importa i widget UI.
 
-Al termine: credenziali salvate in `/root/arfea-credentials.txt` e stampate a video;
-`arfea.yml` valorizzato con `releases_url`/`release`; card "Aggiornamenti" importata.
+**Installazione non-interattiva** (automazioni/provisioning):
+
+```bash
+sudo ARFEA_NONINTERACTIVE=1 \
+     ARFEA_SERVICES="habapp,zwave-js-ui" \
+     ARFEA_UPDATE_URL="https://YOUR-SERVER/ota/arfea-controller.tar.xz" \
+     ARFEA_RELEASES_URL="https://YOUR-SERVER/ota/releases.json" \
+     ARFEA_ZWAVE_DEVICE="/dev/ttyACM0" \
+     ./script/install.sh
+```
+
+Variabili: `ARFEA_API_KEY`, `ARFEA_SERVICES`, `ARFEA_UPDATE_URL`,
+`ARFEA_RELEASES_URL`, `ARFEA_WEBDAV_URL/USER/PASS`, `ARFEA_ZWAVE_DEVICE`,
+`ARFEA_ZIGBEE_DEVICE`, `ARFEA_MODBUS_DEVICE`, `ARFEA_OTBR_DEVICE`,
+`ARFEA_OTBR_INFRA_IF`, `ARFEA_DATA_PATH`.
+
+> **OTBR (Thread/Matter)** richiede preparazione host aggiuntiva (IPv6, avahi/
+> bluez, `chip-tool`) non gestita dall'installer.
 
 ### 2.3 Installazione manuale
 
@@ -683,7 +682,7 @@ all'hardware:
 
 | File | Ruolo |
 |---|---|
-| [script/preparaArfea-armbian-1.sh](script/preparaArfea-armbian-1.sh) | Setup centralina (fase 1 + 2) |
+| [script/install.sh](script/install.sh) | Installer autonomo del controller (host già preparato) |
 | [script/build-update-tarball.sh](script/build-update-tarball.sh) | Genera `arfea-controller.tar.xz` |
 | [ota/releases.json](ota/releases.json) | Template manifest versioni certificate |
 | [migrations/README.md](migrations/README.md) | Contratto script di migrazione |
