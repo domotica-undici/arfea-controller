@@ -1,0 +1,41 @@
+rule "Send Push Message"
+when
+	Item send_message received update
+then
+    if (users_list.state.toString != ""){
+        var dest = ""
+        if (users_list.state.toString.contains(";")){
+            dest = users_list.state.toString.split(';').get(0)
+        } else {
+            dest = users_list.state.toString
+        }
+        val msg = send_message.state.toString
+        sendNotification(dest, msg)
+    }
+end
+
+rule "Send Broadcast Push Message"
+when
+    Item send_broadcastmessage received update
+then
+    sendBroadcastNotification(send_broadcastmessage.state.toString)
+end
+
+// Control Unit Functions (restart, backup, network, etc.) sono ora gestite
+// da arfea-controller via conf/automation/js/arfea_controller.js
+
+rule "Change log level"
+when
+    Item log_level changed
+then
+    executeCommandLine(Duration.ofSeconds(60), "/openhab/conf/scripts/system_operations.sh", "change_log_level", log_level.state.toString)
+    logWarn("Core Rules", "Log level changed to " + log_level.state.toString)
+end
+
+rule "Change HABApp log level"
+when
+    Item habapp_log_level changed
+then
+    executeCommandLine(Duration.ofSeconds(60), "/openhab/conf/scripts/system_operations.sh", "change_habapp_log_level", habapp_log_level.state.toString)
+    logWarn("Core Rules", "HABApp log level changed to " + habapp_log_level.state.toString)
+end

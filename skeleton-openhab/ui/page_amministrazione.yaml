@@ -1,0 +1,30 @@
+uid: page_amministrazione
+tags: []
+props:
+  parameters: []
+  parameterGroups: []
+timestamp: Apr 13, 2026, 12:00:00 PM
+component: oh-layout-page
+config:
+  label: Amministrazione
+  order: "99"
+  sidebar: true
+  sidebarIcon: f7:gear_alt_fill
+blocks:
+  - component: oh-block
+    config: {}
+    slots:
+      default:
+        - component: oh-grid-row
+          config: {}
+          slots:
+            default:
+              - component: oh-grid-col
+                config: {}
+                slots:
+                  default:
+                    - component: widget:widget_arfea_controller
+                      config: {}
+masonry: []
+grid: []
+canvas: []

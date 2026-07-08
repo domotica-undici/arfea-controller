@@ -1,0 +1,25 @@
+services:
+  arfea-controller:
+    build: .
+    image: arfea-controller:latest
+    container_name: arfea-controller
+    restart: unless-stopped
+    pid: host
+    cap_add:
+      - SYS_PTRACE
+      - SYS_ADMIN     # necessario per nsenter (self-update + reboot host)
+    ports:
+      - "8888:8888"
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      - /opt/docker_store:/opt/docker_store
+      - /opt/docker_store/arfea-controller/config:/data
+      - /run/dbus/system_bus_socket:/run/dbus/system_bus_socket
+      - /proc:/host/proc:ro
+      - /sys:/host/sys:ro
+    environment:
+      TZ: Europe/Rome
+      CONFIG_PATH: /data/arfea.yml
+    logging:
+      options:
+        max-size: 10m

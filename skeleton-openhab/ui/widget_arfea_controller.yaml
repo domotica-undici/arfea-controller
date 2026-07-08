@@ -1,0 +1,315 @@
+uid: widget_arfea_controller
+tags: []
+props:
+  parameters: []
+  parameterGroups: []
+timestamp: Apr 12, 2026, 12:00:00 PM
+component: f7-block
+config:
+  class:
+    - no-padding
+    - no-margin
+  style:
+    -moz-user-select: None
+    -ms-user-select: None
+    -webkit-user-select: None
+    position: relative
+    user-select: None
+slots:
+  default:
+
+    # ──────────────────────────────────────
+    # SERVIZI
+    # ──────────────────────────────────────
+
+    - component: oh-list-card
+      config:
+        accordionList: false
+        title: Servizi
+      slots:
+        default:
+          # OpenHAB
+          - component: oh-list-item
+            config:
+              title: OpenHAB
+              subtitle: "=items.arfea_openhab_state.state"
+              badge: "=items.arfea_openhab_state.state"
+              badgeColor: "=items.arfea_openhab_state.state == 'running' ? 'green' : 'red'"
+              icon: f7:house_fill
+              iconColor: "=items.arfea_openhab_state.state == 'running' ? 'green' : 'red'"
+
+          # Samba
+          - component: oh-list-item
+            config:
+              title: Samba
+              subtitle: "=items.arfea_samba_state.state"
+              badge: "=items.arfea_samba_state.state"
+              badgeColor: "=items.arfea_samba_state.state == 'running' ? 'green' : 'red'"
+              icon: f7:folder_fill
+              iconColor: "=items.arfea_samba_state.state == 'running' ? 'green' : 'red'"
+
+          # HABApp
+          - component: oh-list-item
+            config:
+              title: HABApp
+              subtitle: "=items.arfea_habapp_state.state == 'running' ? 'In esecuzione' : items.arfea_habapp_state.state"
+              badge: "=items.arfea_habapp_state.state"
+              badgeColor: "=items.arfea_habapp_state.state == 'running' ? 'green' : 'red'"
+              icon: f7:bolt_fill
+              iconColor: "=items.arfea_habapp_state.state == 'running' ? 'green' : 'gray'"
+              visible: "=items.arfea_habapp_enabled.state == 'ON' || items.arfea_habapp_state.state == 'running'"
+
+          # Mosquitto
+          - component: oh-list-item
+            config:
+              title: Mosquitto
+              subtitle: "=items.arfea_mosquitto_state.state == 'running' ? 'In esecuzione' : items.arfea_mosquitto_state.state"
+              badge: "=items.arfea_mosquitto_state.state"
+              badgeColor: "=items.arfea_mosquitto_state.state == 'running' ? 'green' : 'red'"
+              icon: f7:arrow_right_arrow_left
+              iconColor: "=items.arfea_mosquitto_state.state == 'running' ? 'green' : 'gray'"
+              visible: "=items.arfea_mosquitto_state.state == 'running'"
+
+          # Z-Wave JS UI
+          - component: oh-list-item
+            config:
+              title: Z-Wave JS UI
+              subtitle: "=items.arfea_zwave_state.state == 'running' ? 'In esecuzione' : items.arfea_zwave_state.state"
+              badge: "=items.arfea_zwave_state.state"
+              badgeColor: "=items.arfea_zwave_state.state == 'running' ? 'green' : 'red'"
+              icon: f7:antenna_radiowaves_left_right
+              iconColor: "=items.arfea_zwave_state.state == 'running' ? 'green' : 'gray'"
+              visible: "=items.arfea_zwave_enabled.state == 'ON' || items.arfea_zwave_state.state == 'running'"
+
+          # Zigbee2MQTT
+          - component: oh-list-item
+            config:
+              title: Zigbee2MQTT
+              subtitle: "=items.arfea_zigbee2mqtt_state.state == 'running' ? 'In esecuzione' : items.arfea_zigbee2mqtt_state.state"
+              badge: "=items.arfea_zigbee2mqtt_state.state"
+              badgeColor: "=items.arfea_zigbee2mqtt_state.state == 'running' ? 'green' : 'red'"
+              icon: f7:antenna_radiowaves_left_right
+              iconColor: "=items.arfea_zigbee2mqtt_state.state == 'running' ? 'green' : 'gray'"
+              visible: "=items.arfea_zigbee2mqtt_enabled.state == 'ON' || items.arfea_zigbee2mqtt_state.state == 'running'"
+
+          # Node-RED
+          - component: oh-list-item
+            config:
+              title: Node-RED
+              subtitle: "=items.arfea_nodered_state.state == 'running' ? 'In esecuzione' : items.arfea_nodered_state.state"
+              badge: "=items.arfea_nodered_state.state"
+              badgeColor: "=items.arfea_nodered_state.state == 'running' ? 'green' : 'red'"
+              icon: f7:flowchart_fill
+              iconColor: "=items.arfea_nodered_state.state == 'running' ? 'green' : 'gray'"
+              visible: "=items.arfea_nodered_enabled.state == 'ON' || items.arfea_nodered_state.state == 'running'"
+
+    # ──────────────────────────────────────
+    # RETE
+    # ──────────────────────────────────────
+
+    - component: oh-list-card
+      config:
+        accordionList: false
+        title: Rete
+      slots:
+        default:
+          - component: oh-label-item
+            config:
+              item: arfea_lan_ip
+              title: IP LAN
+              action: rule
+              actionRule: arfea_controller
+              actionRuleContext:
+                action: refresh
+              footer: clicca per aggiornare
+          - component: oh-label-item
+            config:
+              item: arfea_vpn_ip
+              title: IP Supporto
+              action: rule
+              actionRule: arfea_controller
+              actionRuleContext:
+                action: refresh
+              footer: clicca per aggiornare
+          - component: oh-toggle-item
+            config:
+              item: arfea_vpn_active
+              title: VPN Supporto
+              icon: f7:lock_shield_fill
+              iconColor: "=items.arfea_vpn_active.state == 'ON' ? 'green' : 'red'"
+          - component: oh-label-item
+            config:
+              item: arfea_external_ip
+              title: IP Pubblico
+              action: rule
+              actionRule: arfea_controller
+              actionRuleContext:
+                action: refresh
+              footer: clicca per aggiornare
+
+    # ──────────────────────────────────────
+    # DATI PIATTAFORMA
+    # ──────────────────────────────────────
+
+    - component: oh-list-card
+      config:
+        accordionList: false
+        title: Dati Piattaforma
+      slots:
+        default:
+          - component: oh-label-item
+            config:
+              item: arfea_hostname
+              title: Hostname
+          - component: oh-label-item
+            config:
+              item: arfea_uptime
+              title: Uptime
+          - component: oh-label-item
+            config:
+              item: ohVersion
+              title: Versione OpenHAB
+
+    # ──────────────────────────────────────
+    # AGGIORNAMENTI
+    # ──────────────────────────────────────
+
+    - component: oh-list-card
+      config:
+        accordionList: false
+        title: Aggiornamenti
+      slots:
+        default:
+          - component: oh-label-item
+            config:
+              item: arfea_current_release
+              title: Versione sistema
+              icon: f7:cube_box_fill
+              action: rule
+              actionRule: arfea_controller
+              actionRuleContext:
+                action: refresh
+              footer: clicca per controllare aggiornamenti
+          # Banner: visibile solo se c'è un aggiornamento disponibile
+          - component: oh-label-item
+            config:
+              title: Nuova versione disponibile
+              subtitle: "=items.arfea_update_available.state"
+              badge: "=items.arfea_update_available.state"
+              badgeColor: blue
+              icon: f7:arrow_up_circle_fill
+              iconColor: blue
+              visible: "=items.arfea_update_available.state != '' && items.arfea_update_available.state != 'NULL' && items.arfea_update_available.state != 'UNDEF'"
+          - component: oh-label-item
+            config:
+              item: arfea_update_changelog
+              title: Novità
+              visible: "=items.arfea_update_available.state != '' && items.arfea_update_available.state != 'NULL' && items.arfea_update_available.state != 'UNDEF'"
+          # Conferma software-per-software: un interruttore per componente,
+          # visibile solo se per quel software c'è una nuova versione.
+          - component: oh-toggle-item
+            config:
+              item: arfea_upd_openhab_ok
+              title: OpenHAB
+              subtitle: "=items.arfea_upd_openhab.state"
+              icon: f7:house_fill
+              visible: "=items.arfea_upd_openhab.state != '' && items.arfea_upd_openhab.state != 'NULL' && items.arfea_upd_openhab.state != 'UNDEF'"
+          - component: oh-toggle-item
+            config:
+              item: arfea_upd_habapp_ok
+              title: HABApp
+              subtitle: "=items.arfea_upd_habapp.state"
+              icon: f7:bolt_fill
+              visible: "=items.arfea_upd_habapp.state != '' && items.arfea_upd_habapp.state != 'NULL' && items.arfea_upd_habapp.state != 'UNDEF'"
+          - component: oh-toggle-item
+            config:
+              item: arfea_upd_zwave_ok
+              title: Z-Wave JS UI
+              subtitle: "=items.arfea_upd_zwave.state"
+              icon: f7:antenna_radiowaves_left_right
+              visible: "=items.arfea_upd_zwave.state != '' && items.arfea_upd_zwave.state != 'NULL' && items.arfea_upd_zwave.state != 'UNDEF'"
+          - component: oh-toggle-item
+            config:
+              item: arfea_upd_zigbee2mqtt_ok
+              title: Zigbee2MQTT
+              subtitle: "=items.arfea_upd_zigbee2mqtt.state"
+              icon: f7:antenna_radiowaves_left_right
+              visible: "=items.arfea_upd_zigbee2mqtt.state != '' && items.arfea_upd_zigbee2mqtt.state != 'NULL' && items.arfea_upd_zigbee2mqtt.state != 'UNDEF'"
+          - component: oh-toggle-item
+            config:
+              item: arfea_upd_nodered_ok
+              title: Node-RED
+              subtitle: "=items.arfea_upd_nodered.state"
+              icon: f7:flowchart_fill
+              visible: "=items.arfea_upd_nodered.state != '' && items.arfea_upd_nodered.state != 'NULL' && items.arfea_upd_nodered.state != 'UNDEF'"
+          - component: oh-label-item
+            config:
+              item: arfea_update_progress
+              title: Avanzamento
+              visible: "=items.arfea_update_progress.state != '' && items.arfea_update_progress.state != 'NULL' && items.arfea_update_progress.state != 'UNDEF'"
+          - component: oh-button
+            config:
+              action: rule
+              actionRule: arfea_controller
+              actionRuleContext:
+                action: apply_update
+              actionConfirmation: "L'aggiornamento aggiornerà i software selezionati, può richiedere alcuni minuti e riavviare i servizi. Viene eseguito un backup prima di procedere. Continuare?"
+              class:
+                - display-flex
+                - flex-direction-column
+                - padding-top-half
+              large: true
+              fill: true
+              style:
+                height: auto
+                margin-top: 8px
+              text: Applica aggiornamento
+              iconF7: arrow_up_circle
+              iconSize: 20
+              visible: "=items.arfea_update_available.state != '' && items.arfea_update_available.state != 'NULL' && items.arfea_update_available.state != 'UNDEF'"
+
+    # ──────────────────────────────────────
+    # FUNZIONI DI SISTEMA
+    # ──────────────────────────────────────
+
+    - component: oh-list-card
+      config:
+        title: " "
+      slots:
+        default:
+          - component: oh-button
+            config:
+              action: url
+              actionUrl: "=items.arfea_lan_ip.state != 'N/A' ? 'http://' + items.arfea_lan_ip.state + ':8888' : 'http://localhost:8888'"
+              actionUrlSameWindow: false
+              class:
+                - display-flex
+                - flex-direction-column
+                - padding-top-half
+              large: true
+              outline: true
+              style:
+                --f7-button-border-color: var(--f7-card-outline-border-color)
+                height: auto
+              text: Funzioni di sistema (solo da LAN)
+              textColor: blue
+              iconF7: gear_alt
+              iconSize: 20
+          - component: oh-button
+            config:
+              action: rule
+              actionRule: arfea_controller
+              actionRuleContext:
+                action: reboot
+              class:
+                - display-flex
+                - flex-direction-column
+                - padding-top-half
+              large: true
+              outline: true
+              style:
+                --f7-button-border-color: var(--f7-color-red)
+                height: auto
+                margin-top: 8px
+              text: Riavvia Sistema Operativo
+              textColor: red

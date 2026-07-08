@@ -1,0 +1,448 @@
+<!DOCTYPE html>
+<html lang="it">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>ARFEA Controller</title>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; background: #f5f5f5; color: #333; }
+    .container { max-width: 600px; margin: 0 auto; padding: 16px; }
+    h1 { font-size: 1.4em; padding: 16px 0; color: #1a1a1a; }
+    .card { background: #fff; border-radius: 12px; padding: 16px; margin-bottom: 16px; box-shadow: 0 1px 3px rgba(0,0,0,.1); }
+    .card h2 { font-size: 1.1em; margin-bottom: 12px; color: #555; }
+    .service-row { display: flex; align-items: center; justify-content: space-between; padding: 8px 0; border-bottom: 1px solid #eee; }
+    .service-row:last-child { border-bottom: none; }
+    .service-name { font-weight: 500; }
+    .badge { display: inline-block; padding: 2px 10px; border-radius: 12px; font-size: 0.8em; color: #fff; }
+    .badge-running { background: #4caf50; }
+    .badge-stopped { background: #f44336; }
+    .badge-other { background: #ff9800; }
+    .btn { display: inline-block; padding: 10px 20px; border: none; border-radius: 8px; font-size: 0.95em; cursor: pointer; margin: 4px; transition: opacity .2s; }
+    .btn:hover { opacity: 0.85; }
+    .btn:disabled { opacity: 0.4; cursor: not-allowed; }
+    .btn-blue { background: #2196f3; color: #fff; }
+    .btn-green { background: #4caf50; color: #fff; }
+    .btn-orange { background: #ff9800; color: #fff; }
+    .btn-red { background: #f44336; color: #fff; }
+    .btn-block { display: block; width: 100%; text-align: center; }
+    .status-bar { padding: 10px; border-radius: 8px; margin: 8px 0; font-size: 0.9em; }
+    .status-idle { background: #e8e8e8; }
+    .status-running { background: #fff3e0; color: #e65100; }
+    .status-completed { background: #e8f5e9; color: #2e7d32; }
+    .status-failed { background: #ffebee; color: #c62828; }
+    .radio-group { margin: 8px 0; }
+    .radio-item { display: flex; align-items: center; padding: 10px; margin: 4px 0; border: 1px solid #ddd; border-radius: 8px; cursor: pointer; }
+    .radio-item:hover { background: #fafafa; }
+    .radio-item.selected { border-color: #ff9800; background: #fff8e1; }
+    .radio-item input { margin-right: 10px; }
+    .radio-label { font-size: 0.9em; }
+    .radio-sublabel { font-size: 0.8em; color: #888; }
+    .info-row { display: flex; justify-content: space-between; padding: 6px 0; font-size: 0.9em; }
+    .info-label { color: #888; }
+    .login-box { text-align: center; padding: 40px 16px; }
+    .login-box input { padding: 10px; border: 1px solid #ddd; border-radius: 8px; font-size: 1em; width: 100%; max-width: 300px; margin: 8px 0; text-align: center; }
+    .lp-input { display: block; width: 100%; padding: 10px; border: 1px solid #ddd; border-radius: 8px; font-size: 0.95em; margin: 6px 0; font-family: inherit; }
+    #app { display: none; }
+    .spinner { display: inline-block; width: 16px; height: 16px; border: 2px solid #ccc; border-top-color: #2196f3; border-radius: 50%; animation: spin .6s linear infinite; margin-right: 8px; vertical-align: middle; }
+    @keyframes spin { to { transform: rotate(360deg); } }
+  </style>
+</head>
+<body>
+  <div class="container">
+
+    <!-- Login -->
+    <div id="login" class="login-box">
+      <h1>ARFEA Controller</h1>
+      <p style="color:#888; margin-bottom:16px">Inserisci la API Key</p>
+      <input type="password" id="apiKeyInput" placeholder="API Key" autofocus>
+      <br>
+      <button class="btn btn-blue" onclick="doLogin()">Accedi</button>
+      <p id="loginError" style="color:red; margin-top:8px; display:none">API Key non valida</p>
+    </div>
+
+    <!-- App -->
+    <div id="app">
+      <h1>ARFEA Controller</h1>
+
+      <!-- Servizi -->
+      <div class="card">
+        <h2>Servizi</h2>
+        <div id="servicesList">Caricamento...</div>
+      </div>
+
+      <!-- Rete -->
+      <div class="card">
+        <h2>Rete</h2>
+        <div id="networkInfo">Caricamento...</div>
+      </div>
+
+      <!-- Backup -->
+      <div class="card">
+        <h2>Backup</h2>
+        <div id="backupStatus" class="status-bar status-idle">Nessun backup in corso</div>
+        <button class="btn btn-blue btn-block" id="btnBackup" onclick="runBackup()">Esegui Backup</button>
+      </div>
+
+      <!-- Ripristino -->
+      <div class="card">
+        <h2>Ripristino</h2>
+        <button class="btn btn-blue btn-block" onclick="loadBackups()" style="margin-bottom:8px">Aggiorna lista backup</button>
+        <div id="backupList"></div>
+        <button class="btn btn-orange btn-block" id="btnRestore" onclick="runRestore()" disabled>Ripristina</button>
+      </div>
+
+      <!-- Sistema -->
+      <div class="card">
+        <h2>Sistema</h2>
+        <div id="systemInfo">Caricamento...</div>
+        <div style="margin-top:12px">
+          <button class="btn btn-orange btn-block" id="btnUpdate" onclick="confirmUpdate()">Aggiorna Controller</button>
+          <button class="btn btn-red btn-block" onclick="confirmReboot()" style="margin-top:4px">Riavvia Sistema Operativo</button>
+        </div>
+      </div>
+
+      <!-- Telefono di emergenza (linphone) -->
+      <div class="card">
+        <h2>Telefono di emergenza</h2>
+        <div id="linphoneStatus" class="status-bar status-idle">Caricamento...</div>
+        <label class="info-row" style="cursor:pointer">
+          <span class="info-label">Abilitato</span>
+          <input type="checkbox" id="lpEnabled">
+        </label>
+        <input class="lp-input" id="lpHost" placeholder="SIP host (es. voip.eutelia.it)">
+        <input class="lp-input" id="lpUser" placeholder="SIP username">
+        <input class="lp-input" id="lpPass" type="password" placeholder="SIP password (vuoto = invariata)">
+        <input class="lp-input" id="lpNumber" placeholder="Numero di emergenza (es. +3933...)">
+        <textarea class="lp-input" id="lpMessage" rows="2" placeholder="Messaggio (convertito in voce)"></textarea>
+        <div style="display:flex; gap:8px">
+          <input class="lp-input" id="lpTimeout" type="number" placeholder="Timeout risposta (s)" style="flex:1">
+          <input class="lp-input" id="lpRepeat" type="number" placeholder="Ripetizioni" style="flex:1">
+        </div>
+        <button class="btn btn-blue btn-block" onclick="saveLinphone()" style="margin-top:8px">Salva configurazione</button>
+        <button class="btn btn-orange btn-block" id="btnTestCall" onclick="testCall()" style="margin-top:4px">Chiamata di prova</button>
+      </div>
+
+      <!-- Footer -->
+      <div style="text-align:center; padding:12px 0; font-size:0.85em; color:#888">
+        <a href="/docs" style="color:#2196f3; text-decoration:none">API Docs</a>
+      </div>
+
+    </div>
+  </div>
+
+<script>
+var API_KEY = '';
+var selectedBackup = '';
+var backupPolling = null;
+
+// ── Auth ──────────────────────────────────────────────────
+
+function doLogin() {
+  API_KEY = document.getElementById('apiKeyInput').value;
+  apiFetch('/services').then(function(r) {
+    if (r.ok) {
+      localStorage.setItem('arfea_api_key', API_KEY);
+      document.getElementById('login').style.display = 'none';
+      document.getElementById('app').style.display = 'block';
+      refreshAll();
+    } else {
+      document.getElementById('loginError').style.display = 'block';
+    }
+  });
+}
+
+// Auto-login if key saved
+(function() {
+  var saved = localStorage.getItem('arfea_api_key');
+  if (saved) {
+    API_KEY = saved;
+    apiFetch('/services').then(function(r) {
+      if (r.ok) {
+        document.getElementById('login').style.display = 'none';
+        document.getElementById('app').style.display = 'block';
+        refreshAll();
+      } else {
+        document.getElementById('login').style.display = 'block';
+      }
+    });
+  }
+})();
+
+document.getElementById('apiKeyInput').addEventListener('keydown', function(e) {
+  if (e.key === 'Enter') doLogin();
+});
+
+// ── API helpers ───────────────────────────────────────────
+
+function apiFetch(path, opts) {
+  opts = opts || {};
+  opts.headers = opts.headers || {};
+  opts.headers['X-API-Key'] = API_KEY;
+  return fetch('/api' + path, opts);
+}
+
+function apiGet(path) { return apiFetch(path).then(function(r) { return r.json(); }); }
+function apiPost(path) { return apiFetch(path, {method:'POST'}).then(function(r) { return r.json(); }); }
+function apiPut(path) { return apiFetch(path, {method:'PUT'}).then(function(r) { return r.json(); }); }
+function apiPutJson(path, body) {
+  return apiFetch(path, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body)
+  }).then(function(r) { return r.json(); });
+}
+
+// ── Refresh ───────────────────────────────────────────────
+
+function refreshAll() {
+  refreshServices();
+  refreshNetwork();
+  refreshSystem();
+  refreshBackupStatus();
+  loadLinphone();
+}
+
+function refreshServices() {
+  apiGet('/services').then(function(services) {
+    var html = '';
+    services.forEach(function(s) {
+      var badgeClass = s.state === 'running' ? 'badge-running' : s.state === 'stopped' || s.state === 'not_created' ? 'badge-stopped' : 'badge-other';
+      var label = s.state === 'not_created' ? 'non attivo' : s.state;
+      var show = s.core || s.enabled || s.effectively_enabled || s.state === 'running';
+      if (!show) return;
+      html += '<div class="service-row">';
+      html += '<span class="service-name">' + s.name + '</span>';
+      html += '<span>';
+      html += '<span class="badge ' + badgeClass + '">' + label + '</span> ';
+      html += '<button class="btn btn-blue" style="padding:4px 10px; font-size:0.8em" onclick="restartService(\'' + s.name + '\')">&#x21bb;</button>';
+      html += '</span>';
+      html += '</div>';
+    });
+    document.getElementById('servicesList').innerHTML = html;
+  });
+}
+
+function refreshNetwork() {
+  apiGet('/system/network').then(function(net) {
+    var html = '';
+    html += '<div class="info-row"><span class="info-label">IP LAN</span><span>' + net.lan_ip + '</span></div>';
+    html += '<div class="info-row"><span class="info-label">IP VPN</span><span>' + net.vpn_ip + '</span></div>';
+    html += '<div class="info-row"><span class="info-label">IP Pubblico</span><span>' + net.external_ip + '</span></div>';
+    document.getElementById('networkInfo').innerHTML = html;
+  });
+}
+
+function refreshSystem() {
+  apiGet('/system/info').then(function(info) {
+    var html = '';
+    html += '<div class="info-row"><span class="info-label">Hostname</span><span>' + info.hostname + '</span></div>';
+    html += '<div class="info-row"><span class="info-label">Uptime</span><span>' + info.uptime + '</span></div>';
+    html += '<div class="info-row"><span class="info-label">Versione</span><span>' + info.version + '</span></div>';
+    document.getElementById('systemInfo').innerHTML = html;
+  });
+}
+
+// ── Services ──────────────────────────────────────────────
+
+function restartService(name) {
+  apiPost('/services/' + name + '/restart').then(function(r) {
+    setTimeout(refreshServices, 3000);
+  });
+}
+
+// ── Backup ────────────────────────────────────────────────
+
+function runBackup() {
+  document.getElementById('btnBackup').disabled = true;
+  apiPost('/backup/run').then(function() {
+    pollBackup();
+  });
+}
+
+function pollBackup() {
+  if (backupPolling) clearInterval(backupPolling);
+  backupPolling = setInterval(function() {
+    refreshBackupStatus().then(function(status) {
+      if (status.state === 'completed' || status.state === 'failed' || status.state === 'idle') {
+        clearInterval(backupPolling);
+        backupPolling = null;
+        document.getElementById('btnBackup').disabled = false;
+        refreshServices();
+      }
+    });
+  }, 5000);
+}
+
+function refreshBackupStatus() {
+  return apiGet('/backup/status').then(function(status) {
+    var el = document.getElementById('backupStatus');
+    var cls = 'status-idle';
+    var text = 'Nessun backup in corso';
+    if (status.state === 'idle') { cls = 'status-idle'; text = status.message || 'Pronto'; }
+    else if (status.state === 'completed') { cls = 'status-completed'; text = status.message; }
+    else if (status.state === 'failed') { cls = 'status-failed'; text = status.message; }
+    else { cls = 'status-running'; text = '<span class="spinner"></span>' + status.message; }
+    el.className = 'status-bar ' + cls;
+    el.innerHTML = text;
+    return status;
+  });
+}
+
+// ── Restore ───────────────────────────────────────────────
+
+function loadBackups() {
+  apiGet('/backup/list').then(function(backups) {
+    selectedBackup = '';
+    document.getElementById('btnRestore').disabled = true;
+    if (backups.length === 0) {
+      document.getElementById('backupList').innerHTML = '<p style="color:#888; padding:8px">Nessun backup disponibile</p>';
+      return;
+    }
+    var html = '<div class="radio-group">';
+    backups.forEach(function(b) {
+      html += '<div class="radio-item" style="display:flex; align-items:center; justify-content:space-between">';
+      html += '<div style="display:flex; align-items:center; flex:1; cursor:pointer" onclick="selectBackup(this.parentElement, \'' + b.name + '\')">';
+      html += '<input type="radio" name="backup" style="margin-right:10px">';
+      html += '<div><div class="radio-label">' + b.date + ' &mdash; ' + b.size_mb + ' MB</div>';
+      html += '<div class="radio-sublabel">' + b.name + '</div></div>';
+      html += '</div>';
+      html += '<button class="btn btn-blue" style="padding:6px 12px; font-size:0.85em; margin-left:8px" onclick="downloadBackup(event, \'' + b.name + '\')" title="Scarica">&#x2B07;</button>';
+      html += '</div>';
+    });
+    html += '</div>';
+    document.getElementById('backupList').innerHTML = html;
+  });
+}
+
+function selectBackup(el, name) {
+  selectedBackup = name;
+  document.querySelectorAll('.radio-item').forEach(function(r) { r.classList.remove('selected'); });
+  el.classList.add('selected');
+  el.querySelector('input').checked = true;
+  document.getElementById('btnRestore').disabled = false;
+}
+
+function downloadBackup(event, name) {
+  event.stopPropagation();
+  apiFetch('/backup/download/' + encodeURIComponent(name)).then(function(r) {
+    if (!r.ok) { alert('Download fallito: ' + r.status); return; }
+    return r.blob().then(function(blob) {
+      var url = URL.createObjectURL(blob);
+      var a = document.createElement('a');
+      a.href = url;
+      a.download = name;
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      URL.revokeObjectURL(url);
+    });
+  });
+}
+
+function runRestore() {
+  if (!selectedBackup) return;
+  if (!confirm('Sei sicuro di voler ripristinare il backup?\n\n' + selectedBackup + '\n\nTutti i servizi verranno fermati.')) return;
+  apiPost('/backup/restore?backup_name=' + encodeURIComponent(selectedBackup)).then(function() {
+    pollBackup();
+  });
+}
+
+// ── Update ────────────────────────────────────────────────
+
+function confirmUpdate() {
+  if (!confirm('Aggiornare arfea-controller?\n\nIl controller verrà ricostruito e riavviato.\nLa pagina si ricaricherà automaticamente.')) return;
+  document.getElementById('btnUpdate').disabled = true;
+  document.getElementById('btnUpdate').textContent = 'Aggiornamento in corso...';
+  apiPost('/system/update').then(function(r) {
+    if (r.success) {
+      // Aspetta il rebuild e riprova a caricare la pagina
+      setTimeout(function pollReload() {
+        fetch('/api/health').then(function(resp) {
+          if (resp.ok) location.reload();
+          else setTimeout(pollReload, 5000);
+        }).catch(function() { setTimeout(pollReload, 5000); });
+      }, 15000);
+    } else {
+      alert('Errore: ' + r.message);
+      document.getElementById('btnUpdate').disabled = false;
+      document.getElementById('btnUpdate').textContent = 'Aggiorna Controller';
+    }
+  });
+}
+
+// ── Reboot ────────────────────────────────────────────────
+
+function confirmReboot() {
+  if (!confirm('Sei sicuro di voler riavviare il sistema operativo?')) return;
+  apiPost('/system/reboot');
+}
+
+// ── Linphone (chiamata di emergenza) ──────────────────────
+
+function loadLinphone() {
+  apiGet('/linphone/config').then(function(cfg) {
+    document.getElementById('lpEnabled').checked = !!cfg.enabled;
+    document.getElementById('lpHost').value = cfg.sip_host || '';
+    document.getElementById('lpUser').value = cfg.sip_username || '';
+    document.getElementById('lpPass').placeholder = cfg.has_password ? 'Password impostata (vuoto = invariata)' : 'SIP password';
+    document.getElementById('lpNumber').value = cfg.emergency_number || '';
+    document.getElementById('lpMessage').value = cfg.message || '';
+    document.getElementById('lpTimeout').value = cfg.call_timeout;
+    document.getElementById('lpRepeat').value = cfg.repeat;
+  });
+  refreshLinphoneStatus();
+}
+
+function refreshLinphoneStatus() {
+  apiGet('/linphone/status').then(function(st) {
+    var el = document.getElementById('linphoneStatus');
+    var cls = 'status-idle', text;
+    if (!st.enabled) {
+      cls = 'status-idle'; text = 'Disabilitato';
+    } else if (/identity|registered/i.test(st.registration || '')) {
+      cls = 'status-completed'; text = 'Registrato al SIP';
+    } else {
+      cls = 'status-failed'; text = 'Non registrato (' + (st.registration || 'n/d') + ')';
+    }
+    el.className = 'status-bar ' + cls;
+    el.textContent = text;
+  });
+}
+
+function saveLinphone() {
+  var body = {
+    enabled: document.getElementById('lpEnabled').checked,
+    sip_host: document.getElementById('lpHost').value,
+    sip_username: document.getElementById('lpUser').value,
+    sip_password: document.getElementById('lpPass').value,  // vuoto = invariata
+    emergency_number: document.getElementById('lpNumber').value,
+    message: document.getElementById('lpMessage').value,
+    call_timeout: parseInt(document.getElementById('lpTimeout').value, 10) || 30,
+    repeat: parseInt(document.getElementById('lpRepeat').value, 10) || 2
+  };
+  apiPutJson('/linphone/config', body).then(function(r) {
+    alert(r.message || 'Salvato');
+    document.getElementById('lpPass').value = '';
+    loadLinphone();
+  });
+}
+
+function testCall() {
+  if (!confirm('Avviare una chiamata di prova al numero di emergenza?')) return;
+  var btn = document.getElementById('btnTestCall');
+  btn.disabled = true; btn.textContent = 'Chiamata in corso...';
+  apiPost('/linphone/call').then(function(r) {
+    alert(r.message || (r.detail || 'Errore'));
+  }).catch(function() {
+    alert('Errore avvio chiamata');
+  }).finally(function() {
+    btn.disabled = false; btn.textContent = 'Chiamata di prova';
+  });
+}
+
+// Auto-refresh every 60s
+setInterval(refreshAll, 60000);
+</script>
+</body>
+</html>

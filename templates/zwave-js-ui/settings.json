@@ -1,0 +1,56 @@
+{
+  "mqtt": {
+    "name": "zwave-js-ui",
+    "host": "mosquitto",
+    "port": 1883,
+    "qos": 1,
+    "prefix": "zwave",
+    "reconnectPeriod": 3000,
+    "store": true,
+    "allowSelfsigned": false,
+    "key": "",
+    "cert": "",
+    "ca": "",
+    "_ca": "",
+    "_cert": "",
+    "_key": "",
+    "disabled": false
+  },
+  "gateway": {
+    "type": 1,
+    "payloadType": 1,
+    "nodeNames": true,
+    "hassDiscovery": false,
+    "retainedDiscovery": false,
+    "includeNodeInfo": true,
+    "sendEvents": false,
+    "ignoreStatus": false,
+    "ignoreLoc": true,
+    "publishNodeDetails": true,
+    "manualDiscovery": false,
+    "authEnabled": false,
+    "plugins": []
+  },
+  "zwave": {
+    "port": "/dev/zwave",
+    "allowBootloaderOnly": false,
+    "commandsTimeout": 30,
+    "logEnabled": true,
+    "logLevel": "info",
+    "logToFile": true,
+    "securityKeys": {},
+    "deviceConfigPriorityDir": "",
+    "logShareData": false,
+    "logMaxFiles": 7,
+    "nodeFilter": [],
+    "rf": {
+      "region": 0
+    },
+    "disableWatchdog": false,
+    "emitValueUpdateAfterSetValue": false,
+    "enableStatistics": false,
+    "serverEnabled": false,
+    "serverPort": 3000,
+    "serverServiceDiscoveryDisabled": false
+  }
+}

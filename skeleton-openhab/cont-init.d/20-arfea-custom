@@ -1,0 +1,50 @@
+#!/bin/bash -ex
+apt-get update
+
+rm -fr /openhab/userdata/tmp/*
+rm -fr /openhab/userdata/cache/*
+
+FILE="/openhab/conf/scripts/system_operations.sh"
+if [ -f "$FILE" ]; then
+    chmod +x $FILE
+fi
+
+if command -v ip &> /dev/null
+then
+    echo "iproute2 è installato"
+else
+    echo "iproute2 non è installato"
+    apt-get install -y iproute2
+fi
+
+# ── Chiamata di emergenza (linphone + TTS offline) ──
+# Attiva solo se il controller ha scritto linphone.env con ENABLED=1.
+LINPHONE_ENV="/openhab/conf/scripts/linphone.env"
+LINPHONE_CALL="/openhab/conf/scripts/linphone_call.sh"
+if [ -f "$LINPHONE_ENV" ]; then
+    # shellcheck disable=SC1090
+    . "$LINPHONE_ENV"
+    if [ "${ENABLED:-0}" = "1" ]; then
+        echo "linphone abilitato: setup in corso"
+        if ! command -v linphonecsh >/dev/null; then
+            apt-get install -y linphone-cli alsa-utils
+            chmod 666 /dev/null
+            mkdir -p /openhab/.local/share/linphone/
+            chown openhab:openhab /openhab/.local/share/linphone/
+        fi
+        # TTS offline: pico2wave ha voce migliore ma sta in non-free/universe
+        # (spesso non abilitato). Fallback su espeak-ng, sempre in main.
+        if ! command -v pico2wave >/dev/null && ! command -v espeak-ng >/dev/null; then
+            apt-get install -y libttspico-utils 2>/dev/null \
+              || apt-get install -y espeak-ng
+        fi
+        [ -f "$LINPHONE_CALL" ] && chmod +x "$LINPHONE_CALL"
+        # Pre-registrazione COME UTENTE openhab (stesso contesto delle chiamate:
+        # actions.Exec gira come openhab). NIENTE demone come root, eviterebbe
+        # conflitti. Best-effort: lo script di chiamata fa comunque exit/init/register.
+        export SIP_HOST SIP_USER SIP_PASS
+        su -s /bin/bash openhab -c \
+          'linphonecsh init >/dev/null 2>&1; sleep 1; linphonecsh register --host "$SIP_HOST" --username "$SIP_USER" --password "$SIP_PASS" >/dev/null 2>&1' \
+          || true
+    fi
+fi

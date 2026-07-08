@@ -1,0 +1,22 @@
+homeassistant:
+  legacy_entity_attributes: false
+  legacy_triggers: false
+permit_join: false
+frontend:
+  port: 8080
+mqtt:
+  base_topic: zigbee2mqtt
+  server: mqtt://mosquitto
+  keepalive: 60
+  reject_unauthorized: true
+  version: 4
+  client_id: zigbee2mqtt
+serial:
+  port: /dev/zigbee
+  adapter: ember
+advanced:
+  log_level: warn
+  timestamp_format: YYYY-MM-DD HH:mm:ss
+  log_directory: /var/log/zigbee2mqtt/%TIMESTAMP%
+  log_file: log.txt
+  log_rotation: true

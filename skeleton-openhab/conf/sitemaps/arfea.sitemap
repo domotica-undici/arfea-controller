@@ -1,0 +1,54 @@
+sitemap arfea label="ARFEA" {
+
+    // ──────────────────────────────────────────────
+    // ARFEA Controller (componente completo)
+    //
+    // Blocco riutilizzabile: copiabile dentro una
+    // sitemap esistente (dentro Frame/Text { ... })
+    // ──────────────────────────────────────────────
+
+    Text icon="firstfloor" label="Centralina ARFEA" {
+
+        Frame label="Stato" {
+            Text item=adesso                       icon="time"
+            Text item=timeSlot                     icon="time"     visibility=[timeSlot!="NULL", timeSlot!="UNDEF"]
+            Text item=holidayName                  icon="calendar" visibility=[isHoliday=="festivo"]
+            Text item=gBatteryPowered              icon="battery"  visibility=[gBatteryPowered!="NULL", gBatteryPowered!="UNDEF"]
+            Text item=alert_messages               icon="siren"    visibility=[alert_messages!="", alert_messages!="NULL", alert_messages!="UNDEF"]
+        }
+
+        Frame label="Servizi" {
+            Text item=arfea_openhab_state          label="OpenHAB [%s]"           icon="switch"
+            Text item=arfea_samba_state            label="Samba [%s]"             icon="network"    visibility=[arfea_samba_state!="not_created"]
+            Text item=arfea_mosquitto_state        label="Mosquitto [%s]"         icon="mqtt"       visibility=[arfea_mosquitto_state=="running"]
+            Text item=arfea_habapp_state           label="HABApp [%s]"            icon="settings"   visibility=[arfea_habapp_state!="not_created"]
+            Text item=arfea_zwave_state            label="Z-Wave JS UI [%s]"      icon="zwave"      visibility=[arfea_zwave_state!="not_created"]
+            Text item=arfea_zigbee2mqtt_state      label="Zigbee2MQTT [%s]"       icon="zwave"      visibility=[arfea_zigbee2mqtt_state!="not_created"]
+            Text item=arfea_nodered_state          label="Node-RED [%s]"          icon="flow"       visibility=[arfea_nodered_state!="not_created"]
+        }
+
+        Frame label="Rete" {
+            Text   item=arfea_lan_ip               label="IP LAN [%s]"            icon="network"
+            Text   item=arfea_vpn_ip               label="IP Supporto [%s]"       icon="network"
+            Switch item=arfea_vpn_active           label="VPN Supporto"           icon="lock"
+            Text   item=arfea_external_ip          label="IP Pubblico [%s]"       icon="network"
+        }
+
+        Frame label="Dati Piattaforma" {
+            Text item=arfea_hostname               label="Hostname [%s]"          icon="settings"
+            Text item=arfea_uptime                 label="Uptime [%s]"            icon="time"
+            Text item=ohVersion                    label="Versione OpenHAB [%s]"  icon="settings"
+        }
+
+        Frame label="Backup" {
+            Text   item=arfea_backup_state         label="Stato [%s]"             icon="archive"
+            Text   item=arfea_backup_message       label="Messaggio [%s]"         icon="text"           visibility=[arfea_backup_message!="" , arfea_backup_message!="NULL"]
+            Switch item=arfea_backup_trigger       label="Esegui backup"          icon="archive"        mappings=[ON="Avvia"]
+        }
+
+        Frame label="Azioni" {
+            Switch item=arfea_update_trigger       label="Aggiorna controller"    icon="switch"         mappings=[ON="Aggiorna"]
+            Switch item=arfea_reboot_trigger       label="Riavvia sistema"        icon="system"         mappings=[ON="Riavvia"]
+        }
+    }
+}

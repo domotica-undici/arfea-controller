@@ -1,0 +1,29 @@
+{
+  "_commento": "Manifest delle versioni immagine CERTIFICATE per le centraline ARFEA. Va pubblicato su controller.releases_url (es. https://YOUR-SERVER.example.com/ota/releases.json). 'releases' è ordinato dalla più vecchia alla più recente: l'ordine definisce il percorso di upgrade attraversato dall'apply. 'latest' indica la versione bersaglio. Ogni release elenca i tag immagine certificati; l'apply scrive SOLO questi tag in arfea.yml. 'controller_min' (opzionale) blocca l'upgrade se il controller è troppo vecchio. 'migrations' (opzionale) elenca le versioni che hanno script migrations/<versione>/pre.sh|post.sh bundlati nel tarball OTA.",
+  "channel": "stable",
+  "latest": "2026.06",
+  "releases": [
+    {
+      "version": "2026.06",
+      "date": "2026-06-30",
+      "notes": "Baseline: OpenHAB 5.2.0, HABApp 25.12.0, Z-Wave JS UI 11.",
+      "images": {
+        "openhab": "openhab/openhab:5.2.0",
+        "habapp": "spacemanspiff2007/habapp:25.12.0",
+        "zwave-js-ui": "zwavejs/zwave-js-ui:11"
+      }
+    },
+    {
+      "version": "2026.08-ESEMPIO",
+      "date": "2026-08-15",
+      "notes": "ESEMPIO (non attivo: non è 'latest'). Salto a OpenHAB 5.2.0 + HABApp 26.04.01. Quando lo certifichi: porta 'latest' a questo valore e, se servono fix, aggiungi migrations/2026.08-ESEMPIO/pre.sh.",
+      "controller_min": "1.3.0",
+      "migrations": ["2026.08-ESEMPIO"],
+      "images": {
+        "openhab": "openhab/openhab:5.2.0",
+        "habapp": "spacemanspiff2007/habapp:26.04.01",
+        "zwave-js-ui": "zwavejs/zwave-js-ui:12"
+      }
+    }
+  ]
+}

@@ -1,0 +1,108 @@
+// ──────────────────────────────────────────────
+// ARFEA Controller - Service states
+// ──────────────────────────────────────────────
+
+Group   gArfea              "ARFEA Controller"
+Group   gPersistence        "Persistence"                       (gArfea)
+
+// Service running state (running / stopped / not_created)
+String  arfea_openhab_state         "OpenHAB [%s]"              (gArfea)
+String  arfea_samba_state           "Samba [%s]"                (gArfea)
+String  arfea_mosquitto_state       "Mosquitto [%s]"            (gArfea)
+String  arfea_habapp_state          "HABApp [%s]"               (gArfea)
+String  arfea_zwave_state           "Z-Wave JS UI [%s]"         (gArfea)
+String  arfea_zigbee2mqtt_state     "Zigbee2MQTT [%s]"          (gArfea)
+String  arfea_nodered_state         "Node-RED [%s]"             (gArfea)
+
+// Enable/disable toggles for optional services
+Switch  arfea_habapp_enabled        "HABApp"                    (gArfea)
+Switch  arfea_zwave_enabled         "Z-Wave JS UI"              (gArfea)
+Switch  arfea_zigbee2mqtt_enabled   "Zigbee2MQTT"               (gArfea)
+Switch  arfea_nodered_enabled       "Node-RED"                  (gArfea)
+
+// ──────────────────────────────────────────────
+// System info & network
+// ──────────────────────────────────────────────
+
+String  arfea_lan_ip        "IP LAN [%s]"                       (gArfea)
+String  arfea_vpn_ip        "IP VPN [%s]"                       (gArfea)
+Switch  arfea_vpn_active    "VPN Supporto"                      (gArfea)  {autoupdate="false"}
+String  arfea_external_ip   "IP Pubblico [%s]"                  (gArfea)
+String  arfea_hostname      "Hostname [%s]"                     (gArfea)
+String  arfea_uptime        "Uptime [%s]"                       (gArfea)
+String  ohVersion           "Versione OpenHAB [%s]"             (gArfea)
+
+// ──────────────────────────────────────────────
+// Backup
+// ──────────────────────────────────────────────
+
+String  arfea_backup_state      "Stato backup [%s]"             (gArfea)
+String  arfea_backup_message    "Messaggio backup [%s]"         (gArfea)
+String  arfea_backup_list       "Lista backup [%s]"             (gArfea)
+String  arfea_restore_target    "Backup da ripristinare [%s]"   (gArfea)
+
+// ──────────────────────────────────────────────
+// Trigger item (per azioni da sitemap)
+// ──────────────────────────────────────────────
+
+Switch  arfea_reboot_trigger    "Riavvia sistema"               (gArfea)  {autoupdate="false"}
+Switch  arfea_backup_trigger    "Esegui backup"                 (gArfea)  {autoupdate="false"}
+Switch  arfea_update_trigger    "Aggiorna controller"           (gArfea)  {autoupdate="false"}
+
+// ──────────────────────────────────────────────
+// Aggiornamento versione sistema (release certificate)
+// ──────────────────────────────────────────────
+
+String  arfea_current_release     "Versione sistema [%s]"             (gArfea)
+String  arfea_update_available     "Aggiornamento disponibile [%s]"    (gArfea)
+String  arfea_update_changelog     "Novità versione [%s]"             (gArfea)
+String  arfea_update_progress      "Avanzamento aggiornamento [%s]"    (gArfea)
+Switch  arfea_apply_update_trigger "Applica aggiornamento versione"    (gArfea)  {autoupdate="false"}
+
+// Conferma software-per-software: per ogni componente con una nuova versione,
+// arfea_upd_<x> mostra la versione target ("" se nessun aggiornamento) e
+// arfea_upd_<x>_ok abilita/disabilita l'aggiornamento di quel componente.
+String  arfea_upd_openhab          "OpenHAB [%s]"                      (gArfea)
+Switch  arfea_upd_openhab_ok       "Aggiorna OpenHAB"                  (gArfea)
+String  arfea_upd_habapp           "HABApp [%s]"                       (gArfea)
+Switch  arfea_upd_habapp_ok        "Aggiorna HABApp"                   (gArfea)
+String  arfea_upd_zwave            "Z-Wave JS UI [%s]"                 (gArfea)
+Switch  arfea_upd_zwave_ok         "Aggiorna Z-Wave JS UI"             (gArfea)
+String  arfea_upd_zigbee2mqtt      "Zigbee2MQTT [%s]"                  (gArfea)
+Switch  arfea_upd_zigbee2mqtt_ok   "Aggiorna Zigbee2MQTT"              (gArfea)
+String  arfea_upd_nodered          "Node-RED [%s]"                     (gArfea)
+Switch  arfea_upd_nodered_ok       "Aggiorna Node-RED"                 (gArfea)
+
+// ──────────────────────────────────────────────
+// Linphone — chiamata di emergenza
+// ──────────────────────────────────────────────
+
+String  arfea_linphone_status   "Stato linphone [%s]"           (gArfea)
+Switch  arfea_emergency_call     "Chiamata di emergenza"         (gArfea)  {autoupdate="false"}
+// Messaggio opzionale: se valorizzato, sovrascrive quello di default nella chiamata
+String  arfea_emergency_message  "Messaggio emergenza [%s]"      (gArfea, gPersistence)
+
+// ──────────────────────────────────────────────
+// Messaggistica utente (portato da habapp)
+// ──────────────────────────────────────────────
+
+String  send_message            "Messaggio utente [%s]"         (gArfea)
+String  send_broadcastmessage   "Messaggio broadcast [%s]"      (gArfea)
+String  alert_messages          "Messaggi di allarme [%s]"      (gArfea)
+String  users_list              "Elenco utenti [%s]"            (gArfea, gPersistence)
+
+// ──────────────────────────────────────────────
+// Batterie (min dei livelli dei dispositivi a batteria)
+// ──────────────────────────────────────────────
+
+Group:Number:MIN  gBatteryPowered  "Livello batterie [%d %%]"  <battery>  (gArfea)
+
+// ──────────────────────────────────────────────
+// Tempo / calendario (portato da habapp time.py)
+// ──────────────────────────────────────────────
+
+DateTime  adesso         "Data e ora [%1$tA, %1$td.%1$tm.%1$tY %1$tH:%1$tM]"  <time>  (gArfea)
+String    timeSlots      "Fasce giornaliere [%s]"    <time>  (gArfea, gPersistence)
+String    timeSlot       "Fascia giornaliera [%s]"   <time>  (gArfea)
+String    isHoliday      "Festivo [%s]"              <time>  (gArfea)
+String    holidayName    "Nome festività [%s]"       <time>  (gArfea)

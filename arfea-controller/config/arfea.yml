@@ -1,0 +1,242 @@
+# ── Sicurezza ──
+# - API key: richiesta solo per accesso da LAN (browser/curl)
+# - localhost: accesso libero (OpenHAB regole JS)
+# - IP esterni: bloccati completamente
+# - Web UI: accessibile solo da IP privati (LAN)
+# - Credenziali WebDAV: cambiare su ogni installazione!
+
+controller:
+  port: 8888
+  data_path: /opt/docker_store
+  log_level: info
+  api_key: "CAMBIARE-CON-CHIAVE-UNICA"
+  update_url: "https://YOUR-SERVER.example.com/ota/arfea-controller.tar.xz"
+  # Manifest delle versioni immagine certificate (openhab/habapp/...).
+  # Vuoto = funzione disattivata. Distinto da update_url (codice controller).
+  releases_url: "https://YOUR-SERVER.example.com/ota/releases.json"
+  # Release certificata a cui questa centralina è allineata. La imposta lo script
+  # di setup alla prima installazione e l'apply degli aggiornamenti la fa avanzare.
+  release: "2026.06"
+
+network:
+  name: domotica
+  subnet: 172.11.0.0/24
+  gateway: 172.11.0.1
+
+backup:
+  # Compilare con le credenziali WebDAV reali in fase di installazione.
+  # NON committare credenziali reali in questo template.
+  webdav_url: "CAMBIARE-CON-URL-WEBDAV"
+  webdav_user: "CAMBIARE-CON-USER-WEBDAV"
+  webdav_password: "CAMBIARE-CON-PASSWORD-WEBDAV"
+  exclude_paths:
+    - "/opt/docker_store/arfea-controller/backups"
+
+# ── Chiamata di emergenza (linphone, dentro il container OpenHAB) ──
+# linphone-cli + TTS offline (espeak-ng, oppure pico2wave se disponibile)
+# installati al boot da cont-init.d/20-arfea-custom.
+# I parametri sono configurabili dalla Web UI; il controller scrive
+# openhab/conf/scripts/linphone.env (letto da cont-init.d e dallo script di chiamata).
+linphone:
+  enabled: false
+  sip_host: ""                 # es. voip.eutelia.it
+  sip_username: ""             # es. 0510546372
+  sip_password: ""
+  emergency_number: ""         # es. +393288255479
+  message: "Allarme dal sistema domotico ARFEA."
+  call_timeout: 30             # secondi di attesa risposta
+  repeat: 2                    # ripetizioni del messaggio durante la chiamata
+
+dependencies:
+  - when_any_enabled: [zwave-js-ui, zigbee2mqtt]
+    then_enable: mosquitto
+
+services:
+
+  # ──────────────────────────────────────────────
+  # CORE (sempre attivi, non disattivabili)
+  # ──────────────────────────────────────────────
+
+  openhab:
+    enabled: true
+    core: true
+    image: "openhab/openhab:5.1.4"
+    container_name: openhab
+    restart_policy: unless-stopped
+    network_mode: host
+    cap_add:
+      - NET_ADMIN       # necessario per Matter binding
+      - NET_RAW
+    group_add:
+      - "20"            # gruppo dialout (host) per accesso a /dev/ttyUSB* / /dev/ttyACM*
+    devices:
+      - "/dev/ttyUSB0:/dev/ttyUSB0"   # Modbus RTU (monitor energia, split Daikin)
+    volumes:
+      - /etc/localtime:/etc/localtime:ro
+      - /etc/timezone:/etc/timezone:ro
+      - /opt/docker_store/openhab/addons:/openhab/addons
+      - /opt/docker_store/openhab/conf:/openhab/conf
+      - /opt/docker_store/openhab/userdata:/openhab/userdata
+      - /opt/docker_store/openhab/cont-init.d:/etc/cont-init.d
+      - /etc/openvpn:/etc/openvpn
+      - /run/dbus:/run/dbus:ro    # BLE per commissioning Matter
+    environment:
+      CRYPTO_POLICY: "unlimited"
+      EXTRA_JAVA_OPTS: "-Duser.timezone=Europe/Rome -Djna.nosys=true -Dgnu.io.rxtx.SerialPorts=/dev/ttyUSB0"
+      OPENHAB_HTTP_PORT: "8080"
+      OPENHAB_HTTPS_PORT: "8443"
+      USER_ID: "9001"
+      GROUP_ID: "9001"
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8080"]
+      interval: 30
+      timeout: 10
+      retries: 3
+      start_period: 120
+    log_max_size: "10m"
+
+  samba:
+    enabled: false
+    core: false
+    image: "ghcr.io/servercontainers/samba:latest"
+    container_name: samba
+    restart_policy: unless-stopped
+    ports:
+      - "139:139"
+      - "445:445"
+    volumes:
+      - /opt/docker_store/openhab/conf:/host/openhab-conf
+      - /opt/docker_store/openhab/userdata/backup:/host/openhab-backup
+    environment:
+      TZ: "Europe/Rome"
+      ACCOUNT_openhab: "openhab"
+      UID_openhab: "9001"
+      GROUP_openhab: "9001"
+      GROUPS_openhab: "openhab"
+      SAMBA_VOLUME_CONFIG_conf: "[openhab-conf]; path = /host/openhab-conf; browseable = yes; read only = no; guest ok = yes; valid users = openhab; admin users = openhab; comment = openhab-conf"
+      SAMBA_VOLUME_CONFIG_backup: "[openhab-backup]; path = /host/openhab-backup; browseable = yes; read only = no; guest ok = yes; valid users = openhab; admin users = openhab; comment = openhab-backup"
+    log_max_size: "10m"
+
+  # ──────────────────────────────────────────────
+  # AUTO-DIPENDENZA (attivato automaticamente)
+  # ──────────────────────────────────────────────
+
+  mosquitto:
+    enabled: false
+    core: false
+    image: "eclipse-mosquitto:latest"
+    container_name: mosquitto
+    restart_policy: unless-stopped
+    ports:
+      - "1883:1883"
+      - "8883:8883"
+    volumes:
+      - /opt/docker_store/mosquitto/config:/mosquitto/config
+      - /opt/docker_store/mosquitto/data:/mosquitto/data
+      - /opt/docker_store/mosquitto/log:/mosquitto/log
+    log_max_size: "10m"
+
+  # ──────────────────────────────────────────────
+  # OPZIONALI
+  # ──────────────────────────────────────────────
+
+  habapp:
+    enabled: false
+    core: false
+    image: "spacemanspiff2007/habapp:25.12.0"
+    container_name: habapp
+    restart_policy: unless-stopped
+    depends_on:
+      openhab:
+        condition: healthy
+    volumes:
+      - /opt/docker_store/openhab/conf/habapp:/habapp/config
+      - /opt/docker_store/openhab/conf:/openhab/conf
+      - /opt/docker_store/openhab/userdata:/openhab/userdata
+    environment:
+      TZ: "Europe/Rome"
+    log_max_size: "10m"
+
+  zwave-js-ui:
+    enabled: false
+    core: false
+    image: "zwavejs/zwave-js-ui:11"
+    container_name: zwave-js-ui
+    restart_policy: unless-stopped
+    ports:
+      - "8091:8091"
+      - "3000:3000"
+    volumes:
+      - /opt/docker_store/zwave-js-ui:/usr/src/app/store
+    devices:
+      - "/dev/ttyACM0:/dev/zwave"
+    log_max_size: "10m"
+
+  zigbee2mqtt:
+    enabled: false
+    core: false
+    image: "koenkk/zigbee2mqtt:latest"
+    container_name: zigbee2mqtt
+    restart_policy: unless-stopped
+    ports:
+      - "8090:8080"
+    volumes:
+      - /opt/docker_store/zigbee2mqtt/data:/app/data
+      - /run/udev:/run/udev:ro
+    environment:
+      TZ: "Europe/Rome"
+    devices:
+      - "/dev/serial/by-id/usb-ITEAD_SONOFF_Zigbee_3.0_USB_Dongle_Plus_V2_20231031184237-if00:/dev/zigbee"
+    log_max_size: "10m"
+
+  node-red:
+    enabled: false
+    core: false
+    image: "nodered/node-red:latest"
+    container_name: node-red
+    restart_policy: unless-stopped
+    ports:
+      - "1880:1880"
+    volumes:
+      - /opt/docker_store/node-red:/data
+    environment:
+      TZ: "Europe/Rome"
+    log_max_size: "10m"
+
+  # OpenThread Border Router (Thread + Matter)
+  # Richiede setup host: IPv6, udev, snapd (vedi preparaArfea-armbian-1.sh)
+  # Chiavetta nRF52840 con firmware RCP
+  otbr:
+    enabled: false
+    core: false
+    image: "openthread/border-router:latest"
+    container_name: otbr
+    restart_policy: unless-stopped
+    network_mode: host          # obbligatorio per IPv6, mDNS e TREL
+    privileged: true            # necessario per wpan0, tun, net_admin
+    cap_add:
+      - NET_ADMIN
+      - NET_RAW
+    devices:
+      - "/dev/ttyACM0:/dev/ttyACM0"
+      - "/dev/net/tun:/dev/net/tun"
+    volumes:
+      - /opt/docker_store/otbr/data:/data
+      - /dev/log:/dev/log       # syslog per avahi
+      - /run/dbus:/run/dbus:ro  # dbus per avahi/mdns
+    environment:
+      OT_RCP_DEVICE: "spinel+hdlc+uart:///dev/ttyACM0?uart-baudrate=115200"
+      OT_INFRA_IF: "end0"       # impostato automaticamente da preparaArfea-armbian-1.sh
+      OT_THREAD_IF: "wpan0"
+      OT_LOG_LEVEL: "5"
+      OT_TREL: "1"
+      OT_WEB_LISTEN_PORT: "8088"
+    dns:
+      - 127.0.0.1
+    healthcheck:
+      test: ["CMD", "ot-ctl", "state"]
+      interval: 30
+      timeout: 10
+      retries: 5
+      start_period: 30
+    log_max_size: "10m"
