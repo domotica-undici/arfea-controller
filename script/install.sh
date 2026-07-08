@@ -25,6 +25,7 @@
 #        ARFEA_ZWAVE_DEVICE="/dev/ttyACM0" \
 #        ARFEA_ZIGBEE_DEVICE="/dev/serial/by-id/…" \
 #        ARFEA_MODBUS_DEVICE="/dev/ttyUSB0" \
+#        ARFEA_OPENHAB_DEVICES="/dev/ttyAML1:/dev/rs485,/dev/ttyUSB1:/dev/ttyUSB1"  # porte OpenHAB extra (csv) \
 #        ARFEA_OTBR_DEVICE="/dev/ttyACM0" ARFEA_OTBR_INFRA_IF="end0" \
 #        ./script/install.sh
 #
@@ -58,6 +59,9 @@ ARFEA_WEBDAV_PASS="${ARFEA_WEBDAV_PASS:-}"
 ARFEA_ZWAVE_DEVICE="${ARFEA_ZWAVE_DEVICE:-}"
 ARFEA_ZIGBEE_DEVICE="${ARFEA_ZIGBEE_DEVICE:-}"
 ARFEA_MODBUS_DEVICE="${ARFEA_MODBUS_DEVICE:-}"
+# Porte seriali AGGIUNTIVE per OpenHAB (csv "src:tgt[:mode]"), oltre a quella
+# Modbus. Es: "/dev/ttyAML1:/dev/rs485,/dev/ttyUSB1:/dev/ttyUSB1".
+ARFEA_OPENHAB_DEVICES="${ARFEA_OPENHAB_DEVICES:-}"
 ARFEA_OTBR_DEVICE="${ARFEA_OTBR_DEVICE:-}"
 ARFEA_OTBR_INFRA_IF="${ARFEA_OTBR_INFRA_IF:-}"
 
@@ -116,6 +120,7 @@ configure() {
     $INSTALL_ZWAVE  && [[ -z "$ARFEA_ZWAVE_DEVICE"  ]] && read -r -p "Device Z-Wave (es. /dev/ttyACM0): " ARFEA_ZWAVE_DEVICE
     $INSTALL_ZIGBEE && [[ -z "$ARFEA_ZIGBEE_DEVICE" ]] && read -r -p "Device Zigbee (es. /dev/serial/by-id/...): " ARFEA_ZIGBEE_DEVICE
     $INSTALL_OTBR   && [[ -z "$ARFEA_OTBR_DEVICE"   ]] && read -r -p "Device Thread OTBR (es. /dev/ttyACM0): " ARFEA_OTBR_DEVICE
+    [[ -n "$ARFEA_OPENHAB_DEVICES" ]] || read -r -p "Porte seriali aggiuntive per OpenHAB (csv src:tgt, vuoto=nessuna): " ARFEA_OPENHAB_DEVICES
   else
     [[ -n "$ARFEA_API_KEY" ]] || ARFEA_API_KEY=$(openssl rand -hex 16)
     parse_services_csv "$ARFEA_SERVICES"
@@ -172,6 +177,20 @@ yml_scalar() { # key value file  → sostituisce la riga "  key: ..." (indent 2)
 enable_service() { # service file
   awk -v svc="  ${1}:" '$0==svc{i=1} i&&/enabled:/{sub(/false/,"true");i=0} {print}' "$2" > "$2.t" && mv "$2.t" "$2"
 }
+add_openhab_devices() { # csv("src:tgt[:mode]",...) file
+  local csv="$1" f="$2"
+  [[ -n "$csv" ]] || return 0
+  # Aggiunge le voci alla lista devices: del SOLO servizio openhab (dopo la
+  # riga "    devices:"). Il blocco openhab è delimitato dalle chiavi-servizio
+  # a 2 spazi; nel template ha già una voce (Modbus), a cui accodiamo le altre.
+  awk -v csv="$csv" '
+    function emit(   n,a,i,e){ n=split(csv,a,","); for(i=1;i<=n;i++){e=a[i]; gsub(/ /,"",e); if(e!="") print "      - \"" e "\"" } }
+    /^  openhab:[[:space:]]*$/ { inoh=1 }
+    inoh && /^  [A-Za-z0-9_-]+:[[:space:]]*$/ && $0 !~ /^  openhab:/ { inoh=0 }
+    { print }
+    inoh && /^    devices:[[:space:]]*$/ && !ins { emit(); ins=1 }
+  ' "$f" > "$f.t" && mv "$f.t" "$f"
+}
 
 configure_yml() {
   local YML="$CTRL_DIR/config/arfea.yml"
@@ -195,6 +214,7 @@ configure_yml() {
   [[ -n "$ARFEA_ZWAVE_DEVICE"  ]] && sed -i "s|/dev/ttyACM0:/dev/zwave|${ARFEA_ZWAVE_DEVICE}:/dev/zwave|" "$YML"
   [[ -n "$ARFEA_ZIGBEE_DEVICE" ]] && sed -i "s|/dev/serial/by-id/usb-ITEAD_SONOFF_Zigbee_3.0_USB_Dongle_Plus_V2_20231031184237-if00:/dev/zigbee|${ARFEA_ZIGBEE_DEVICE}:/dev/zigbee|" "$YML"
   [[ -n "$ARFEA_MODBUS_DEVICE" ]] && sed -i "s|/dev/ttyUSB0:/dev/ttyUSB0|${ARFEA_MODBUS_DEVICE}:/dev/ttyUSB0|" "$YML"
+  [[ -n "$ARFEA_OPENHAB_DEVICES" ]] && add_openhab_devices "$ARFEA_OPENHAB_DEVICES" "$YML"
   if $INSTALL_OTBR; then
     [[ -n "$ARFEA_OTBR_DEVICE" && "$ARFEA_OTBR_DEVICE" != "/dev/ttyACM0" ]] \
       && sed -i "s|\"/dev/ttyACM0:/dev/ttyACM0\"|\"${ARFEA_OTBR_DEVICE}:/dev/ttyACM0\"|" "$YML"
