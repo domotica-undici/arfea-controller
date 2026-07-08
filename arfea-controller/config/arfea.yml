@@ -204,7 +204,7 @@ services:
     log_max_size: "10m"
 
   # OpenThread Border Router (Thread + Matter)
-  # Richiede setup host: IPv6, udev, snapd (vedi preparaArfea-armbian-1.sh)
+  # Richiede setup host: IPv6, udev, snapd (vedi install.sh)
   # Chiavetta nRF52840 con firmware RCP
   otbr:
     enabled: false
@@ -226,7 +226,7 @@ services:
       - /run/dbus:/run/dbus:ro  # dbus per avahi/mdns
     environment:
       OT_RCP_DEVICE: "spinel+hdlc+uart:///dev/ttyACM0?uart-baudrate=115200"
-      OT_INFRA_IF: "end0"       # impostato automaticamente da preparaArfea-armbian-1.sh
+      OT_INFRA_IF: "end0"       # impostato automaticamente da install.sh
       OT_THREAD_IF: "wpan0"
       OT_LOG_LEVEL: "5"
       OT_TREL: "1"

@@ -47,7 +47,7 @@ cp "$REPO_DIR/arfea-controller/docker-compose.yml" "$STAGING/"
 cp "$REPO_DIR/arfea-controller/requirements.txt" "$STAGING/"
 cp "$REPO_DIR/MANUALE.md" "$STAGING/"
 cp -r "$REPO_DIR/arfea-controller/app" "$STAGING/app"
-# config/ serve solo per la prima installazione (preparaArfea-armbian-1.sh).
+# config/ serve solo per la prima installazione (install.sh).
 # Il self-update del controller salta volutamente config/ per non sovrascrivere
 # arfea.yml con le impostazioni dell'utente — vedi _extract_and_install in main.py.
 cp -r "$REPO_DIR/arfea-controller/config" "$STAGING/config"
