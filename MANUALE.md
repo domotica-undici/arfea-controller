@@ -329,6 +329,66 @@ elenca i tag certificati e opzionalmente `controller_min` e `migrations`.
 - **Widget "Aggiornamenti" mancante:** dalla 1.3.0 viene reimportato da solo dopo
   un OTA. Per forzare: `curl -s -X POST localhost:8888/api/system/import-ui`.
 
+### 4.7 Migrazione da centralina esistente → arfea-controller
+
+Lo script [script/migrate-to-controller.sh](script/migrate-to-controller.sh) porta
+una centralina **già esistente** dentro la struttura `arfea-controller`. Riconosce
+da solo il punto di partenza e agisce di conseguenza:
+
+- **Sorgente DOCKER** — vecchio stack `docker-compose-arfea-2.yml` (openhab e servizi
+  già in container).
+- **Sorgente NATIVO** — OpenHAB installato "nativo" sul sistema operativo (apt/deb),
+  **senza Docker**. Cartelle tipiche:
+  - fino alla 2.5.x: `/etc/openhab2`, `/var/lib/openhab2`, `/usr/share/openhab2/addons`
+  - dalla 3.x in poi: `/etc/openhab`, `/var/lib/openhab`, `/usr/share/openhab/addons`
+
+```bash
+# sulla board (da eseguire come root)
+sudo bash migrate-to-controller.sh                    # rileva da solo la sorgente
+sudo bash migrate-to-controller.sh /path/old-compose.yml /path/tarball.tar.xz
+sudo MIGRATE_MODE=native bash migrate-to-controller.sh   # forza la modalità
+```
+
+**Sequenza (comune):** rileva la sorgente → backup dei dati → estrae il tarball
+`arfea-controller` → configura `arfea.yml` (API key generata, `update_url`
+disattivato al primo boot) → build + avvio dello stack.
+
+**In più per la sorgente NATIVA:**
+1. **Installa Docker** se assente (repo apt Ubuntu/Debian). Se il daemon non parte
+   senza riavvio, lo script esce chiedendo un **reboot + ri-esecuzione** (le cartelle
+   native non vengono toccate, quindi riprende da capo senza danni).
+2. Copia `conf`/`userdata`/`addons` in `/opt/docker_store/openhab/` con owner
+   **9001:9001** (escludendo `cache`/`tmp`/`logs`). **Le cartelle native NON vengono
+   cancellate: restano come backup.**
+3. **Servizi companion** (verificati sull'OS con `systemctl`/`pgrep`):
+   - `habapp`, `mosquitto`, `samba` → **abilitati sul controller** + `stop`+`disable` nativo;
+   - `frontail` → **solo `stop`+`disable`** (non più necessario, nessun servizio controller);
+   - la config HABApp viene individuata (da `ExecStart --config` o path comuni) e copiata
+     in `openhab/conf/habapp`.
+4. **Porte seriali USB** (zwave/modbus): rilevate da `EXTRA_JAVA_OPTS`, dalle
+   `things`/jsondb e dai nodi presenti. Mappate **1:1** nel container openhab (non
+   rimappate su `/dev/zwave`, così le config dei binding nativi restano valide);
+   aggiorna `gnu.io.rxtx.SerialPorts` e il GID di `dialout`. Vengono mappati solo i
+   device **fisicamente presenti**; quelli referenziati ma assenti vengono segnalati.
+5. **Solo se openhab risulta in esecuzione** dopo l'avvio → `systemctl disable` dei
+   servizi nativi (così al boot parte **solo** lo stack Docker). In caso contrario
+   NON disabilita nulla e stampa le istruzioni di rollback.
+6. **Pulizia banner openhabian**: disattiva gli script di login in `/etc/profile.d` e
+   `/etc/update-motd.d`, svuota `/etc/motd`, rimuove le righe `FireMotD`/`version.properties`
+   da `bashrc`/`profile` — elimina gli errori al login SSH (`FireMotD: command not found`,
+   `sed: can't read .../version.properties`, welcome ASCII di openHAB). Tutto
+   **reversibile**: i file toccati sono copiati in `arfea-controller/backups/login-banners-*`.
+
+> ⚠️ **Salto di major (2.x → 5.x):** i dati vengono comunque copiati e l'immagine
+> OpenHAB 5.x prova l'upgrade automatico dell'userdata, ma da OpenHAB 2.x può
+> servire una **revisione manuale** di things/binding. Lo script lo segnala e va
+> sempre verificato il funzionamento dopo l'avvio. Verifica anche i parametri di
+> connessione (OpenHAB/MQTT) in `openhab/conf/habapp/config.yml`.
+
+> Lo script è **incluso nel tarball** (`arfea-controller/script/migrate-to-controller.sh`):
+> se lo lanci dalla directory del repo/`script/` con il tarball accanto lo usa
+> direttamente, altrimenti lo rigenera al volo con `build-update-tarball.sh`.
+
 ---
 
 ## 5. Comandi Docker comuni
@@ -683,6 +743,7 @@ all'hardware:
 | File | Ruolo |
 |---|---|
 | [script/install.sh](script/install.sh) | Installer autonomo del controller (host già preparato) |
+| [script/migrate-to-controller.sh](script/migrate-to-controller.sh) | Migra una centralina esistente (docker-compose o OpenHAB nativo) → controller |
 | [script/build-update-tarball.sh](script/build-update-tarball.sh) | Genera `arfea-controller.tar.xz` |
 | [ota/releases.json](ota/releases.json) | Template manifest versioni certificate |
 | [migrations/README.md](migrations/README.md) | Contratto script di migrazione |
