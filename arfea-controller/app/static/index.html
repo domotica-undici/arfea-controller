@@ -46,6 +46,21 @@
     #app { display: none; }
     .spinner { display: inline-block; width: 16px; height: 16px; border: 2px solid #ccc; border-top-color: #2196f3; border-radius: 50%; animation: spin .6s linear infinite; margin-right: 8px; vertical-align: middle; }
     @keyframes spin { to { transform: rotate(360deg); } }
+    /* Progress bar per operazioni lunghe (backup, aggiornamenti) */
+    .progress { height: 8px; background: #e0e0e0; border-radius: 6px; overflow: hidden; margin: 10px 0 4px; }
+    .progress-bar { height: 100%; width: 0; background: #2196f3; border-radius: 6px; transition: width .4s ease; }
+    .progress-bar.done { background: #4caf50; }
+    .progress-bar.err { background: #f44336; }
+    .progress-track.indet { position: relative; }
+    .progress-track.indet .progress-bar { width: 40%; animation: indet 1.1s ease-in-out infinite; }
+    @keyframes indet { 0% { margin-left: -40%; } 100% { margin-left: 100%; } }
+    .dev-row { display: flex; align-items: center; justify-content: space-between; padding: 6px 8px; margin: 4px 0; border: 1px solid #eee; border-radius: 8px; font-size: 0.88em; }
+    .dev-row code { font-family: ui-monospace, Menlo, Consolas, monospace; font-size: 0.92em; word-break: break-all; }
+    .sel { display: block; width: 100%; padding: 10px; border: 1px solid #ddd; border-radius: 8px; font-size: 0.95em; margin: 6px 0; font-family: inherit; background: #fff; }
+    .hint { font-size: 0.8em; color: #888; margin: 4px 0 0; }
+    .chk-row { display: flex; align-items: center; padding: 8px; margin: 4px 0; border: 1px solid #ddd; border-radius: 8px; }
+    .chk-row input { margin-right: 10px; }
+    .chk-row code { font-family: ui-monospace, Menlo, Consolas, monospace; font-size: 0.85em; }
   </style>
 </head>
 <body>
@@ -69,6 +84,22 @@
       <div class="card">
         <h2>Servizi</h2>
         <div id="servicesList">Caricamento...</div>
+      </div>
+
+      <!-- Dispositivi (porte seriali) -->
+      <div class="card">
+        <h2>Dispositivi (porte seriali)</h2>
+        <p class="hint">Assegna le porte seriali dell'host (Modbus, Z-Wave, Zigbee, Thread) ai servizi. Non serve più configurarle nel file: si aggiungono qui.</p>
+        <select id="devService" class="sel" onchange="loadDevices()"></select>
+        <div id="devCurrent"></div>
+        <div style="display:flex; gap:6px; margin-top:8px; align-items:center">
+          <select id="devPort" class="sel" style="flex:2; margin:0"></select>
+          <input id="devTarget" class="sel" style="flex:1.2; margin:0" placeholder="target nel container">
+          <button class="btn btn-blue" style="padding:9px 14px; margin:0" onclick="addDevice()" title="Aggiungi">+</button>
+        </div>
+        <p class="hint">Sorgente = porta host (i nomi <code>by-id</code> sono stabili al riavvio). Target = come la vede il servizio (es. <code>/dev/ttyUSB0</code> per Modbus, <code>/dev/zwave</code>, <code>/dev/zigbee</code>).</p>
+        <div id="devProgress"></div>
+        <button class="btn btn-green btn-block" id="btnSaveDevices" onclick="saveDevices()" style="margin-top:8px">Salva e applica</button>
       </div>
 
       <!-- Rete -->
@@ -96,10 +127,22 @@
       <div class="card">
         <h2>Sistema</h2>
         <div id="systemInfo">Caricamento...</div>
+        <div id="updateProgress"></div>
         <div style="margin-top:12px">
           <button class="btn btn-orange btn-block" id="btnUpdate" onclick="confirmUpdate()">Aggiorna Controller</button>
           <button class="btn btn-red btn-block" onclick="confirmReboot()" style="margin-top:4px">Riavvia Sistema Operativo</button>
         </div>
+      </div>
+
+      <!-- Aggiornamento software (immagini certificate) -->
+      <div class="card">
+        <h2>Aggiornamento software</h2>
+        <div id="relStatus" class="status-bar status-idle">Premi &laquo;Controlla&raquo; per cercare versioni pi&ugrave; recenti.</div>
+        <div id="relDiff"></div>
+        <div id="relProgress"></div>
+        <button class="btn btn-blue btn-block" id="btnRelCheck" onclick="checkReleases()">Controlla aggiornamenti</button>
+        <button class="btn btn-green btn-block" id="btnRelApply" onclick="applyReleases()" style="display:none; margin-top:6px">Aggiorna selezionati</button>
+        <p class="hint">Puoi aggiornare un solo software: spunta solo quello (es. <b>openhab</b>) e premi &laquo;Aggiorna selezionati&raquo;. Prima dell'aggiornamento viene fatto un backup automatico.</p>
       </div>
 
       <!-- Telefono di emergenza (linphone) -->
@@ -197,6 +240,7 @@ function apiPutJson(path, body) {
 
 function refreshAll() {
   refreshServices();
+  refreshDeviceServices();
   refreshNetwork();
   refreshSystem();
   refreshBackupStatus();
@@ -274,19 +318,46 @@ function pollBackup() {
   }, 5000);
 }
 
+// Mappa stato backup -> percentuale (per la progress bar)
+var BACKUP_PCT = {
+  stopping_containers: 15, creating_archive: 45, uploading: 70,
+  restarting_containers: 90, completed: 100, failed: 100
+};
+
 function refreshBackupStatus() {
   return apiGet('/backup/status').then(function(status) {
     var el = document.getElementById('backupStatus');
     var cls = 'status-idle';
     var text = 'Nessun backup in corso';
+    var bar = '';
     if (status.state === 'idle') { cls = 'status-idle'; text = status.message || 'Pronto'; }
-    else if (status.state === 'completed') { cls = 'status-completed'; text = status.message; }
-    else if (status.state === 'failed') { cls = 'status-failed'; text = status.message; }
-    else { cls = 'status-running'; text = '<span class="spinner"></span>' + status.message; }
+    else if (status.state === 'completed') { cls = 'status-completed'; text = status.message; bar = progressHtml(100, 'done'); }
+    else if (status.state === 'failed') { cls = 'status-failed'; text = status.message; bar = progressHtml(100, 'err'); }
+    else { cls = 'status-running'; text = '<span class="spinner"></span>' + status.message; bar = progressHtml(BACKUP_PCT[status.state] || 30, ''); }
     el.className = 'status-bar ' + cls;
-    el.innerHTML = text;
+    el.innerHTML = text + bar;
     return status;
   });
+}
+
+// ── Progress bar helper ───────────────────────────────────
+
+function progressHtml(pct, kind) {
+  // kind: '' (blu), 'done' (verde), 'err' (rosso), 'indet' (indeterminata)
+  if (kind === 'indet') {
+    return '<div class="progress progress-track indet"><div class="progress-bar"></div></div>';
+  }
+  var w = Math.max(0, Math.min(100, pct));
+  return '<div class="progress"><div class="progress-bar ' + (kind || '') + '" style="width:' + w + '%"></div></div>';
+}
+
+function setProgress(elId, pct, kind) {
+  var el = document.getElementById(elId);
+  if (el) el.innerHTML = progressHtml(pct, kind);
+}
+function clearProgress(elId) {
+  var el = document.getElementById(elId);
+  if (el) el.innerHTML = '';
 }
 
 // ── Restore ───────────────────────────────────────────────
@@ -351,11 +422,14 @@ function runRestore() {
 // ── Update ────────────────────────────────────────────────
 
 function confirmUpdate() {
-  if (!confirm('Aggiornare arfea-controller?\n\nIl controller verrà ricostruito e riavviato.\nLa pagina si ricaricherà automaticamente.')) return;
-  document.getElementById('btnUpdate').disabled = true;
-  document.getElementById('btnUpdate').textContent = 'Aggiornamento in corso...';
+  if (!confirm('Aggiornare arfea-controller?\n\nSe il server ha una versione più recente, il controller verrà ricostruito e riavviato e la pagina si ricaricherà da sola.')) return;
+  var btn = document.getElementById('btnUpdate');
+  btn.disabled = true;
+  btn.textContent = 'Controllo aggiornamento...';
   apiPost('/system/update').then(function(r) {
     if (r.success) {
+      btn.textContent = 'Aggiornamento in corso...';
+      setProgress('updateProgress', 0, 'indet');
       // Aspetta il rebuild e riprova a caricare la pagina
       setTimeout(function pollReload() {
         fetch('/api/health').then(function(resp) {
@@ -364,10 +438,17 @@ function confirmUpdate() {
         }).catch(function() { setTimeout(pollReload, 5000); });
       }, 15000);
     } else {
-      alert('Errore: ' + r.message);
-      document.getElementById('btnUpdate').disabled = false;
-      document.getElementById('btnUpdate').textContent = 'Aggiorna Controller';
+      // Include i casi informativi "già aggiornato" e "niente downgrade": nessun errore.
+      alert(r.message || 'Nessun aggiornamento applicato');
+      clearProgress('updateProgress');
+      btn.disabled = false;
+      btn.textContent = 'Aggiorna Controller';
     }
+  }).catch(function() {
+    alert('Errore durante il controllo aggiornamento');
+    clearProgress('updateProgress');
+    btn.disabled = false;
+    btn.textContent = 'Aggiorna Controller';
   });
 }
 
@@ -439,6 +520,187 @@ function testCall() {
   }).finally(function() {
     btn.disabled = false; btn.textContent = 'Chiamata di prova';
   });
+}
+
+// ── Dispositivi (porte seriali) ───────────────────────────
+
+// Servizi che possono avere porte seriali mappate
+var DEV_CAPABLE = ['openhab', 'zwave-js-ui', 'zigbee2mqtt', 'otbr'];
+// Target di default suggerito per servizio (quando si aggiunge una porta)
+var DEV_DEFAULT_TARGET = { 'openhab': '/dev/ttyUSB0', 'zwave-js-ui': '/dev/zwave', 'zigbee2mqtt': '/dev/zigbee', 'otbr': '/dev/ttyACM0' };
+var devList = [];          // mapping "src:tgt" del servizio corrente
+var serialPorts = [];      // porte host rilevate
+
+function refreshDeviceServices() {
+  apiGet('/services').then(function(services) {
+    var sel = document.getElementById('devService');
+    var prev = sel.value;
+    var names = services.map(function(s) { return s.name; })
+      .filter(function(n) { return DEV_CAPABLE.indexOf(n) >= 0; });
+    sel.innerHTML = names.map(function(n) { return '<option value="' + n + '">' + n + '</option>'; }).join('');
+    if (names.length === 0) { document.getElementById('devCurrent').innerHTML = ''; return; }
+    if (prev && names.indexOf(prev) >= 0) sel.value = prev;
+    loadDevices();
+  });
+}
+
+function loadDevices() {
+  var svc = document.getElementById('devService').value;
+  if (!svc) return;
+  clearProgress('devProgress');
+  // Porte host disponibili
+  apiGet('/system/serial-devices').then(function(ports) {
+    serialPorts = ports || [];
+    var opts = '<option value="">— porta host —</option>';
+    serialPorts.forEach(function(p) {
+      var lbl = p.path + (p.resolved ? ' → ' + p.resolved : '') + (p.used_by ? ' (usata da ' + p.used_by + ')' : '');
+      opts += '<option value="' + p.path + '">' + lbl + '</option>';
+    });
+    // Consente anche l'inserimento manuale
+    opts += '<option value="__manual__">Inserisci a mano…</option>';
+    document.getElementById('devPort').innerHTML = opts;
+  });
+  document.getElementById('devTarget').value = DEV_DEFAULT_TARGET[svc] || '';
+  apiGet('/services/' + svc + '/devices').then(function(r) {
+    devList = (r.devices || []).slice();
+    renderDevices();
+  });
+}
+
+function renderDevices() {
+  var el = document.getElementById('devCurrent');
+  if (devList.length === 0) {
+    el.innerHTML = '<p class="hint">Nessuna porta assegnata.</p>';
+    return;
+  }
+  el.innerHTML = devList.map(function(d, i) {
+    return '<div class="dev-row"><code>' + d + '</code>' +
+      '<button class="btn btn-red" style="padding:3px 10px; font-size:0.8em; margin:0" onclick="removeDevice(' + i + ')">&times;</button></div>';
+  }).join('');
+}
+
+function addDevice() {
+  var portSel = document.getElementById('devPort');
+  var src = portSel.value;
+  var tgt = document.getElementById('devTarget').value.trim();
+  if (src === '__manual__') {
+    src = prompt('Percorso porta host (es. /dev/ttyUSB0 o /dev/serial/by-id/...):', '') || '';
+    src = src.trim();
+  }
+  if (!src) { alert('Seleziona o inserisci una porta host'); return; }
+  if (!tgt) tgt = src;
+  var mapping = src + ':' + tgt;
+  if (devList.indexOf(mapping) >= 0) { alert('Mapping già presente'); return; }
+  devList.push(mapping);
+  renderDevices();
+}
+
+function removeDevice(i) {
+  devList.splice(i, 1);
+  renderDevices();
+}
+
+function saveDevices() {
+  var svc = document.getElementById('devService').value;
+  if (!svc) return;
+  if (!confirm('Salvare i device di "' + svc + '" e riavviare il servizio per applicarli?')) return;
+  var btn = document.getElementById('btnSaveDevices');
+  btn.disabled = true; btn.textContent = 'Applico...';
+  setProgress('devProgress', 0, 'indet');
+  apiPutJson('/services/' + svc + '/devices', { devices: devList }).then(function(r) {
+    setProgress('devProgress', 100, r.success ? 'done' : 'err');
+    alert(r.message || (r.success ? 'Salvato' : 'Errore'));
+    setTimeout(function() { clearProgress('devProgress'); refreshServices(); }, 1500);
+  }).catch(function() {
+    setProgress('devProgress', 100, 'err');
+    alert('Errore nel salvataggio device');
+  }).finally(function() {
+    btn.disabled = false; btn.textContent = 'Salva e applica';
+  });
+}
+
+// ── Aggiornamento software (immagini certificate) ─────────
+
+var REL_PCT = {
+  backup: 10, migrating_pre: 25, pulling: 45, recreating: 70,
+  waiting_healthy: 80, migrating_post: 90, completed: 100, failed: 100, rolled_back: 100
+};
+var relPolling = null;
+
+function checkReleases() {
+  var btn = document.getElementById('btnRelCheck');
+  btn.disabled = true; btn.textContent = 'Controllo...';
+  document.getElementById('relDiff').innerHTML = '';
+  document.getElementById('btnRelApply').style.display = 'none';
+  apiGet('/system/releases/check').then(function(res) {
+    var st = document.getElementById('relStatus');
+    if (res.error) {
+      st.className = 'status-bar status-failed';
+      st.textContent = 'Errore: ' + res.error;
+      return;
+    }
+    if (!res.update_available) {
+      st.className = 'status-bar status-completed';
+      st.textContent = 'Tutto aggiornato' + (res.current_release ? ' (release ' + res.current_release + ')' : '') + '.';
+      return;
+    }
+    st.className = 'status-bar status-running';
+    st.innerHTML = 'Aggiornamento disponibile: <b>' + (res.current_release || 'n/d') + '</b> → <b>' + res.latest_release + '</b>';
+    var html = '';
+    res.services.forEach(function(s) {
+      html += '<label class="chk-row"><input type="checkbox" class="relchk" value="' + s.name + '" checked>' +
+        '<span><b>' + s.name + '</b><br><code>' + s.current_image + '</code> → <code>' + s.target_image + '</code></span></label>';
+    });
+    if (res.notes) html += '<p class="hint">' + res.notes.replace(/</g, '&lt;') + '</p>';
+    document.getElementById('relDiff').innerHTML = html;
+    document.getElementById('btnRelApply').style.display = 'block';
+  }).catch(function() {
+    var st = document.getElementById('relStatus');
+    st.className = 'status-bar status-failed';
+    st.textContent = 'Controllo aggiornamenti fallito';
+  }).finally(function() {
+    btn.disabled = false; btn.textContent = 'Controlla aggiornamenti';
+  });
+}
+
+function applyReleases() {
+  var checks = Array.prototype.slice.call(document.querySelectorAll('.relchk:checked'));
+  var services = checks.map(function(c) { return c.value; });
+  if (services.length === 0) { alert('Seleziona almeno un software da aggiornare'); return; }
+  if (!confirm('Aggiornare: ' + services.join(', ') + '?\n\nVerrà eseguito un backup e poi il riavvio dei servizi aggiornati.')) return;
+  var btn = document.getElementById('btnRelApply');
+  btn.disabled = true; btn.textContent = 'Aggiornamento avviato...';
+  document.getElementById('btnRelCheck').disabled = true;
+  apiPost('/system/releases/apply?services=' + encodeURIComponent(services.join(','))).then(function(r) {
+    if (!r.success) {
+      alert(r.message || 'Impossibile avviare l\'aggiornamento');
+      btn.disabled = false; btn.textContent = 'Aggiorna selezionati';
+      document.getElementById('btnRelCheck').disabled = false;
+      return;
+    }
+    pollReleaseStatus();
+  });
+}
+
+function pollReleaseStatus() {
+  if (relPolling) clearInterval(relPolling);
+  relPolling = setInterval(function() {
+    apiGet('/system/releases/status').then(function(s) {
+      var st = document.getElementById('relStatus');
+      var terminal = (s.state === 'completed' || s.state === 'failed' || s.state === 'rolled_back' || s.state === 'idle');
+      var kind = s.state === 'completed' ? 'done' : (s.state === 'failed' || s.state === 'rolled_back') ? 'err' : '';
+      st.className = 'status-bar ' + (s.state === 'completed' ? 'status-completed' : (s.state === 'failed' || s.state === 'rolled_back') ? 'status-failed' : 'status-running');
+      st.innerHTML = (terminal ? '' : '<span class="spinner"></span>') + (s.message || s.state) + (s.step ? ' [' + s.step + ']' : '');
+      setProgress('relProgress', REL_PCT[s.state] || 5, kind);
+      if (terminal) {
+        clearInterval(relPolling); relPolling = null;
+        document.getElementById('btnRelApply').style.display = 'none';
+        document.getElementById('btnRelCheck').disabled = false;
+        document.getElementById('btnRelCheck').textContent = 'Controlla aggiornamenti';
+        refreshServices();
+      }
+    });
+  }, 4000);
 }
 
 // Auto-refresh every 60s

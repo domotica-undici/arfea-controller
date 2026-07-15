@@ -425,6 +425,88 @@ class DockerManager:
             time.sleep(5)
         return False
 
+    # ------------------------------------------------------------------
+    # Porte seriali dell'host (per la gestione device dalla Web UI)
+    # ------------------------------------------------------------------
+
+    def list_host_serial_devices(self) -> list[dict]:
+        """Enumera le porte seriali presenti sull'host, come sorgenti per un mapping.
+
+        Il controller gira con ``pid: host``, quindi ``/proc/1/root`` è il
+        filesystem dell'host: /proc/1/root/dev è la sua /dev reale (non quella
+        del container). Preferiamo i nomi stabili in /dev/serial/by-id/ (non
+        cambiano al riavvio), aggiungendo i /dev/ttyUSB* /dev/ttyACM* /dev/ttyAML*
+        non ancora coperti da un by-id. Segnala anche quali porte sono già mappate
+        da un servizio in arfea.yml (used_by)."""
+        # /proc/1/root = host rootfs (pid:host); fallback a / se non accessibile.
+        # NB: is_dir() su /proc/1/root/dev SOLLEVA PermissionError (non ritorna
+        # False) se non abbiamo i privilegi: va intercettato, altrimenti l'endpoint
+        # va in 500 invece di degradare.
+        def _dir_ok(p: Path) -> bool:
+            try:
+                return p.is_dir()
+            except OSError:
+                return False
+
+        roots = [Path("/proc/1/root"), Path("/")]
+        host_root = next((r for r in roots if _dir_ok(r / "dev")), Path("/"))
+        dev = host_root / "dev"
+
+        # Porte già mappate → per marcarle "used_by"
+        used: dict[str, str] = {}
+        for sname, svc in self.cfg.config.services.items():
+            for d in svc.devices:
+                src = d.split(":", 1)[0]
+                used[src] = sname
+                real = self._realpath(host_root, src)
+                if real:
+                    used.setdefault(real, sname)
+
+        found: dict[str, dict] = {}
+
+        by_id = dev / "serial" / "by-id"
+        if _dir_ok(by_id):
+            try:
+                links = sorted(by_id.iterdir())
+            except OSError:
+                links = []
+            for link in links:
+                path = f"/dev/serial/by-id/{link.name}"
+                resolved = self._realpath(host_root, path)
+                found[path] = {
+                    "path": path,
+                    "resolved": resolved,
+                    "used_by": used.get(path) or (used.get(resolved, "") if resolved else ""),
+                }
+
+        # tty grezzi non ancora rappresentati da un by-id (stesso target)
+        resolved_targets = {v["resolved"] for v in found.values() if v["resolved"]}
+        for pattern in ("ttyUSB*", "ttyACM*", "ttyAML*"):
+            try:
+                nodes = sorted(dev.glob(pattern))
+            except OSError:
+                nodes = []
+            for node in nodes:
+                path = f"/dev/{node.name}"
+                if path in resolved_targets or path in found:
+                    continue
+                found[path] = {"path": path, "resolved": "", "used_by": used.get(path, "")}
+
+        return list(found.values())
+
+    @staticmethod
+    def _realpath(host_root: Path, dev_path: str) -> str:
+        """Risolve un symlink di /dev sull'host restituendo un path /dev/... assoluto."""
+        try:
+            target = os.path.realpath(str(host_root / dev_path.lstrip("/")))
+        except OSError:
+            return ""
+        # target è nello spazio di host_root: riportalo a /dev/...
+        hr = str(host_root)
+        if hr != "/" and target.startswith(hr):
+            target = target[len(hr):] or "/"
+        return target if target.startswith("/dev/") else ""
+
     def _build_run_kwargs(self, name: str, svc: ServiceDefinition) -> dict:
         kwargs: dict = {
             "image": svc.image,

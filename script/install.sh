@@ -39,6 +39,14 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_DIR="$(dirname "$SCRIPT_DIR")"
 
+# Default privati (OTA + WebDAV di domoticaundici). Presente solo nella repo
+# privata: export-public.sh lo esclude, quindi nella repo pubblica non c'è e
+# l'installer ricade su prompt/vuoto. Definisce le variabili ARFEA_*_DEFAULT.
+if [[ -f "$SCRIPT_DIR/arfea-defaults.env" ]]; then
+  # shellcheck disable=SC1091
+  source "$SCRIPT_DIR/arfea-defaults.env"
+fi
+
 DATA_PATH="${ARFEA_DATA_PATH:-/opt/docker_store}"
 CTRL_DIR="$DATA_PATH/arfea-controller"
 OH_UID=9001
@@ -48,14 +56,15 @@ OH_ADMIN_USER="admin"
 log() { echo "$(date +%F_%T) [install] $*"; }
 die() { echo "ERRORE: $*" >&2; exit 1; }
 
-# Variabili di configurazione (default; sovrascrivibili da env o prompt)
+# Variabili di configurazione (default; sovrascrivibili da env o prompt).
+# Precedenza: env ARFEA_* > default privati (arfea-defaults.env) > vuoto.
 ARFEA_API_KEY="${ARFEA_API_KEY:-}"
 ARFEA_SERVICES="${ARFEA_SERVICES:-}"
-ARFEA_UPDATE_URL="${ARFEA_UPDATE_URL:-}"
-ARFEA_RELEASES_URL="${ARFEA_RELEASES_URL:-}"
-ARFEA_WEBDAV_URL="${ARFEA_WEBDAV_URL:-}"
-ARFEA_WEBDAV_USER="${ARFEA_WEBDAV_USER:-}"
-ARFEA_WEBDAV_PASS="${ARFEA_WEBDAV_PASS:-}"
+ARFEA_UPDATE_URL="${ARFEA_UPDATE_URL:-${ARFEA_UPDATE_URL_DEFAULT:-}}"
+ARFEA_RELEASES_URL="${ARFEA_RELEASES_URL:-${ARFEA_RELEASES_URL_DEFAULT:-}}"
+ARFEA_WEBDAV_URL="${ARFEA_WEBDAV_URL:-${ARFEA_WEBDAV_URL_DEFAULT:-}}"
+ARFEA_WEBDAV_USER="${ARFEA_WEBDAV_USER:-${ARFEA_WEBDAV_USER_DEFAULT:-}}"
+ARFEA_WEBDAV_PASS="${ARFEA_WEBDAV_PASS:-${ARFEA_WEBDAV_PASS_DEFAULT:-}}"
 ARFEA_ZWAVE_DEVICE="${ARFEA_ZWAVE_DEVICE:-}"
 ARFEA_ZIGBEE_DEVICE="${ARFEA_ZIGBEE_DEVICE:-}"
 ARFEA_MODBUS_DEVICE="${ARFEA_MODBUS_DEVICE:-}"
@@ -120,7 +129,7 @@ configure() {
     $INSTALL_ZWAVE  && [[ -z "$ARFEA_ZWAVE_DEVICE"  ]] && read -r -p "Device Z-Wave (es. /dev/ttyACM0): " ARFEA_ZWAVE_DEVICE
     $INSTALL_ZIGBEE && [[ -z "$ARFEA_ZIGBEE_DEVICE" ]] && read -r -p "Device Zigbee (es. /dev/serial/by-id/...): " ARFEA_ZIGBEE_DEVICE
     $INSTALL_OTBR   && [[ -z "$ARFEA_OTBR_DEVICE"   ]] && read -r -p "Device Thread OTBR (es. /dev/ttyACM0): " ARFEA_OTBR_DEVICE
-    [[ -n "$ARFEA_OPENHAB_DEVICES" ]] || read -r -p "Porte seriali aggiuntive per OpenHAB (csv src:tgt, vuoto=nessuna): " ARFEA_OPENHAB_DEVICES
+    [[ -n "$ARFEA_OPENHAB_DEVICES" ]] || read -r -p "Porte seriali OpenHAB (csv src:tgt, vuoto = aggiungile poi dall'interfaccia): " ARFEA_OPENHAB_DEVICES
   else
     [[ -n "$ARFEA_API_KEY" ]] || ARFEA_API_KEY=$(openssl rand -hex 16)
     parse_services_csv "$ARFEA_SERVICES"
@@ -130,6 +139,9 @@ configure() {
     ARFEA_OTBR_INFRA_IF=$(ip -o -4 route show default 2>/dev/null | awk '{print $5}' | head -1)
   fi
   log "config: servizi=[habapp=$INSTALL_HABAPP zwave=$INSTALL_ZWAVE zigbee=$INSTALL_ZIGBEE nodered=$INSTALL_NODERED otbr=$INSTALL_OTBR]"
+  log "config: OTA=$([[ -n "$ARFEA_UPDATE_URL" ]] && echo "$ARFEA_UPDATE_URL" || echo "disattivato")"
+  # Le credenziali WebDAV non vanno mai stampate: solo se sono impostate o no.
+  log "config: backup WebDAV=$([[ -n "$ARFEA_WEBDAV_URL" ]] && echo "configurato" || echo "non configurato")"
 }
 
 # ── Deploy: build del tarball (stesso layout dell'OTA) ed estrazione ─────────
@@ -186,28 +198,47 @@ yml_scalar() { # key value file  → sostituisce la riga "  key: ..." (indent 2)
 enable_service() { # service file
   awk -v svc="  ${1}:" '$0==svc{i=1} i&&/enabled:/{sub(/false/,"true");i=0} {print}' "$2" > "$2.t" && mv "$2.t" "$2"
 }
-add_openhab_devices() { # csv("src:tgt[:mode]",...) file
-  local csv="$1" f="$2"
+add_devices_to_service() { # svc csv("src:tgt[:mode]",...) file
+  local svc="$1" csv="$2" f="$3"
   [[ -n "$csv" ]] || return 0
-  # Aggiunge le voci alla lista devices: del SOLO servizio openhab (dopo la
-  # riga "    devices:"). Il blocco openhab è delimitato dalle chiavi-servizio
-  # a 2 spazi; nel template ha già una voce (Modbus), a cui accodiamo le altre.
-  awk -v csv="$csv" '
+  # Inserisce/accoda i mapping device nel blocco del servizio indicato. Il blocco
+  # è delimitato dalle chiavi-servizio a 2 spazi. Se il servizio ha già "    devices:"
+  # accoda le voci; altrimenti crea il blocco appena prima della fine (prossima
+  # chiave-servizio o EOF). Serve perché openhab nel template NON ha più device.
+  awk -v svc="$svc" -v csv="$csv" '
     function emit(   n,a,i,e){ n=split(csv,a,","); for(i=1;i<=n;i++){e=a[i]; gsub(/ /,"",e); if(e!="") print "      - \"" e "\"" } }
-    /^  openhab:[[:space:]]*$/ { inoh=1 }
-    inoh && /^  [A-Za-z0-9_-]+:[[:space:]]*$/ && $0 !~ /^  openhab:/ { inoh=0 }
+    $0 ~ "^  " svc ":[[:space:]]*$" { inblk=1; print; next }
+    inblk && /^  [A-Za-z0-9_-]+:[[:space:]]*$/ { if(!done){ print "    devices:"; emit(); done=1 } inblk=0 }
+    inblk && /^    devices:[[:space:]]*$/ { print; if(!done){ emit(); done=1 } next }
     { print }
-    inoh && /^    devices:[[:space:]]*$/ && !ins { emit(); ins=1 }
+    END { if(inblk && !done){ print "    devices:"; emit() } }
   ' "$f" > "$f.t" && mv "$f.t" "$f"
+}
+
+configure_openhab_devices() { # file  — costruisce la lista device openhab da env
+  local f="$1"; local list=()
+  # Modbus RTU: mappato al target convenzionale /dev/ttyUSB0 (env-only)
+  [[ -n "$ARFEA_MODBUS_DEVICE" ]] && list+=("${ARFEA_MODBUS_DEVICE}:/dev/ttyUSB0")
+  # Porte aggiuntive "src:tgt[:mode]" separate da virgola
+  if [[ -n "$ARFEA_OPENHAB_DEVICES" ]]; then
+    local IFS=','; local extra; read -ra extra <<< "$ARFEA_OPENHAB_DEVICES"
+    local e
+    for e in "${extra[@]}"; do e="${e// /}"; [[ -n "$e" ]] && list+=("$e"); done
+  fi
+  [[ ${#list[@]} -gt 0 ]] || return 0
+  local csv; local IFS=','; csv="${list[*]}"
+  add_devices_to_service openhab "$csv" "$f"
 }
 
 configure_yml() {
   local YML="$CTRL_DIR/config/arfea.yml"
   [[ -f "$YML" ]] || die "arfea.yml non trovato dopo l'estrazione."
 
-  yml_scalar api_key      "$ARFEA_API_KEY"      "$YML"
-  yml_scalar update_url   "$ARFEA_UPDATE_URL"   "$YML"
-  yml_scalar releases_url "$ARFEA_RELEASES_URL" "$YML"
+  yml_scalar api_key "$ARFEA_API_KEY" "$YML"
+  # OTA: scrivi solo se valorizzati, altrimenti lascia il valore del template
+  # (nella repo pubblica è un placeholder; nella privata l'URL reale).
+  [[ -n "$ARFEA_UPDATE_URL"   ]] && yml_scalar update_url   "$ARFEA_UPDATE_URL"   "$YML"
+  [[ -n "$ARFEA_RELEASES_URL" ]] && yml_scalar releases_url "$ARFEA_RELEASES_URL" "$YML"
   if [[ -n "$ARFEA_WEBDAV_URL" ]]; then
     yml_scalar webdav_url      "$ARFEA_WEBDAV_URL"  "$YML"
     yml_scalar webdav_user     "$ARFEA_WEBDAV_USER" "$YML"
@@ -222,8 +253,9 @@ configure_yml() {
 
   [[ -n "$ARFEA_ZWAVE_DEVICE"  ]] && sed -i "s|/dev/ttyACM0:/dev/zwave|${ARFEA_ZWAVE_DEVICE}:/dev/zwave|" "$YML"
   [[ -n "$ARFEA_ZIGBEE_DEVICE" ]] && sed -i "s|/dev/serial/by-id/usb-ITEAD_SONOFF_Zigbee_3.0_USB_Dongle_Plus_V2_20231031184237-if00:/dev/zigbee|${ARFEA_ZIGBEE_DEVICE}:/dev/zigbee|" "$YML"
-  [[ -n "$ARFEA_MODBUS_DEVICE" ]] && sed -i "s|/dev/ttyUSB0:/dev/ttyUSB0|${ARFEA_MODBUS_DEVICE}:/dev/ttyUSB0|" "$YML"
-  [[ -n "$ARFEA_OPENHAB_DEVICES" ]] && add_openhab_devices "$ARFEA_OPENHAB_DEVICES" "$YML"
+  # openhab: nessun device nel template — costruiamo il blocco da Modbus + extra
+  # (in mancanza, si aggiungono poi dalla Web UI: Servizi → Dispositivi).
+  configure_openhab_devices "$YML"
   if $INSTALL_OTBR; then
     [[ -n "$ARFEA_OTBR_DEVICE" && "$ARFEA_OTBR_DEVICE" != "/dev/ttyACM0" ]] \
       && sed -i "s|\"/dev/ttyACM0:/dev/ttyACM0\"|\"${ARFEA_OTBR_DEVICE}:/dev/ttyACM0\"|" "$YML"

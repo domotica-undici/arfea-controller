@@ -14,9 +14,11 @@ controller:
   # Manifest delle versioni immagine certificate (openhab/habapp/...).
   # Vuoto = funzione disattivata. Distinto da update_url (codice controller).
   releases_url: "https://YOUR-SERVER.example.com/ota/releases.json"
-  # Release certificata a cui questa centralina è allineata. La imposta lo script
-  # di setup alla prima installazione e l'apply degli aggiornamenti la fa avanzare.
-  release: "2026.06"
+  # Release certificata a cui questa centralina è allineata. Lasciare VUOTO: il
+  # controller la DEDUCE dai tag immagine presenti qui sotto confrontandoli col
+  # manifest releases.json (evita un marker hardcoded che diverge dalla realtà).
+  # L'apply di un aggiornamento la fa avanzare a quella applicata.
+  release: ""
 
 network:
   name: domotica
@@ -69,8 +71,10 @@ services:
       - NET_RAW
     group_add:
       - "20"            # gruppo dialout (host) per accesso a /dev/ttyUSB* / /dev/ttyACM*
-    devices:
-      - "/dev/ttyUSB0:/dev/ttyUSB0"   # Modbus RTU (monitor energia, split Daikin)
+    # Le porte seriali (Modbus RTU, ecc.) NON sono pre-configurate qui: si
+    # aggiungono dalla Web UI (Servizi → Dispositivi) o via installer
+    # (ARFEA_MODBUS_DEVICE / ARFEA_OPENHAB_DEVICES). Il controller salta i device
+    # host assenti, così openhab parte comunque anche senza seriale collegata.
     volumes:
       - /etc/localtime:/etc/localtime:ro
       - /etc/timezone:/etc/timezone:ro
@@ -82,7 +86,7 @@ services:
       - /run/dbus:/run/dbus:ro    # BLE per commissioning Matter
     environment:
       CRYPTO_POLICY: "unlimited"
-      EXTRA_JAVA_OPTS: "-Duser.timezone=Europe/Rome -Djna.nosys=true -Dgnu.io.rxtx.SerialPorts=/dev/ttyUSB0"
+      EXTRA_JAVA_OPTS: "-Duser.timezone=Europe/Rome -Djna.nosys=true"
       OPENHAB_HTTP_PORT: "8080"
       OPENHAB_HTTPS_PORT: "8443"
       USER_ID: "9001"

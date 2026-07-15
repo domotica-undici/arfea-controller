@@ -133,6 +133,23 @@ class ConfigManager:
         self.config.controller.release = release
         self._save()
 
+    def set_service_devices(self, name: str, devices: list[str]) -> list[str]:
+        """Scrittura CHIRURGICA della lista ``devices`` di un servizio in arfea.yml.
+
+        Permette di gestire le porte seriali (Modbus/Z-Wave/Zigbee/Thread) dalla
+        Web UI invece di pre-configurarle nel template. Normalizza le voci
+        (trim, scarta i vuoti) e persiste solo se qualcosa è cambiato. Ritorna la
+        lista effettivamente salvata."""
+        svc = self.config.services.get(name)
+        if svc is None:
+            raise KeyError(f"Service '{name}' not found in configuration")
+        cleaned = [d.strip() for d in devices if d and d.strip()]
+        if svc.devices != cleaned:
+            svc.devices = cleaned
+            self._save()
+            logger.info("Device di '%s' aggiornati in arfea.yml: %s", name, cleaned)
+        return cleaned
+
     def ensure_release_schema(self) -> bool:
         """Auto-migrazione: inietta releases_url in un arfea.yml che ne è sprovvisto.
 

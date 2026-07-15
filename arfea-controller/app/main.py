@@ -31,6 +31,8 @@ from .models import (
     OperationResponse,
     ReleaseCheckResult,
     ReleaseUpdateStatus,
+    SerialDevice,
+    ServiceDevicesUpdate,
     ServiceStatus,
     SystemInfo,
 )
@@ -51,7 +53,14 @@ logger = logging.getLogger(__name__)
 #   1.4.1  FIX avvio: i device host assenti (es. /dev/ttyUSB0 su centralina senza
 #          modbus) vengono saltati con warning invece di lasciare il container in
 #          stato "created" senza log; openhab parte anche senza seriale collegata
-VERSION = "1.4.1"
+#   1.5.0  gestione porte seriali (device) dalla Web UI: endpoint devices +
+#          rilevamento porte host (/proc/1/root/dev); UI per aggiungere/togliere
+#          device e ricreare il servizio. Aggiornamento immagini (release) dalla
+#          UI con selezione per-servizio (es. solo openhab) e progress bar.
+#          FIX OTA anti-downgrade: startup e "Aggiorna controller" confrontano la
+#          VERSION del tarball con quella in esecuzione (niente più downgrade a un
+#          tarball più vecchio/diverso su una install appena fatta).
+VERSION = "1.5.0"
 
 # -- Globals initialised at startup -----------------------------------------
 
@@ -278,6 +287,51 @@ def recreate_service(name: str):
     return docker_manager.create_and_start(name)
 
 
+@app.get("/api/services/{name}/devices", dependencies=[Depends(verify_api_key)])
+def get_service_devices(name: str):
+    """Ritorna i mapping device (porte seriali) configurati per il servizio."""
+    svc = config_manager.config.services.get(name)
+    if svc is None:
+        raise HTTPException(404, f"Service '{name}' not found")
+    return {"name": name, "devices": svc.devices}
+
+
+@app.put("/api/services/{name}/devices", response_model=OperationResponse, dependencies=[Depends(verify_api_key)])
+def set_service_devices(name: str, body: ServiceDevicesUpdate):
+    """Aggiorna i device del servizio in arfea.yml e lo ricrea per applicarli.
+
+    Sostituisce la pre-configurazione nel template: le porte seriali si
+    gestiscono da qui. Il servizio va RICREATO (non solo riavviato) perché i
+    device sono fissati alla creazione del container."""
+    if name not in config_manager.config.services:
+        raise HTTPException(404, f"Service '{name}' not found")
+    try:
+        saved = config_manager.set_service_devices(name, body.devices)
+    except KeyError:
+        raise HTTPException(404, f"Service '{name}' not found")
+
+    status = docker_manager.get_service_status(name)
+    if status.state.value == "running":
+        docker_manager.stop_service(name)
+        res = docker_manager.create_and_start(name)
+        return OperationResponse(
+            success=res.success,
+            message=f"Device salvati ({len(saved)}); '{name}': {res.message}",
+            details={"devices": saved},
+        )
+    return OperationResponse(
+        success=True,
+        message=f"Device salvati ({len(saved)}); si applicheranno all'avvio di '{name}'",
+        details={"devices": saved},
+    )
+
+
+@app.get("/api/system/serial-devices", response_model=list[SerialDevice], dependencies=[Depends(verify_api_key)])
+def list_serial_devices():
+    """Elenca le porte seriali rilevate sull'host (sorgenti per un mapping device)."""
+    return docker_manager.list_host_serial_devices()
+
+
 @app.put("/api/services/{name}/enable", response_model=OperationResponse, dependencies=[Depends(verify_api_key)])
 def enable_service(name: str):
     try:
@@ -467,6 +521,41 @@ def _compute_file_hash(path: Path) -> str:
         for chunk in iter(lambda: f.read(65536), b""):
             h.update(chunk)
     return h.hexdigest()
+
+
+def _tarball_version(tarball: Path) -> str:
+    """Estrae la VERSION del controller da un tarball OTA (arfea-controller.tar.xz).
+
+    Legge la riga ``VERSION = "x.y.z"`` da arfea-controller/app/main.py DENTRO il
+    tarball, senza estrarlo. Ritorna "" se non determinabile."""
+    import re
+    try:
+        with tarfile.open(tarball, "r:xz") as tar:
+            member = next(
+                (m for m in tar.getmembers() if m.name.endswith("app/main.py")),
+                None,
+            )
+            if member is None:
+                return ""
+            fobj = tar.extractfile(member)
+            if fobj is None:
+                return ""
+            for raw in fobj.read().decode("utf-8", "replace").splitlines():
+                m = re.match(r'\s*VERSION\s*=\s*"([^"]+)"', raw)
+                if m:
+                    return m.group(1)
+    except Exception as exc:
+        logger.warning("Lettura VERSION dal tarball fallita: %s", exc)
+    return ""
+
+
+def _version_tuple(v: str) -> tuple[int, ...]:
+    """Converte 'x.y.z' in tuple di interi per confronto (componenti non numerici -> 0)."""
+    out = []
+    for p in v.split("."):
+        num = "".join(ch for ch in p if ch.isdigit())
+        out.append(int(num) if num else 0)
+    return tuple(out)
 
 
 def _get_hash_file() -> Path:
@@ -782,6 +871,22 @@ def _check_startup_update() -> bool:
             _UPDATE_TARBALL.unlink(missing_ok=True)
             return False
 
+        # Anti-downgrade: applichiamo solo se il tarball è una versione PIÙ RECENTE
+        # di quella in esecuzione. Senza questo, una install appena fatta (build dal
+        # sorgente) verrebbe sovrascritta al primo avvio dal tarball del server
+        # anche se più vecchio/diverso — è esattamente il "torna a 1.4.0" osservato.
+        # Registriamo comunque l'hash: così questo stesso tarball non viene più
+        # rivalutato ad ogni boot (un tarball NUOVO avrà hash diverso e ripasserà).
+        tarball_ver = _tarball_version(_UPDATE_TARBALL)
+        if tarball_ver and _version_tuple(tarball_ver) <= _version_tuple(VERSION):
+            logger.info(
+                "Tarball OTA versione %s <= versione in esecuzione %s: nessun "
+                "aggiornamento (niente downgrade).", tarball_ver, VERSION,
+            )
+            hash_file.write_text(new_hash)
+            _UPDATE_TARBALL.unlink(missing_ok=True)
+            return False
+
         # Pre-flight: senza CAP_SYS_ADMIN, _trigger_rebuild fallirebbe.
         # Meglio non applicare l'update e proseguire con lo startup normale.
         if not _nsenter_available():
@@ -808,24 +913,13 @@ def _check_startup_update() -> bool:
         return False
 
 
-def _do_self_update(update_url: str) -> None:
-    """Background task: download, extract, rebuild and restart."""
+def _do_self_update() -> None:
+    """Background task: estrae il tarball GIÀ scaricato/verificato, rebuild e restart."""
     global _update_in_progress
     try:
         dest = Path(config_manager.config.controller.data_path) / "arfea-controller"
-
-        logger.info("Update: download da %s", update_url)
-        subprocess.run(
-            ["curl", "-fsSL", "-o", str(_UPDATE_TARBALL), update_url],
-            check=True, timeout=120,
-        )
-
-        # Salva hash per evitare re-apply all'avvio successivo
-        _get_hash_file().write_text(_compute_file_hash(_UPDATE_TARBALL))
-
         logger.info("Update: estrazione e installazione...")
         _extract_and_install(_UPDATE_TARBALL, dest)
-
         logger.info("Update: rebuild e restart...")
         _trigger_rebuild()
         logger.info("Update: rebuild avviato, il controller si riavvierà a breve")
@@ -845,9 +939,44 @@ async def self_update(background_tasks: BackgroundTasks):
     if not update_url:
         raise HTTPException(400, "update_url non configurato in arfea.yml")
 
+    if not _nsenter_available():
+        raise HTTPException(
+            503, "Aggiornamento non possibile: nsenter non disponibile (manca CAP_SYS_ADMIN)."
+        )
+
+    # Scarichiamo subito (tarball di poche decine di KB) per poter confrontare la
+    # versione e dare un esito immediato invece di un rebuild "cieco".
+    try:
+        subprocess.run(
+            ["curl", "-fsSL", "-o", str(_UPDATE_TARBALL), update_url],
+            check=True, capture_output=True, timeout=60,
+        )
+    except (subprocess.CalledProcessError, subprocess.TimeoutExpired) as exc:
+        _UPDATE_TARBALL.unlink(missing_ok=True)
+        return OperationResponse(success=False, message=f"Download aggiornamento fallito: {exc}")
+
+    # Anti-downgrade anche sull'update manuale: mai tornare a una versione più
+    # vecchia; se è identica non c'è nulla da fare.
+    tarball_ver = _tarball_version(_UPDATE_TARBALL)
+    if tarball_ver and _version_tuple(tarball_ver) < _version_tuple(VERSION):
+        _UPDATE_TARBALL.unlink(missing_ok=True)
+        return OperationResponse(
+            success=False,
+            message=(
+                f"Il server offre una versione più vecchia ({tarball_ver}) di quella in "
+                f"esecuzione ({VERSION}): aggiornamento annullato per evitare un downgrade."
+            ),
+        )
+    if tarball_ver and _version_tuple(tarball_ver) == _version_tuple(VERSION):
+        _get_hash_file().write_text(_compute_file_hash(_UPDATE_TARBALL))
+        _UPDATE_TARBALL.unlink(missing_ok=True)
+        return OperationResponse(success=False, message=f"Già aggiornato alla versione {VERSION}.")
+
+    _get_hash_file().write_text(_compute_file_hash(_UPDATE_TARBALL))
     _update_in_progress = True
-    background_tasks.add_task(_do_self_update, update_url)
-    return OperationResponse(success=True, message="Aggiornamento avviato, il controller si riavvierà")
+    background_tasks.add_task(_do_self_update)
+    target = f" alla {tarball_ver}" if tarball_ver else ""
+    return OperationResponse(success=True, message=f"Aggiornamento{target} avviato, il controller si riavvierà")
 
 
 # ---------------------------------------------------------------------------
@@ -999,6 +1128,26 @@ async def linphone_call(
 async def run_backup(background_tasks: BackgroundTasks):
     background_tasks.add_task(backup_manager.run_backup)
     return OperationResponse(success=True, message="Backup started")
+
+
+@app.get("/api/backup/config", dependencies=[Depends(verify_api_key)])
+def get_backup_config():
+    """Stato della destinazione backup. Non espone MAI le credenziali WebDAV:
+    ritorna solo se sono configurate e l'host di destinazione (senza token)."""
+    b = config_manager.config.backup
+    def _is_set(v: str) -> bool:
+        return bool(v) and not v.startswith("CAMBIARE")
+    host = ""
+    if _is_set(b.webdav_url):
+        try:
+            from urllib.parse import urlparse
+            host = urlparse(b.webdav_url).hostname or ""
+        except Exception:
+            host = ""
+    return {
+        "configured": _is_set(b.webdav_url) and _is_set(b.webdav_user) and _is_set(b.webdav_password),
+        "host": host,
+    }
 
 
 @app.get("/api/backup/status", response_model=BackupStatus, dependencies=[Depends(verify_api_key)])

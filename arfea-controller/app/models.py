@@ -87,6 +87,22 @@ class LinphoneConfig(BaseModel):
     repeat: int = 2          # quante volte ripetere il messaggio durante la chiamata
 
 
+class ServiceDevicesUpdate(BaseModel):
+    """Body per aggiornare i device (porte seriali) di un servizio dalla UI.
+
+    Ogni voce è un mapping Docker ``host[:container[:perms]]``, es.
+    ``/dev/serial/by-id/usb-XYZ:/dev/ttyUSB0``.
+    """
+    devices: list[str] = Field(default_factory=list)
+
+
+class SerialDevice(BaseModel):
+    """Porta seriale rilevata sull'host, proposta come sorgente per un mapping."""
+    path: str                       # es. /dev/serial/by-id/usb-... oppure /dev/ttyUSB0
+    resolved: str = ""              # target del symlink, se il path è un by-id
+    used_by: str = ""               # servizio che già mappa questa porta, se presente
+
+
 class LinphoneConfigUpdate(BaseModel):
     """Body parziale per aggiornare la configurazione linphone (campi opzionali)."""
     enabled: Optional[bool] = None
@@ -213,5 +229,5 @@ class ReleaseCheckResult(BaseModel):
 
 class SystemInfo(BaseModel):
     hostname: str = ""
-    version: str = "1.4.0"
+    version: str = "1.5.0"
     uptime: str = ""
