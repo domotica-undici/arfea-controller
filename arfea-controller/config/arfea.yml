@@ -60,7 +60,7 @@ services:
   openhab:
     enabled: true
     core: true
-    image: "openhab/openhab:5.1.4"
+    image: "openhab/openhab:5.2.0"
     container_name: openhab
     restart_policy: unless-stopped
     network_mode: host

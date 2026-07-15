@@ -48,7 +48,10 @@ logger = logging.getLogger(__name__)
 #   1.4.0  conferma aggiornamento software-per-software; reimport widget UI via OTA;
 #          auto-migrazione arfea.yml (releases_url); FIX anti-downgrade: un container
 #          che gira ma non ancora healthy non innesca più il rollback (niente downgrade)
-VERSION = "1.4.0"
+#   1.4.1  FIX avvio: i device host assenti (es. /dev/ttyUSB0 su centralina senza
+#          modbus) vengono saltati con warning invece di lasciare il container in
+#          stato "created" senza log; openhab parte anche senza seriale collegata
+VERSION = "1.4.1"
 
 # -- Globals initialised at startup -----------------------------------------
 

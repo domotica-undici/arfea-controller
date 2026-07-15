@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import os
 import time
 from pathlib import Path
 from typing import Optional
@@ -459,9 +460,21 @@ class DockerManager:
         if svc.environment:
             kwargs["environment"] = svc.environment
 
-        # Devices
+        # Devices — salta quelli il cui nodo host non esiste. Docker, davanti a un
+        # device mappato ma assente (es. /dev/ttyUSB0 su una centralina senza
+        # modbus), NON avvia il container e lo lascia in stato "created" senza
+        # scrivere log: openhab risulterebbe "installato ma mai partito".
+        # Meglio partire senza quel device (il binding fallirà, ma il sistema è su)
+        # che restare a terra per una seriale scollegata.
         if svc.devices:
-            kwargs["devices"] = svc.devices
+            present, missing = _split_present_devices(svc.devices)
+            if missing:
+                logger.warning(
+                    "Servizio '%s': device host assenti, saltati: %s",
+                    name, ", ".join(missing),
+                )
+            if present:
+                kwargs["devices"] = present
 
         # Capabilities
         if svc.cap_add:
@@ -511,6 +524,23 @@ def _parse_volumes(volume_list: list[str]) -> dict[str, dict]:
             continue
         result[host] = {"bind": container, "mode": mode}
     return result
+
+
+def _split_present_devices(devices: list[str]) -> tuple[list[str], list[str]]:
+    """Separa i mapping ``host[:container[:perms]]`` in (presenti, host_assenti).
+
+    Il path host è la prima parte prima di ':'. ``os.path.exists`` segue i symlink
+    (es. /dev/serial/by-id/...), quindi un symlink pendente = device non presente.
+    """
+    present: list[str] = []
+    missing: list[str] = []
+    for d in devices:
+        host = d.split(":", 1)[0]
+        if os.path.exists(host):
+            present.append(d)
+        else:
+            missing.append(host)
+    return present, missing
 
 
 def _split_image_ref(image: str) -> tuple[str, str]:
