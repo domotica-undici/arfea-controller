@@ -166,13 +166,22 @@ deploy_controller() {
   fi
   $INSTALL_HABAPP  && { mkdir -p "$DATA_PATH/openhab/conf/habapp"; chown -R "$OH_UID:$OH_GID" "$DATA_PATH/openhab/conf/habapp"; }
   $INSTALL_NODERED && { mkdir -p "$DATA_PATH/node-red"; chown -R 1000:1000 "$DATA_PATH/node-red"; }
-  $INSTALL_OTBR    && mkdir -p "$DATA_PATH/otbr/data"
+  # NB: 'if' e non '$VAR && cmd': con set -e una guardia falsa come ULTIMA
+  # istruzione della funzione la farebbe ritornare 1, abortendo l'installer
+  # prima di configure_yml (api_key/webdav/update_url resterebbero i placeholder).
+  if $INSTALL_OTBR; then mkdir -p "$DATA_PATH/otbr/data"; fi
 }
 
 # ── Config di arfea.yml (scrittura dei soli campi noti) ──────────────────────
 yml_scalar() { # key value file  → sostituisce la riga "  key: ..." (indent 2)
   local key="$1" val="$2" f="$3"
-  sed -i -E "s|^(  ${key}:).*|\1 \"${val}\"|" "$f"
+  # Il valore va tra doppi apici YAML: prima escape per il contesto YAML
+  # double-quoted (\ e "), poi escape dei caratteri speciali della replacement
+  # di sed (\ & e il delimitatore |). Senza, una password con '"'/'\' darebbe
+  # YAML non valido e un URL con '&' (querystring) romperebbe il sed.
+  local y="${val//\\/\\\\}"; y="${y//\"/\\\"}"
+  local esc; esc=$(printf '%s' "$y" | sed -e 's/[\\&|]/\\&/g')
+  sed -i -E "s|^(  ${key}:).*|\1 \"${esc}\"|" "$f"
 }
 enable_service() { # service file
   awk -v svc="  ${1}:" '$0==svc{i=1} i&&/enabled:/{sub(/false/,"true");i=0} {print}' "$2" > "$2.t" && mv "$2.t" "$2"
