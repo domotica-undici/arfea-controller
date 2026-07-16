@@ -229,5 +229,5 @@ class ReleaseCheckResult(BaseModel):
 
 class SystemInfo(BaseModel):
     hostname: str = ""
-    version: str = "1.5.3"
+    version: str = "1.5.4"
     uptime: str = ""

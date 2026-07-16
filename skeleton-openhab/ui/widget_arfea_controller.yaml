@@ -169,6 +169,10 @@ slots:
             config:
               item: ohVersion
               title: Versione OpenHAB
+          - component: oh-label-item
+            config:
+              item: arfea_controller_version
+              title: Versione controller
 
     # ──────────────────────────────────────
     # AGGIORNAMENTI

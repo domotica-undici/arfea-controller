@@ -76,7 +76,14 @@ logger = logging.getLogger(__name__)
 #             token oh.<nome>.<segreto>;
 #          c) i componenti UI nuovi vanno CREATI con POST sul namespace: il PUT
 #             sul singolo uid dà 404 se non esiste → ora PUT, e su 404 POST.
-VERSION = "1.5.3"
+#   1.5.4  FIX pagine UI vuote: il contenuto va sotto "slots" (default/masonry/
+#          grid/canvas). Le chiavi top-level blocks:/masonry:/... NON sono nel
+#          modello componente e la REST le SCARTA in silenzio: le pagine si
+#          importavano senza contenuto. Rimossa page_sitemap (oh-sitemap-page non
+#          esiste più in OpenHAB 5.2: la sitemap si gestisce in Settings →
+#          Sitemaps e si vede in BasicUI). Nuovo item arfea_controller_version
+#          (da /system/info) mostrato in widget e sitemap sotto la versione OpenHAB.
+VERSION = "1.5.4"
 
 # -- Globals initialised at startup -----------------------------------------
 

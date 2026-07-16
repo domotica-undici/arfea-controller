@@ -616,6 +616,8 @@ function refreshSystemInfo() {
     var info = JSON.parse(response);
     items.getItem('arfea_hostname').postUpdate(info.hostname || '');
     items.getItem('arfea_uptime').postUpdate(info.uptime || '');
+    // Versione di arfea-controller (VERSION in main.py), esposta da /system/info
+    items.getItem('arfea_controller_version').postUpdate(info.version || 'n/d');
   } catch (e) {
     logger.error('ARFEA refreshSystemInfo failed: {}', e.message);
   }

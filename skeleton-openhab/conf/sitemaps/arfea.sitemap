@@ -38,6 +38,7 @@ sitemap arfea label="ARFEA" {
             Text item=arfea_hostname               label="Hostname [%s]"          icon="settings"
             Text item=arfea_uptime                 label="Uptime [%s]"            icon="time"
             Text item=ohVersion                    label="Versione OpenHAB [%s]"  icon="settings"
+            Text item=arfea_controller_version     label="Versione controller [%s]" icon="settings"
         }
 
         Frame label="Backup" {

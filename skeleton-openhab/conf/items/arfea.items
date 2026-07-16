@@ -31,6 +31,7 @@ String  arfea_external_ip   "IP Pubblico [%s]"                  (gArfea)
 String  arfea_hostname      "Hostname [%s]"                     (gArfea)
 String  arfea_uptime        "Uptime [%s]"                       (gArfea)
 String  ohVersion           "Versione OpenHAB [%s]"             (gArfea)
+String  arfea_controller_version "Versione controller [%s]"     (gArfea)
 
 // ──────────────────────────────────────────────
 // Backup
