@@ -65,7 +65,10 @@ logger = logging.getLogger(__name__)
 #          import-ui-components.sh usa un token Karaf (Bearer) invece della Basic
 #          Auth (che OpenHAB rifiuta → falso "password errata"); nuova pagina UI
 #          page_arfeaController; import widget/sitemap anche nella migrazione.
-VERSION = "1.5.1"
+#   1.5.2  rimosse le regole DSL di default obsolete (skeleton conf/rules/core.rules:
+#          Send Push Message/Broadcast via cloud non connesso; Change log level su
+#          item inesistenti, funzione ora in arfea_system.js): andavano in errore.
+VERSION = "1.5.2"
 
 # -- Globals initialised at startup -----------------------------------------
 
