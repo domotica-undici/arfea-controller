@@ -60,7 +60,12 @@ logger = logging.getLogger(__name__)
 #          FIX OTA anti-downgrade: startup e "Aggiorna controller" confrontano la
 #          VERSION del tarball con quella in esecuzione (niente più downgrade a un
 #          tarball più vecchio/diverso su una install appena fatta).
-VERSION = "1.5.0"
+#   1.5.1  install.sh: rimuove la sottocartella sorgente ridondante se la repo è
+#          clonata dentro il target; label ai campi numerici linphone (UI);
+#          import-ui-components.sh usa un token Karaf (Bearer) invece della Basic
+#          Auth (che OpenHAB rifiuta → falso "password errata"); nuova pagina UI
+#          page_arfeaController; import widget/sitemap anche nella migrazione.
+VERSION = "1.5.1"
 
 # -- Globals initialised at startup -----------------------------------------
 

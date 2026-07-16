@@ -155,6 +155,24 @@ wait_openhab_running() {
   done
 }
 
+# Importa i widget + pagine ARFEA (sitemap inclusa: il file .sitemap è già
+# copiato da deploy_arfea_skeleton in conf/sitemaps). Delega al controller, che
+# conia il token admin dalla console Karaf e fa le PUT REST. Non bloccante: il
+# controller comunque reimporta i widget nuovi al proprio avvio.
+import_arfea_ui() {
+  log "Import widget/pagine ARFEA nella UI di OpenHAB..."
+  local tries=0
+  while ! curl -fsS --max-time 3 http://localhost:8888/api/health >/dev/null 2>&1; do
+    tries=$((tries + 1)); [[ $tries -ge 30 ]] && break; sleep 2
+  done
+  if curl -fsS --max-time 3 http://localhost:8888/api/health >/dev/null 2>&1; then
+    ( curl -s --max-time 240 -X POST http://localhost:8888/api/system/import-ui >/dev/null 2>&1 || true ) &
+    log "  import widget/pagine avviato (il controller usa il token Karaf)"
+  else
+    warn "  controller non raggiungibile su :8888: i widget verranno importati al suo avvio, o con import-ui-components.sh"
+  fi
+}
+
 # buildx (necessario per multi-arch su ARM).
 ensure_buildx() {
   if ! docker buildx version &>/dev/null; then
@@ -558,6 +576,7 @@ except Exception as e:
   ensure_buildx
   ( cd "$DATA_PATH/arfea-controller" && docker compose build && docker compose up -d )
   wait_openhab_running
+  import_arfea_ui
 
   local CRED_FILE; CRED_FILE=$(save_credentials)
   echo ""
@@ -900,6 +919,8 @@ run_native_migration() {
     echo "              systemctl start ${NAT_OPENHAB_UNIT:-openhab}"
     exit 1
   fi
+
+  import_arfea_ui
 
   echo ""; log "[7/7] Disabilito i servizi nativi (autostart solo Docker)..."
   disable_native_services

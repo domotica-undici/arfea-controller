@@ -159,6 +159,17 @@ deploy_controller() {
   tar -xJf "$tmp/arfea-controller.tar.xz" --strip-components=1 -C "$CTRL_DIR/"
   rm -rf "$tmp"
 
+  # Se l'installer gira DALLA repo clonata dentro il target (CTRL_DIR) — es.
+  # `git clone …/arfea-controller.git` dentro /opt/docker_store — l'estrazione
+  # lascia lì la sottocartella sorgente "arfea-controller/" della repo (app/,
+  # Dockerfile, …): ridondante e confondente. La rimuoviamo (guardata dalla
+  # presenza di app/main.py, così non tocchiamo altro). Meglio comunque clonare
+  # la repo FUORI dal target.
+  if [[ "$REPO_DIR" -ef "$CTRL_DIR" && -f "$CTRL_DIR/arfea-controller/app/main.py" ]]; then
+    log "Repo clonata dentro $CTRL_DIR: rimuovo la sottocartella sorgente ridondante arfea-controller/"
+    rm -rf "$CTRL_DIR/arfea-controller"
+  fi
+
   # Servizi opzionali: cartelle + template
   if $INSTALL_ZWAVE || $INSTALL_ZIGBEE; then
     if [[ ! -f "$DATA_PATH/mosquitto/config/mosquitto.conf" ]]; then

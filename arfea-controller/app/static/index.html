@@ -159,8 +159,14 @@
         <input class="lp-input" id="lpNumber" placeholder="Numero di emergenza (es. +3933...)">
         <textarea class="lp-input" id="lpMessage" rows="2" placeholder="Messaggio (convertito in voce)"></textarea>
         <div style="display:flex; gap:8px">
-          <input class="lp-input" id="lpTimeout" type="number" placeholder="Timeout risposta (s)" style="flex:1">
-          <input class="lp-input" id="lpRepeat" type="number" placeholder="Ripetizioni" style="flex:1">
+          <label style="flex:1; display:block">
+            <span class="hint" style="display:block; margin:0 0 2px">Timeout risposta (s)</span>
+            <input class="lp-input" id="lpTimeout" type="number" placeholder="es. 30" style="margin:0">
+          </label>
+          <label style="flex:1; display:block">
+            <span class="hint" style="display:block; margin:0 0 2px">Ripetizioni messaggio</span>
+            <input class="lp-input" id="lpRepeat" type="number" placeholder="es. 2" style="margin:0">
+          </label>
         </div>
         <button class="btn btn-blue btn-block" onclick="saveLinphone()" style="margin-top:8px">Salva configurazione</button>
         <button class="btn btn-orange btn-block" id="btnTestCall" onclick="testCall()" style="margin-top:4px">Chiamata di prova</button>
