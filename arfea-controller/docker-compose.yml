@@ -8,6 +8,13 @@ services:
     cap_add:
       - SYS_PTRACE
       - SYS_ADMIN     # necessario per nsenter (self-update + reboot host)
+    security_opt:
+      # Su host con AppArmor (Ubuntu/Debian desktop) il profilo docker-default
+      # blocca la reassociate ai namespace dell'host ("nsenter: Operation not
+      # permitted") anche con CAP_SYS_ADMIN → si romperebbero reboot, self-update
+      # OTA e import UI. Disattivarlo per QUESTO container ripristina nsenter.
+      # No-op sugli host senza AppArmor. (seccomp non c'entra: verificato.)
+      - apparmor:unconfined
     ports:
       - "8888:8888"
     volumes:

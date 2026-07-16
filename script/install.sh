@@ -312,8 +312,11 @@ wait_openhab_rest() {
     t=$((t+1)); [[ $t -ge 240 ]] && { log "ATTENZIONE: REST non pronta (code=$code)"; return 1; }
     sleep 2
   done
+  # NB: il comando Karaf va passato via STDIN; come argomento (client -p habopen
+  # "cmd") su OpenHAB 5.x non viene eseguito (stampa solo "Closed"). Il prompt
+  # "openhab>" nel banner conferma che la console risponde.
   local k=0
-  while ! timeout 10 docker exec openhab /openhab/runtime/bin/client -p habopen "shell:info" &>/dev/null; do
+  while ! docker exec openhab sh -c "echo 'shell:info' | /openhab/runtime/bin/client -p habopen" 2>/dev/null | grep -q 'openhab>'; do
     k=$((k+1)); [[ $k -ge 36 ]] && { log "ATTENZIONE: console Karaf non pronta"; return 1; }
     sleep 5
   done
@@ -324,13 +327,17 @@ wait_openhab_rest() {
 OH_ADMIN_PASS=""; OH_ADMIN_TOKEN=""
 setup_openhab_admin() {
   OH_ADMIN_PASS=$(openssl rand -hex 12)
-  docker exec openhab /openhab/runtime/bin/client -p habopen \
-    "openhab:users add ${OH_ADMIN_USER} ${OH_ADMIN_PASS} administrator" &>/dev/null || true
+  # Comandi Karaf via STDIN (vedi nota in wait_openhab_rest). 'users add' fallisce
+  # in modo innocuo se admin esiste già (es. creato dal wizard web): quel che conta
+  # è il token, che si conia comunque per l'utente admin esistente.
+  docker exec openhab sh -c \
+    "echo 'openhab:users add ${OH_ADMIN_USER} ${OH_ADMIN_PASS} administrator' | /openhab/runtime/bin/client -p habopen" &>/dev/null || true
   local out
-  out=$(docker exec openhab /openhab/runtime/bin/client -p habopen \
-    "openhab:users addApiToken ${OH_ADMIN_USER} arfeaInstall arfea" 2>/dev/null | tr -d '\r')
-  OH_ADMIN_TOKEN=$(echo "$out" | awk 'NF {t=$NF} END {print t}')
-  [[ -n "$OH_ADMIN_TOKEN" && "$OH_ADMIN_TOKEN" != *error* ]] || { log "ATTENZIONE: token admin non generato, salto import UI"; return 1; }
+  out=$(docker exec openhab sh -c \
+    "echo 'openhab:users addApiToken ${OH_ADMIN_USER} arfeaInstall arfea' | /openhab/runtime/bin/client -p habopen" 2>/dev/null | tr -d '\r')
+  # Il token ha forma oh.<nome>.<segreto>: lo estraiamo ignorando banner/prompt.
+  OH_ADMIN_TOKEN=$(echo "$out" | grep -oE 'oh\.[A-Za-z0-9._-]+' | tail -1)
+  [[ -n "$OH_ADMIN_TOKEN" ]] || { log "ATTENZIONE: token admin non generato, salto import UI"; return 1; }
   log "utente admin OpenHAB creato e token generato"
 }
 
@@ -347,10 +354,18 @@ import_ui() {
     esac
     uid=$(python3 -c "import yaml;print(yaml.safe_load(open('$yml'))['uid'])" 2>/dev/null) || continue
     json=$(python3 -c "import yaml,json;print(json.dumps(yaml.safe_load(open('$yml'))))" 2>/dev/null) || continue
+    # PUT aggiorna un componente esistente ma dà 404 se non c'è: in quel caso lo
+    # si CREA con POST sul namespace. (Il PUT-solo non creava mai i componenti.)
     code=$(curl -s -o /dev/null -w "%{http_code}" -X PUT \
       "http://localhost:8080/rest/ui/components/${ctype}/${uid}" \
       -H "Authorization: Bearer ${OH_ADMIN_TOKEN}" \
       -H "Content-Type: application/json" -d "$json")
+    if [[ "$code" == "404" ]]; then
+      code=$(curl -s -o /dev/null -w "%{http_code}" -X POST \
+        "http://localhost:8080/rest/ui/components/${ctype}" \
+        -H "Authorization: Bearer ${OH_ADMIN_TOKEN}" \
+        -H "Content-Type: application/json" -d "$json")
+    fi
     log "UI $(basename "$yml"): HTTP $code"
   done
 }

@@ -68,7 +68,15 @@ logger = logging.getLogger(__name__)
 #   1.5.2  rimosse le regole DSL di default obsolete (skeleton conf/rules/core.rules:
 #          Send Push Message/Broadcast via cloud non connesso; Change log level su
 #          item inesistenti, funzione ora in arfea_system.js): andavano in errore.
-VERSION = "1.5.2"
+#   1.5.3  FIX import UI/OTA/reboot (3 bug in cascata scoperti sul campo):
+#          a) host con AppArmor bloccava nsenter → docker-compose security_opt
+#             apparmor:unconfined (senza, saltavano reboot, self-update e import UI);
+#          b) console Karaf: il comando come argomento su OpenHAB 5.x non esegue
+#             (stampa "Closed") → passato via stdin (karaf_console) + estrazione
+#             token oh.<nome>.<segreto>;
+#          c) i componenti UI nuovi vanno CREATI con POST sul namespace: il PUT
+#             sul singolo uid dà 404 se non esiste → ora PUT, e su 404 POST.
+VERSION = "1.5.3"
 
 # -- Globals initialised at startup -----------------------------------------
 
@@ -727,21 +735,16 @@ def _oh_rest_ready() -> bool:
 
 def _mint_oh_token() -> str:
     """Conia un API token admin via console Karaf (come lo script di setup)."""
+    import re
     token_name = f"arfeaOTA{int(time.time())}"
-    code, out = docker_manager.openhab_exec([
-        "/openhab/runtime/bin/client", "-p", "habopen",
-        f"openhab:users addApiToken {_OH_ADMIN_USER} {token_name} arfea",
-    ])
+    code, out = docker_manager.karaf_console(
+        f"openhab:users addApiToken {_OH_ADMIN_USER} {token_name} arfea"
+    )
     if code != 0:
         return ""
-    # Il token è l'ultima parola dell'ultima riga non vuota
-    token = ""
-    for line in out.replace("\r", "").splitlines():
-        if line.strip():
-            token = line.split()[-1]
-    if "error" in token.lower():
-        return ""
-    return token
+    # Il token ha forma oh.<nome>.<segreto>; lo estraiamo ignorando banner/prompt.
+    tokens = re.findall(r"oh\.[A-Za-z0-9._-]+", out)
+    return tokens[-1] if tokens else ""
 
 
 def _import_ui_components(wait_ready: bool = True) -> tuple[bool, str]:
@@ -775,20 +778,29 @@ def _import_ui_components(wait_ready: bool = True) -> tuple[bool, str]:
             with tempfile.NamedTemporaryFile("w", suffix=".json", delete=False) as tf:
                 json.dump(data, tf)
                 tf_path = tf.name
-            res = _nsenter_net([
-                "curl", "-s", "-o", "/dev/null", "-w", "%{http_code}", "-X", "PUT",
-                f"http://localhost:8080/rest/ui/components/{ctype}/{uid}",
-                "-H", f"Authorization: Bearer {token}",
-                "-H", "Content-Type: application/json",
-                "-d", f"@{tf_path}",
-            ])
+            # PUT aggiorna un componente esistente ma ritorna 404 se non c'è:
+            # in quel caso lo si CREA con POST sul namespace. (Il PUT-solo non
+            # creava mai i componenti nuovi al primo import.)
+            def _curl(method: str, url: str) -> str:
+                r = _nsenter_net([
+                    "curl", "-s", "-o", "/dev/null", "-w", "%{http_code}", "-X", method,
+                    url,
+                    "-H", f"Authorization: Bearer {token}",
+                    "-H", "Content-Type: application/json",
+                    "-d", f"@{tf_path}",
+                ])
+                return r.stdout.strip()
+
+            code = _curl("PUT", f"http://localhost:8080/rest/ui/components/{ctype}/{uid}")
+            if code == "404":
+                code = _curl("POST", f"http://localhost:8080/rest/ui/components/{ctype}")
             os.unlink(tf_path)
-            if res.stdout.strip() in ("200", "201"):
+            if code in ("200", "201"):
                 ok += 1
                 logger.info("UI import: %s (%s) OK", yml.name, ctype)
             else:
                 ko += 1
-                logger.warning("UI import: %s FALLITO (HTTP %s)", yml.name, res.stdout.strip())
+                logger.warning("UI import: %s FALLITO (HTTP %s)", yml.name, code)
         except Exception as exc:
             ko += 1
             logger.warning("UI import: %s errore: %s", yml.name, exc)

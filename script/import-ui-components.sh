@@ -21,14 +21,10 @@ OH_URL="http://localhost:8080"
 [[ $EUID -eq 0 ]] || { echo "ERRORE: esegui come root (sudo)"; exit 1; }
 [[ -d "$UI_DIR" ]] || { echo "ERRORE: directory $UI_DIR non trovata"; exit 1; }
 
-# ── Scorciatoia: se il controller e' attivo, delega a lui (usa il token Karaf) ──
-if curl -fsS --max-time 3 http://localhost:8888/api/health >/dev/null 2>&1; then
-  echo "Controller attivo: delego l'import a /api/system/import-ui ..."
-  curl -s -X POST http://localhost:8888/api/system/import-ui || true
-  echo ""
-  echo "Import completato (via controller)."
-  exit 0
-fi
+# Lo script gira SULL'HOST, dove localhost:8080 raggiunge OpenHAB direttamente e
+# `docker exec openhab` conia il token: percorso più robusto della delega al
+# controller (che dovrebbe passare da nsenter). NB: l'import automatico DEL
+# CONTROLLER usa nsenter e richiede security_opt apparmor:unconfined nel compose.
 
 # ── 1. OpenHAB raggiungibile? ──
 echo "Verifica OpenHAB..."
@@ -41,9 +37,11 @@ TOKEN="${OH_TOKEN:-}"
 if [[ -z "$TOKEN" ]]; then
   echo "Conio un token admin dalla console Karaf del container '$OH_CONTAINER'..."
   command -v docker >/dev/null || { echo "ERRORE: docker non disponibile e nessun OH_TOKEN fornito"; exit 1; }
-  out=$(docker exec "$OH_CONTAINER" /openhab/runtime/bin/client -p habopen \
-        "openhab:users addApiToken admin arfeaImport$(date +%s) arfea" 2>/dev/null | tr -d '\r' || true)
-  TOKEN=$(echo "$out" | awk 'NF{t=$NF} END{print t}')
+  # Il comando Karaf va passato via STDIN: come argomento su OpenHAB 5.x non viene
+  # eseguito (stampa solo "Closed"). Il token ha forma oh.<nome>.<segreto>.
+  out=$(docker exec "$OH_CONTAINER" sh -c \
+        "echo 'openhab:users addApiToken admin arfeaImport$(date +%s) arfea' | /openhab/runtime/bin/client -p habopen" 2>/dev/null | tr -d '\r' || true)
+  TOKEN=$(echo "$out" | grep -oE 'oh\.[A-Za-z0-9._-]+' | tail -1)
 fi
 if [[ -z "$TOKEN" || "$TOKEN" == *[Ee]rror* ]]; then
   echo "ERRORE: impossibile ottenere un token admin."
@@ -67,11 +65,19 @@ for yml in "$UI_DIR"/*.yaml; do
   json=$(python3 -c "import yaml,json;print(json.dumps(yaml.safe_load(open('$yml'))))" 2>/dev/null || true)
   uid=$(python3 -c "import yaml;print(yaml.safe_load(open('$yml'))['uid'])" 2>/dev/null || true)
   [[ -n "$json" && -n "$uid" ]] || { echo "  $fname: errore parsing YAML"; continue; }
+  # PUT aggiorna un componente esistente (404 se non c'è) → in tal caso POST crea.
   http_code=$(curl -s -o /dev/null -w "%{http_code}" -X PUT \
     "$OH_URL/rest/ui/components/${ctype}/${uid}" \
     -H "Authorization: Bearer ${TOKEN}" \
     -H "Content-Type: application/json" \
     -d "$json")
+  if [[ "$http_code" == "404" ]]; then
+    http_code=$(curl -s -o /dev/null -w "%{http_code}" -X POST \
+      "$OH_URL/rest/ui/components/${ctype}" \
+      -H "Authorization: Bearer ${TOKEN}" \
+      -H "Content-Type: application/json" \
+      -d "$json")
+  fi
   case "$http_code" in
     200|201) echo "  $fname ($ctype): OK ($http_code)" ;;
     *) echo "  $fname ($ctype): FALLITO (HTTP $http_code)" ;;

@@ -224,6 +224,19 @@ class DockerManager:
         except APIError as exc:
             return (-1, f"exec fallito: {exc}")
 
+    def karaf_console(self, command: str, timeout: int = 60) -> tuple[int, str]:
+        """Esegue un comando nella console Karaf di OpenHAB e ritorna (rc, output).
+
+        IMPORTANTE: su OpenHAB 5.x il client con il comando passato come ARGOMENTO
+        (`client -p habopen "cmd"`) non lo esegue e stampa solo "Closed". Va passato
+        via STDIN. Qui usiamo `sh -c` con una pipe, così funziona anche via
+        docker exec non interattivo."""
+        safe = command.replace("'", "'\\''")
+        return self.openhab_exec(
+            ["sh", "-c", f"echo '{safe}' | /openhab/runtime/bin/client -p habopen"],
+            timeout,
+        )
+
     def pull_image(self, image: str) -> OperationResponse:
         """Scarica un'immagine (repo:tag). Fallisce PRIMA di toccare i container,
         così un tag inesistente non lascia il servizio a metà aggiornamento."""
