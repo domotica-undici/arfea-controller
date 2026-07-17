@@ -10,10 +10,10 @@ controller:
   data_path: /opt/docker_store
   log_level: info
   api_key: "CAMBIARE-CON-CHIAVE-UNICA"
-  update_url: "https://YOUR-SERVER.example.com/ota/arfea-controller.tar.xz"
+  update_url: "https://cloud.domoticaundici.it/ota/arfea-controller.tar.xz"
   # Manifest delle versioni immagine certificate (openhab/habapp/...).
   # Vuoto = funzione disattivata. Distinto da update_url (codice controller).
-  releases_url: "https://YOUR-SERVER.example.com/ota/releases.json"
+  releases_url: "https://cloud.domoticaundici.it/ota/releases.json"
   # Release certificata a cui questa centralina è allineata. Lasciare VUOTO: il
   # controller la DEDUCE dai tag immagine presenti qui sotto confrontandoli col
   # manifest releases.json (evita un marker hardcoded che diverge dalla realtà).

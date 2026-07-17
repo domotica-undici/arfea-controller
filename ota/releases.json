@@ -1,5 +1,5 @@
 {
-  "_commento": "Manifest delle versioni immagine CERTIFICATE per le centraline ARFEA. Va pubblicato su controller.releases_url (es. https://YOUR-SERVER.example.com/ota/releases.json). 'releases' è ordinato dalla più vecchia alla più recente: l'ordine definisce il percorso di upgrade attraversato dall'apply. 'latest' indica la versione bersaglio. Ogni release elenca i tag immagine certificati; l'apply scrive SOLO questi tag in arfea.yml. 'controller_min' (opzionale) blocca l'upgrade se il controller è troppo vecchio. 'migrations' (opzionale) elenca le versioni che hanno script migrations/<versione>/pre.sh|post.sh bundlati nel tarball OTA.",
+  "_commento": "Manifest delle versioni immagine CERTIFICATE per le centraline ARFEA. Va pubblicato su controller.releases_url (es. https://cloud.domoticaundici.it/ota/releases.json). 'releases' è ordinato dalla più vecchia alla più recente: l'ordine definisce il percorso di upgrade attraversato dall'apply. 'latest' indica la versione bersaglio. Ogni release elenca i tag immagine certificati; l'apply scrive SOLO questi tag in arfea.yml. 'controller_min' (opzionale) blocca l'upgrade se il controller è troppo vecchio. 'migrations' (opzionale) elenca le versioni che hanno script migrations/<versione>/pre.sh|post.sh bundlati nel tarball OTA.",
   "channel": "stable",
   "latest": "2026.06",
   "releases": [

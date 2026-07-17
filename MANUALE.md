@@ -94,8 +94,8 @@ skeleton OpenHAB, avvia lo stack, crea l'utente admin OpenHAB (password
 ```bash
 sudo ARFEA_NONINTERACTIVE=1 \
      ARFEA_SERVICES="habapp,zwave-js-ui" \
-     ARFEA_UPDATE_URL="https://YOUR-SERVER/ota/arfea-controller.tar.xz" \
-     ARFEA_RELEASES_URL="https://YOUR-SERVER/ota/releases.json" \
+     ARFEA_UPDATE_URL="https://cloud.domoticaundici.it/ota/arfea-controller.tar.xz" \
+     ARFEA_RELEASES_URL="https://cloud.domoticaundici.it/ota/releases.json" \
      ARFEA_ZWAVE_DEVICE="/dev/ttyACM0" \
      ./script/install.sh
 ```
