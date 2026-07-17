@@ -469,8 +469,45 @@ Broker MQTT. Avviato **automaticamente** quando abiliti zwave-js-ui o zigbee2mqt
 fermato quando nessuno dei due lo richiede più. Host del broker per i client: `mosquitto`.
 
 ### 6.4 HABApp (opzionale)
-Engine di automazione Python (termoregolazione, irrigazione, carichi). Regole in
-`habapp/<versione>/`. Attivabile da UI/widget.
+Engine di automazione Python. Tre funzioni attivabili **dalla Web UI** (card
+*HABApp*), indipendenti fra loro:
+
+| Funzione | Chiave in `arfea.yml` | Regole installate | Configurazione impianto |
+|---|---|---|---|
+| Termoregolazione | `thermo` | `rules/thermostats/` + `lib/thermostats/` | `params/thermo.yml` |
+| Irrigazione | `irrigation` | `rules/irrigation/` + `lib/irrigation/` | `params/irrigation.yml` |
+| Controllo carichi | `loads` | `rules/loads/` + `lib/loads/` | `params/loads.yml` |
+
+**Come funziona.** I sorgenti arrivano con l'OTA del controller (in
+`arfea-controller/habapp/<versione>/`, come lo skeleton OpenHAB): abilitare
+HABApp **non richiede rete** e le regole sono sempre quelle della versione del
+controller in esecuzione. Alla creazione del container il controller deploya in
+`openhab/conf/habapp` **solo** le funzioni scelte, più la base comune
+(`lib/system/`). Togliere una funzione ne rimuove le regole; le regole
+specifiche cliente eventualmente presenti (`accessControl/`, `infraRed/`, ...)
+non vengono toccate.
+
+**Autenticazione (non è opzionale).** HABApp deve autenticarsi: openHAB concede
+alle richieste anonime il solo ruolo `USER` (`implicitUserRole`, attivo di
+default), mentre queste regole creano item e scrivono metadata ad ogni avvio —
+endpoint riservati ad ADMIN, che risponderebbero `403`. Il controller conia da
+solo un API token admin (console Karaf) e lo scrive in `config.yml` nel campo
+`user` (con `password` vuota, come vuole HABApp). Avviene **una volta sola**: se
+in `config.yml` c'è già un token valido, il file non viene più toccato — quindi
+un `config.yml` personalizzato (location, mqtt) sopravvive agli aggiornamenti.
+
+**Configurazione degli impianti.** Quali termostati, quali zone, quali carichi
+si definisce nei `params/*.yml`, editabili dalla Web UI (validazione YAML +
+riavvio automatico di HABApp). Non serve più mettere le mani nei file via Samba.
+Il controller non li sovrascrive mai: se manca, ne crea uno vuoto (`{}`).
+
+**Log.** `logging.yml` è deployato solo se manca, con livello **WARN**. Se lo
+alzi a DEBUG per diagnosticare un impianto, un riavvio del container non te lo
+riporta a WARN.
+
+> Le **fasce giornaliere** (`timeSlots`/`timeSlot`/`isHoliday`/`holidayName`)
+> **non** sono in HABApp: vivono in `conf/automation/js/arfea_system.js` dello
+> skeleton, quindi funzionano su ogni impianto anche senza HABApp.
 
 ### 6.5 Z-Wave JS UI (opzionale, porta 8091)
 Nella pagina di onboarding:
@@ -568,6 +605,9 @@ Base: `http://<IP>:8888/api` — documentazione interattiva su `http://<IP>:8888
 | POST | `/api/backup/run` · GET `/status` · `/list` | Backup |
 | POST | `/api/backup/restore?backup_name=...` | Ripristino |
 | GET/PUT | `/api/linphone/config` · GET `/status` · POST `/call?number=&message=` | Emergenza |
+| GET | `/api/habapp/status` | Funzioni HABApp, versione sorgenti, stato token |
+| PUT | `/api/habapp/functions` | Sceglie le funzioni attive (ricrea HABApp) |
+| GET/PUT | `/api/habapp/params/{thermo\|irrigation\|loads}` | Configurazione impianto (YAML) |
 
 ---
 

@@ -170,23 +170,14 @@ deploy_controller() {
     rm -rf "$CTRL_DIR/arfea-controller"
   fi
 
-  # Servizi opzionali: cartelle + template
-  if $INSTALL_ZWAVE || $INSTALL_ZIGBEE; then
-    if [[ ! -f "$DATA_PATH/mosquitto/config/mosquitto.conf" ]]; then
-      mkdir -p "$DATA_PATH/mosquitto"/{config,data,log}
-      printf 'allow_anonymous true\nlistener 1883 0.0.0.0\n' > "$DATA_PATH/mosquitto/config/mosquitto.conf"
-    fi
-  fi
-  if $INSTALL_ZWAVE; then
-    mkdir -p "$DATA_PATH/zwave-js-ui"
-    [[ -f "$CTRL_DIR/templates/zwave-js-ui/settings.json" && ! -f "$DATA_PATH/zwave-js-ui/settings.json" ]] \
-      && cp "$CTRL_DIR/templates/zwave-js-ui/settings.json" "$DATA_PATH/zwave-js-ui/settings.json"
-  fi
-  if $INSTALL_ZIGBEE; then
-    mkdir -p "$DATA_PATH/zigbee2mqtt/data"
-    [[ -f "$CTRL_DIR/templates/zigbee2mqtt/configuration.yaml" && ! -f "$DATA_PATH/zigbee2mqtt/data/configuration.yaml" ]] \
-      && cp "$CTRL_DIR/templates/zigbee2mqtt/configuration.yaml" "$DATA_PATH/zigbee2mqtt/data/configuration.yaml"
-  fi
+  # Servizi opzionali: solo le cartelle che vanno create con un owner preciso.
+  # Le config di default (mosquitto.conf, settings.json di zwave-js-ui,
+  # configuration.yaml di zigbee2mqtt) NON si installano qui: le crea il
+  # controller alla creazione del container (_ensure_default_config in
+  # app/docker_manager.py). Cosi' vale anche per i servizi accesi dalla Web UI
+  # anni dopo l'installazione, che questo script non puo' intercettare.
+  # Non reintrodurle: erano duplicate qui e in migrate-to-controller.sh e sono
+  # andate alla deriva (qui c'era mosquitto.conf, nella migrazione no).
   $INSTALL_HABAPP  && { mkdir -p "$DATA_PATH/openhab/conf/habapp"; chown -R "$OH_UID:$OH_GID" "$DATA_PATH/openhab/conf/habapp"; }
   $INSTALL_NODERED && { mkdir -p "$DATA_PATH/node-red"; chown -R 1000:1000 "$DATA_PATH/node-red"; }
   # NB: 'if' e non '$VAR && cmd': con set -e una guardia falsa come ULTIMA

@@ -1,0 +1,70 @@
+directories:
+    logging: log    # If the filename for the logfile in logging.yml is not absolute it will be placed in this directory
+    rules: rules    # All *.py files in this folder (and subfolders) will be loaded. Load order will be alphabetical by path.
+    params: params  # Optional, this is the folder where the parameter files will be created and loaded from
+    config: config  # Folder from which configuration files for openHAB will be loaded
+    lib: lib        # Custom modules, libraries and files can be placed there.
+                    # (!) Attention (!):
+                    # Don't create rule instances in files inside the lib folder! It will lead to strange behaviour.
+location:
+  latitude: 0.0
+  longitude: 0.0
+  elevation: 0.0
+  country: 'IT'     # ISO 3166-1 Alpha-2 country code
+  subdivision: ''   # The subdivision (e.g. state or province) as a ISO 3166-2 code or its alias
+
+openhab:
+    ping:
+        enabled: false       # If enabled the configured item will show how long it takes to send an update from HABApp
+                             # and get the updated value back in milliseconds
+        item: 'HABApp_Ping'  # Name of the NumberItem that will show the ping
+        interval: 10         # Seconds between two pings
+
+    # (!) url e user qui sotto li compila arfea-controller quando si abilita
+    # HABApp (app/habapp_manager.py): non vanno scritti a mano. Il controller
+    # non tocca piu' questo file finche' ci trova un token valido, quindi il
+    # resto (location, mqtt, ...) si puo' personalizzare senza timori.
+    connection:
+        # L'IP e' il gateway della rete docker 'domotica' (network.gateway in
+        # arfea.yml) = l'host visto dal container, dove openhab (network_mode:
+        # host) ascolta sulla 8080. NON 172.17.0.1: quello e' il bridge docker0
+        # di default, che funziona per caso finche' docker0 esiste.
+        url: __ARFEA_OH_URL__
+        # Token API admin coniato dal controller via console Karaf.
+        # HABApp vuole il token nel campo user con password vuota.
+        # Perche' un token e non l'accesso anonimo: openHAB concede alle
+        # richieste non autenticate il solo ruolo USER (implicitUserRole, default
+        # on), mentre queste regole creano item e scrivono metadata ad ogni
+        # avvio -> endpoint @RolesAllowed({Role.ADMIN}) -> 403.
+        user: '__ARFEA_OH_TOKEN__'
+        password: ''
+
+    general:
+        listen_only: False  # If True  HABApp will not change any value on the openHAB instance.
+                            # Useful for testing rules from another machine.
+        wait_for_openhab: True   # If True HABApp will wait for items from the openHAB instance
+                                 # before loading any rules on startup
+
+mqtt:
+  connection:
+    identifier: HABApp   # Identifier that is used to uniquely identify this client on the mqtt broker.
+    host: ''             # Connect to this host. Empty string ("") disables the connection.
+    port: 1883
+    user: ''
+    password: ''
+    tls:
+      enabled: false    # Enable TLS for the connection
+      insecure: false   # Validate server hostname in server certificate
+      ca cert: ''       # Path to a CA certificate that will be treated as trusted
+  subscribe:
+    qos: 0              # Default QoS for subscribing
+    topics:
+      - '#'             # Subscribe to this topic, qos is default QoS
+      - ['my/topic', 1] # Subscribe to this topic with explicit QoS
+  publish:
+    qos: 1              # Default QoS when publishing values
+    retain: false       # Default retain flag when publishing values
+  general:
+    listen_only: false   # If True HABApp does not publish any value to the broker
+
+

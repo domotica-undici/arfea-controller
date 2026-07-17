@@ -49,7 +49,7 @@
     "disableWatchdog": false,
     "emitValueUpdateAfterSetValue": false,
     "enableStatistics": false,
-    "serverEnabled": false,
+    "serverEnabled": true,
     "serverPort": 3000,
     "serverServiceDiscoveryDisabled": false
   }

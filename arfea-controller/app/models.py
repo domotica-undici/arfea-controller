@@ -75,6 +75,28 @@ class ControllerSettings(BaseModel):
     release: str = ""
 
 
+class HABAppConfig(BaseModel):
+    """Funzioni HABApp attive su questo impianto.
+
+    Ogni funzione = una cartella rules/ + la sua lib/ (vedi _FUNCTIONS in
+    habapp_manager). Sull'impianto si deploya solo quello che serve: una
+    centralina senza irrigazione non ha motivo di caricare quelle regole (che
+    creerebbero comunque decine di item e gruppi in OpenHAB).
+    """
+    # None e [] NON sono la stessa cosa, ed e' un distinguo che protegge gli
+    # impianti esistenti:
+    #   None = mai configurato -> il controller DEDUCE le funzioni da quelle gia'
+    #          installate (centralina aggiornata via OTA, dove arfea.yml e'
+    #          protetto e non ha questa sezione; oppure migrata da HABApp nativo);
+    #   []   = scelta esplicita "nessuna funzione" -> le regole si rimuovono.
+    # Senza questa distinzione il primo avvio dopo un aggiornamento cancellerebbe
+    # le regole di un impianto funzionante, fermando riscaldamento e irrigazione.
+    functions: Optional[list[str]] = None
+    # Token API admin OpenHAB usato da HABApp: NON si tiene qui ma nel config.yml
+    # deployato, che e' l'unico posto da cui HABApp lo legge (niente due copie
+    # che divergono). Qui resta solo la scelta delle funzioni.
+
+
 class LinphoneConfig(BaseModel):
     """Configurazione chiamate di emergenza via linphone (dentro container OpenHAB)."""
     enabled: bool = False
@@ -115,11 +137,39 @@ class LinphoneConfigUpdate(BaseModel):
     repeat: Optional[int] = None
 
 
+class HABAppFunctionInfo(BaseModel):
+    """Una funzione HABApp attivabile, come la mostra la Web UI."""
+    name: str                    # chiave tecnica (thermo/irrigation/loads)
+    label: str                   # etichetta in italiano
+    description: str = ""
+    enabled: bool = False
+    params_file: str = ""        # nome del file params editabile (es. "thermo")
+
+
+class HABAppStatus(BaseModel):
+    version: str = ""            # versione dei sorgenti disponibili (es. "25.12.0")
+    installed: bool = False      # sorgenti presenti nell'install dir del controller
+    service_enabled: bool = False
+    token_ok: bool = False       # config.yml deployato con un token valido
+    functions: list[HABAppFunctionInfo] = Field(default_factory=list)
+
+
+class HABAppFunctionsUpdate(BaseModel):
+    """Body per scegliere le funzioni attive."""
+    functions: list[str] = Field(default_factory=list)
+
+
+class HABAppParamsUpdate(BaseModel):
+    """Body per salvare un file params: YAML grezzo, validato lato controller."""
+    content: str
+
+
 class ArfeaConfig(BaseModel):
     controller: ControllerSettings = Field(default_factory=ControllerSettings)
     network: NetworkConfig = Field(default_factory=NetworkConfig)
     backup: BackupConfig = Field(default_factory=BackupConfig)
     linphone: LinphoneConfig = Field(default_factory=LinphoneConfig)
+    habapp: HABAppConfig = Field(default_factory=HABAppConfig)
     dependencies: list[DependencyRule] = Field(default_factory=list)
     services: dict[str, ServiceDefinition] = Field(default_factory=dict)
 
@@ -229,5 +279,7 @@ class ReleaseCheckResult(BaseModel):
 
 class SystemInfo(BaseModel):
     hostname: str = ""
-    version: str = "1.5.4"
+    # La versione la passa sempre l'endpoint da main.VERSION: qui un default
+    # "1.5.x" non farebbe che invecchiare e, se mai usato, mentire.
+    version: str = ""
     uptime: str = ""

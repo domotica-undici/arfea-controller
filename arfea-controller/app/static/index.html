@@ -102,6 +102,23 @@
         <button class="btn btn-green btn-block" id="btnSaveDevices" onclick="saveDevices()" style="margin-top:8px">Salva e applica</button>
       </div>
 
+      <!-- HABApp -->
+      <div class="card">
+        <h2>HABApp (automazioni)</h2>
+        <div id="habappStatus" class="status-bar status-idle">Caricamento...</div>
+        <p class="hint">Scegli quali funzioni attivare: il controller installa le regole solo per queste. Le altre non vengono nemmeno caricate.</p>
+        <div id="habappFunctions"></div>
+        <div id="habappProgress"></div>
+        <button class="btn btn-green btn-block" id="btnSaveHabapp" onclick="saveHabappFunctions()" style="margin-top:8px">Salva e applica</button>
+
+        <h2 style="margin-top:24px">Configurazione impianto</h2>
+        <p class="hint">Definizione dell'impianto per la funzione scelta (termostati, zone, carichi). Prima si scriveva a mano nei file: ora si edita qui e HABApp riparte da solo.</p>
+        <select id="habappParamsFn" class="sel" onchange="loadHabappParams()"></select>
+        <textarea id="habappParamsEditor" class="sel" spellcheck="false" style="min-height:280px; font-family:ui-monospace,Menlo,Consolas,monospace; font-size:0.85em; white-space:pre; overflow-wrap:normal; overflow-x:auto"></textarea>
+        <div id="habappParamsMsg"></div>
+        <button class="btn btn-blue btn-block" id="btnSaveParams" onclick="saveHabappParams()">Salva e riavvia HABApp</button>
+      </div>
+
       <!-- Rete -->
       <div class="card">
         <h2>Rete</h2>
@@ -247,6 +264,7 @@ function apiPutJson(path, body) {
 function refreshAll() {
   refreshServices();
   refreshDeviceServices();
+  refreshHabapp();
   refreshNetwork();
   refreshSystem();
   refreshBackupStatus();
@@ -536,6 +554,151 @@ var DEV_CAPABLE = ['openhab', 'zwave-js-ui', 'zigbee2mqtt', 'otbr'];
 var DEV_DEFAULT_TARGET = { 'openhab': '/dev/ttyUSB0', 'zwave-js-ui': '/dev/zwave', 'zigbee2mqtt': '/dev/zigbee', 'otbr': '/dev/ttyACM0' };
 var devList = [];          // mapping "src:tgt" del servizio corrente
 var serialPorts = [];      // porte host rilevate
+
+// ── HABApp ────────────────────────────────────────────────
+
+var habappState = null;
+
+function refreshHabapp() {
+  apiGet('/habapp/status').then(function(st) {
+    habappState = st;
+    renderHabappStatus(st);
+    renderHabappFunctions(st);
+    renderHabappParamsSelect(st);
+  });
+}
+
+function renderHabappStatus(st) {
+  var el = document.getElementById('habappStatus');
+  var active = st.functions.filter(function(f) { return f.enabled; });
+  if (!st.installed) {
+    el.className = 'status-bar status-failed';
+    el.textContent = 'Sorgenti HABApp non presenti: aggiorna il controller per riceverli.';
+    return;
+  }
+  if (!st.service_enabled) {
+    el.className = 'status-bar status-idle';
+    el.textContent = 'HABApp non attivo. Attivalo da Servizi, poi scegli le funzioni. (sorgenti ' + st.version + ')';
+    return;
+  }
+  if (!st.token_ok) {
+    // Distinzione che conta: il container puo' girare benissimo e HABApp non
+    // riuscire comunque a creare un solo item.
+    el.className = 'status-bar status-failed';
+    el.textContent = 'Manca il token di accesso a OpenHAB: HABApp non può creare item. Verifica che OpenHAB sia avviato e ri-applica le funzioni.';
+    return;
+  }
+  if (active.length === 0) {
+    el.className = 'status-bar status-running';
+    el.textContent = 'HABApp attivo ma senza funzioni: non sta facendo nulla.';
+    return;
+  }
+  el.className = 'status-bar status-completed';
+  el.textContent = 'HABApp ' + st.version + ' attivo — ' + active.map(function(f) { return f.label; }).join(', ');
+}
+
+function renderHabappFunctions(st) {
+  document.getElementById('habappFunctions').innerHTML = st.functions.map(function(f) {
+    return '<label class="dev-row" style="cursor:pointer; align-items:flex-start">' +
+      '<input type="checkbox" class="habapp-fn" value="' + f.name + '"' + (f.enabled ? ' checked' : '') +
+      ' style="margin:3px 10px 0 0; flex:none">' +
+      '<span><strong>' + f.label + '</strong><br><span class="hint">' + f.description + '</span></span>' +
+      '</label>';
+  }).join('');
+}
+
+function renderHabappParamsSelect(st) {
+  var sel = document.getElementById('habappParamsFn');
+  var prev = sel.value;
+  var active = st.functions.filter(function(f) { return f.enabled; });
+  if (active.length === 0) {
+    sel.innerHTML = '<option value="">— nessuna funzione attiva —</option>';
+    document.getElementById('habappParamsEditor').value = '';
+    document.getElementById('btnSaveParams').disabled = true;
+    return;
+  }
+  document.getElementById('btnSaveParams').disabled = false;
+  sel.innerHTML = active.map(function(f) {
+    return '<option value="' + f.name + '">' + f.label + ' (params/' + f.params_file + ')</option>';
+  }).join('');
+  if (prev && active.some(function(f) { return f.name === prev; })) sel.value = prev;
+  loadHabappParams();
+}
+
+function loadHabappParams() {
+  var fn = document.getElementById('habappParamsFn').value;
+  var ed = document.getElementById('habappParamsEditor');
+  document.getElementById('habappParamsMsg').innerHTML = '';
+  if (!fn) { ed.value = ''; return; }
+  ed.value = 'Caricamento...';
+  apiGet('/habapp/params/' + fn).then(function(r) {
+    ed.value = r.content || '';
+  }).catch(function(e) {
+    ed.value = '';
+    habappParamsMsg('Lettura fallita: ' + e.message, 'status-failed');
+  });
+}
+
+function habappParamsMsg(text, kind) {
+  document.getElementById('habappParamsMsg').innerHTML =
+    '<div class="status-bar ' + kind + '">' + text + '</div>';
+}
+
+function saveHabappFunctions() {
+  var chosen = [].slice.call(document.querySelectorAll('.habapp-fn:checked'))
+    .map(function(c) { return c.value; });
+  if (!confirm(chosen.length
+        ? 'Attivare: ' + chosen.join(', ') + '?\nHABApp verrà ricreato.'
+        : 'Nessuna funzione selezionata: HABApp resterà senza regole. Procedere?')) return;
+
+  var btn = document.getElementById('btnSaveHabapp');
+  btn.disabled = true; btn.textContent = 'Applico...';
+  setProgress('habappProgress', 40, 'running');
+  apiPutJson('/habapp/functions', { functions: chosen }).then(function(r) {
+    setProgress('habappProgress', 100, r.success ? 'completed' : 'failed');
+    var warn = r.details && r.details.warning;
+    alert((r.message || (r.detail || 'Errore')) + (warn ? '\n\nAttenzione: ' + warn : ''));
+    setTimeout(function() { clearProgress('habappProgress'); }, 1500);
+    btn.disabled = false; btn.textContent = 'Salva e applica';
+    refreshHabapp();
+    refreshServices();
+  }).catch(function(e) {
+    setProgress('habappProgress', 100, 'failed');
+    alert('Errore: ' + e.message);
+    btn.disabled = false; btn.textContent = 'Salva e applica';
+  });
+}
+
+function saveHabappParams() {
+  var fn = document.getElementById('habappParamsFn').value;
+  if (!fn) return;
+  var content = document.getElementById('habappParamsEditor').value;
+  if (!confirm('Salvare la configurazione e riavviare HABApp per applicarla?')) return;
+
+  var btn = document.getElementById('btnSaveParams');
+  btn.disabled = true; btn.textContent = 'Salvo...';
+  habappParamsMsg('Salvataggio e riavvio...', 'status-running');
+  apiFetch('/habapp/params/' + fn, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ content: content })
+  }).then(function(r) {
+    return r.json().then(function(body) { return { ok: r.ok, body: body }; });
+  }).then(function(res) {
+    if (!res.ok) {
+      // Il 400 porta l'errore YAML: va mostrato tale e quale, e' l'unica cosa
+      // che dice all'utente dove ha sbagliato.
+      habappParamsMsg('Non salvato — ' + (res.body.detail || 'errore'), 'status-failed');
+    } else {
+      habappParamsMsg(res.body.message, res.body.success ? 'status-completed' : 'status-failed');
+      refreshHabapp();
+    }
+    btn.disabled = false; btn.textContent = 'Salva e riavvia HABApp';
+  }).catch(function(e) {
+    habappParamsMsg('Errore: ' + e.message, 'status-failed');
+    btn.disabled = false; btn.textContent = 'Salva e riavvia HABApp';
+  });
+}
 
 function refreshDeviceServices() {
   apiGet('/services').then(function(services) {

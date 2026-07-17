@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import logging
 import os
+import re
+import shutil
 import time
 from pathlib import Path
 from typing import Optional
@@ -23,9 +25,23 @@ logger = logging.getLogger(__name__)
 
 MANAGED_LABEL = "arfea.managed"
 
+# Utente amministratore di OpenHAB (creato dal wizard al primo accesso).
+_OH_ADMIN_USER = "admin"
+
 # UID/GID del container OpenHAB: i file in /opt/docker_store/openhab devono essere suoi.
 _OH_UID = 9001
 _OH_GID = 9001
+
+# Config che un servizio deve trovare al PRIMO avvio, pena un container che parte
+# ma e' inutilizzabile: mosquitto senza listener non accetta connessioni,
+# zwave-js-ui senza settings.json non sa ne' quale seriale aprire ne' che deve
+# alzare il server WebSocket per il binding zwavejs di OpenHAB.
+# Mappa: servizio -> [(sorgente sotto templates/, destinazione sotto data_path)].
+_DEFAULT_CONFIGS: dict[str, list[tuple[str, str]]] = {
+    "mosquitto": [("mosquitto/mosquitto.conf", "mosquitto/config/mosquitto.conf")],
+    "zwave-js-ui": [("zwave-js-ui/settings.json", "zwave-js-ui/settings.json")],
+    "zigbee2mqtt": [("zigbee2mqtt/configuration.yaml", "zigbee2mqtt/data/configuration.yaml")],
+}
 
 
 class DockerManager:
@@ -145,6 +161,8 @@ class DockerManager:
                     message=f"Failed to remove old container: {exc}",
                 )
 
+        self._ensure_default_config(name)
+
         kwargs = self._build_run_kwargs(name, svc)
         try:
             self.client.containers.run(**kwargs)
@@ -171,6 +189,66 @@ class DockerManager:
 
             logger.error("Failed to start '%s': %s", name, exc)
             return OperationResponse(success=False, message=str(exc))
+
+    def _ensure_default_config(self, name: str) -> None:
+        """Installa la config di default di un servizio se manca (no-clobber).
+
+        Va fatto QUI, alla creazione del container, e non negli script di setup:
+        un servizio puo' essere acceso in qualsiasi momento dalla Web UI — o
+        auto-abilitato come dipendenza (mosquitto quando si accende
+        zwave-js-ui/zigbee2mqtt) — anche anni dopo l'installazione. install.sh
+        copriva solo il primo impianto e la migrazione solo se stessa: chi
+        accendeva un servizio dalla UI si ritrovava un container senza config,
+        che parte ma non funziona. Con l'aggancio qui tutti e tre i percorsi sono
+        coperti da un'unica implementazione (le due negli script erano gia'
+        andate alla deriva: install.sh creava mosquitto.conf, la migrazione no).
+
+        No-clobber: una config esistente e' dell'utente e non va MAI toccata.
+        Un template mancante non e' fatale — si logga e il container parte
+        comunque, come faceva il vecchio codice negli script.
+        """
+        if name == "habapp":
+            # HABApp non e' una copia di template: va scelto COSA deployare (le
+            # funzioni attive) e serve un token OpenHAB. Import locale: e'
+            # habapp_manager a dipendere da noi (karaf_console), non il contrario.
+            from .habapp_manager import HABAppManager
+
+            ok, msg = HABAppManager(self.cfg, self).provision()
+            if not ok:
+                # Non blocchiamo l'avvio: HABApp parte senza regole e la Web UI
+                # mostra il motivo (status.token_ok / installed).
+                logger.warning("HABApp: provisioning incompleto: %s", msg)
+            return
+
+        entries = _DEFAULT_CONFIGS.get(name)
+        if not entries:
+            return
+
+        # data_path e' un path dell'HOST, ma il controller monta /opt/docker_store
+        # 1:1 (vedi docker-compose.yml), quindi qui e' scrivibile direttamente.
+        data_path = Path(self.cfg.config.controller.data_path)
+        templates = data_path / "arfea-controller" / "templates"
+
+        for src_rel, dst_rel in entries:
+            dst = data_path / dst_rel
+            if dst.exists():
+                continue
+            src = templates / src_rel
+            if not src.is_file():
+                logger.warning(
+                    "Servizio '%s': template '%s' assente, '%s' non creata",
+                    name, src, dst,
+                )
+                continue
+            try:
+                dst.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copy2(src, dst)
+                logger.info("Servizio '%s': creata config di default %s", name, dst)
+            except OSError as exc:
+                logger.error(
+                    "Servizio '%s': copia della config di default %s fallita: %s",
+                    name, dst, exc,
+                )
 
     def stop_service(self, name: str) -> OperationResponse:
         svc = self.cfg.config.services.get(name)
@@ -236,6 +314,29 @@ class DockerManager:
             ["sh", "-c", f"echo '{safe}' | /openhab/runtime/bin/client -p habopen"],
             timeout,
         )
+
+    def mint_oh_token(self, purpose: str = "arfea") -> str:
+        """Conia un API token admin OpenHAB. Stringa vuota se non ci riesce.
+
+        Serve a chiunque debba parlare con la REST di OpenHAB con privilegi di
+        amministratore: la Basic Auth e' rifiutata di default
+        (org.openhab.restauth:allowBasicAuth=false) e le richieste anonime
+        ottengono il solo ruolo USER, che non basta per creare item o scrivere
+        metadata (@RolesAllowed({Role.ADMIN})).
+        """
+        token_name = f"arfea{purpose}{int(time.time())}"
+        code, out = self.karaf_console(
+            f"openhab:users addApiToken {_OH_ADMIN_USER} {token_name} arfea"
+        )
+        if code != 0:
+            logger.warning("Conio token OpenHAB fallito (rc=%s): %s", code, out.strip()[:200])
+            return ""
+        # Il token ha forma oh.<nome>.<segreto>; lo estraiamo ignorando banner/prompt.
+        tokens = re.findall(r"oh\.[A-Za-z0-9._-]+", out)
+        if not tokens:
+            logger.warning("Conio token OpenHAB: nessun token nell'output della console")
+            return ""
+        return tokens[-1]
 
     def pull_image(self, image: str) -> OperationResponse:
         """Scarica un'immagine (repo:tag). Fallisce PRIMA di toccare i container,
@@ -452,17 +553,10 @@ class DockerManager:
         non ancora coperti da un by-id. Segnala anche quali porte sono già mappate
         da un servizio in arfea.yml (used_by)."""
         # /proc/1/root = host rootfs (pid:host); fallback a / se non accessibile.
-        # NB: is_dir() su /proc/1/root/dev SOLLEVA PermissionError (non ritorna
-        # False) se non abbiamo i privilegi: va intercettato, altrimenti l'endpoint
-        # va in 500 invece di degradare.
-        def _dir_ok(p: Path) -> bool:
-            try:
-                return p.is_dir()
-            except OSError:
-                return False
-
-        roots = [Path("/proc/1/root"), Path("/")]
-        host_root = next((r for r in roots if _dir_ok(r / "dev")), Path("/"))
+        # Stessa rootfs usata da _split_present_devices al momento di creare i
+        # container: se le due divergono, la UI mostra una seriale che poi il
+        # controller scarta come "assente" (o viceversa).
+        host_root = _host_root()
         dev = host_root / "dev"
 
         # Porte già mappate → per marcarle "used_by"
@@ -621,17 +715,53 @@ def _parse_volumes(volume_list: list[str]) -> dict[str, dict]:
     return result
 
 
+def _dir_ok(p: Path) -> bool:
+    """``p.is_dir()`` che non esplode: su /proc/1/root senza privilegi is_dir()
+    SOLLEVA PermissionError invece di restituire False."""
+    try:
+        return p.is_dir()
+    except OSError:
+        return False
+
+
+def _host_root() -> Path:
+    """Rootfs dell'host vista dal controller.
+
+    Il controller gira con ``pid: host`` ma NON monta /dev: nel suo mount
+    namespace /dev è quello minimale di Docker (null, zero, pts, ...), SENZA
+    nessuna seriale. Un ``os.path.exists('/dev/ttyUSB0')`` eseguito qui dentro è
+    quindi sempre falso e non dice nulla sull'host. /proc/1/root è invece la
+    rootfs reale dell'host (serve pid:host + SYS_PTRACE, entrambi nel compose).
+    Fallback a '/' per l'esecuzione fuori container (sviluppo).
+    """
+    for r in (Path("/proc/1/root"), Path("/")):
+        if _dir_ok(r / "dev"):
+            return r
+    return Path("/")
+
+
 def _split_present_devices(devices: list[str]) -> tuple[list[str], list[str]]:
     """Separa i mapping ``host[:container[:perms]]`` in (presenti, host_assenti).
 
-    Il path host è la prima parte prima di ':'. ``os.path.exists`` segue i symlink
-    (es. /dev/serial/by-id/...), quindi un symlink pendente = device non presente.
+    Il path host è la prima parte prima di ':'. La presenza va verificata sulla
+    rootfs dell'host (_host_root()), MAI nel mount namespace del controller: lì
+    /dev non ha nessuna seriale e ogni device risulterebbe assente, facendo
+    cadere in silenzio TUTTI i mapping (openhab senza modbus/zwave, zwave-js-ui
+    senza stick → "cannot open /dev/zwave").
+
+    ``os.path.exists`` segue i symlink, quindi un /dev/serial/by-id/... pendente
+    = device non presente. I link udev by-id sono relativi (../../ttyUSB0) e si
+    risolvono correttamente dentro _host_root().
+
+    NB: nella lista restituita i path restano quelli ORIGINALI dell'host: è il
+    daemon Docker (che gira sull'host) a doverli risolvere, non il controller.
     """
+    root = _host_root()
     present: list[str] = []
     missing: list[str] = []
     for d in devices:
         host = d.split(":", 1)[0]
-        if os.path.exists(host):
+        if os.path.exists(str(root / host.lstrip("/"))):
             present.append(d)
         else:
             missing.append(host)

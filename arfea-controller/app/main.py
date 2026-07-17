@@ -23,9 +23,13 @@ from fastapi.staticfiles import StaticFiles
 from .backup import BackupManager
 from .config import ConfigManager
 from .docker_manager import DockerManager
+from .habapp_manager import HABAppManager, last_provision as habapp_last_provision
 from .release_manager import ReleaseManager
 from .models import (
     BackupStatus,
+    HABAppFunctionsUpdate,
+    HABAppParamsUpdate,
+    HABAppStatus,
     LinphoneConfigUpdate,
     NetworkInfo,
     OperationResponse,
@@ -83,7 +87,85 @@ logger = logging.getLogger(__name__)
 #          esiste più in OpenHAB 5.2: la sitemap si gestisce in Settings →
 #          Sitemaps e si vede in BasicUI). Nuovo item arfea_controller_version
 #          (da /system/info) mostrato in widget e sitemap sotto la versione OpenHAB.
-VERSION = "1.5.4"
+#   1.5.5  FIX migrazione da OpenHAB nativo: il container non partiva (exit 1 dopo
+#          "Image and userdata versions differ! Starting an upgrade."). La copia
+#          della userdata nativa esclude logs/ (giustamente: è legata alla vecchia
+#          versione), ma l'entrypoint openhab popola userdata da dist/ SOLO se la
+#          trova vuota — dopo la migrazione non lo è mai, quindi logs/ non veniva
+#          più ricreata. Con la versione della userdata diversa dall'immagine parte
+#          l'upgrade, che come prima cosa fa "... | tee $OPENHAB_LOGDIR/update.log":
+#          tee falliva e "set -eu -o pipefail" uccideva l'entrypoint prima di
+#          avviare openhab. Ora migrate-to-controller.sh ricrea userdata/logs vuota
+#          (e ripulisce gli hs_err_pid*.log della JVM nativa).
+#   1.5.6  FIX seriali sparite da TUTTI i container (openhab senza modbus/zwave,
+#          zwave-js-ui "cannot open /dev/zwave ZW0100"): _split_present_devices
+#          verificava la presenza del device con os.path.exists() nel mount
+#          namespace del CONTROLLER, che non monta /dev e quindi non ha nessuna
+#          seriale → ogni device risultava assente e veniva scartato in silenzio
+#          (la guardia "salta i device host assenti" li saltava tutti, sempre).
+#          Ora il check passa da /proc/1/root come già faceva list_host_serial_devices
+#          — erano due copie divergenti della stessa logica, ora accorpate in
+#          _host_root(): è per questo che la pagina Dispositivi mostrava la seriale
+#          che il controller poi buttava via.
+#   1.5.7  FIX autodiscovery zwave assente anche su installazione da zero:
+#          templates/zwave-js-ui/settings.json aveva "serverEnabled": false pur
+#          esponendo la 3000 in arfea.yml, quindi il server WebSocket di Z-Wave JS
+#          restava spento e il binding zwavejs di OpenHAB non poteva connettersi.
+#          Ora true. NB: l'integrazione OpenHAB <-> zwave-js-ui e' via WebSocket
+#          (porta 3000), NON via MQTT/hassDiscovery: il toggle "WS Server" vive
+#          nella sezione Home Assistant della UI di zwave-js-ui, ma quello che
+#          serve e' lui, non "Hass Discovery" (che pubblica topic MQTT inutili a
+#          OpenHAB).
+#   1.5.8  FIX servizio acceso dalla Web UI = container senza config. Le config di
+#          default erano deployate solo dagli script di setup: install.sh al primo
+#          impianto e (da poco) migrate-to-controller.sh. Ma un servizio si accende
+#          dalla UI in qualsiasi momento — o si auto-abilita come dipendenza
+#          (mosquitto quando parte zwave-js-ui/zigbee2mqtt) — e quel percorso non
+#          era coperto da nessuno: broker senza listener, zwave-js-ui senza seriale
+#          ne' server WS. Le due copie shell erano anche gia' divergenti (install.sh
+#          creava mosquitto.conf, la migrazione no). Ora la regola vive in UN posto
+#          solo, _ensure_default_config in docker_manager, agganciata a
+#          create_and_start = unico punto da cui nasce un container (ci passano
+#          recreate/restart/start_all_enabled). Rimossa la logica dai due script;
+#          il contenuto di mosquitto.conf, prima inline in due printf, e' ora
+#          templates/mosquitto/mosquitto.conf. No-clobber: le config esistenti
+#          dell'utente non si toccano mai.
+#   1.6.0  HABApp gestito dal controller invece che a mano via Samba.
+#          a) Web UI: si scelgono le funzioni (termoregolazione/irrigazione/
+#             controllo carichi) e il controller deploya in openhab/conf/habapp
+#             SOLO le regole+librerie di quelle scelte; disattivarne una le
+#             rimuove. Le regole specifiche cliente gia' sull'impianto
+#             (accessControl/, infraRed/, ...) non si toccano.
+#          b) I sorgenti viaggiano nell'OTA (arfea-controller/habapp/<ver>/) come
+#             skeleton-openhab e templates: abilitare HABApp non richiede rete e
+#             la versione delle regole e' sempre quella del controller. Sono
+#             anche pubblicati sulla repo pubblica (script/habapp-subset.sh
+#             definisce il confine: fuori i params, che sono impianti reali).
+#          c) Autenticazione: il token admin lo conia il controller (Karaf) e lo
+#             scrive in config.yml. HABApp NON puo' girare anonimo: openHAB da'
+#             alle richieste non autenticate il solo ruolo USER
+#             (implicitUserRole, default on), ma queste regole creano item e
+#             scrivono metadata ad ogni avvio -> @RolesAllowed({Role.ADMIN}) ->
+#             403. Il token si conia una volta sola: se config.yml ne ha gia'
+#             uno valido il file non viene piu' toccato.
+#          d) L'url di openhab e' ora il gateway della rete 'domotica' preso da
+#             arfea.yml, non piu' 172.17.0.1 hardcodato (era il bridge docker0:
+#             funzionava solo perche' l'host aveva anche quell'IP).
+#          e) params/*.yml (definizione degli impianti) editabili dalla Web UI
+#             con validazione YAML e riavvio di HABApp: prima serviva mettere le
+#             mani nei file. Mai sovrascritti dal controller.
+#          f) Impianti esistenti: habapp.functions assente (arfea.yml e' protetto
+#             dall'OTA, e la migrazione parte dal template) NON significa "nessuna
+#             funzione" — verrebbero rimosse le regole di un impianto che lavora,
+#             fermando riscaldamento e irrigazione al primo riavvio. Quel caso e'
+#             distinto da una lista vuota esplicita: il controller deduce le
+#             funzioni da quelle gia' installate e fissa la scelta in arfea.yml.
+#          g) Deduplicate le fasce giornaliere: rules/aasystem/time.py rimosso
+#             (ricreava via REST item gia' definiti da conf/items/arfea.items e
+#             duplicava arfea_system.js). Restano nel JS dello skeleton, quindi
+#             in OGNI impianto anche senza HABApp. L'item 'adesso' ora viene
+#             davvero aggiornato: time.py lo creava senza scriverci mai un valore.
+VERSION = "1.6.0"
 
 # -- Globals initialised at startup -----------------------------------------
 
@@ -91,6 +173,7 @@ config_manager: ConfigManager
 docker_manager: DockerManager
 backup_manager: BackupManager
 release_manager: ReleaseManager
+habapp_manager: HABAppManager
 
 HOST_PROC = "/host/proc"
 
@@ -133,7 +216,7 @@ def _restore_config_if_missing(config_path: str) -> None:
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    global config_manager, docker_manager, backup_manager, release_manager
+    global config_manager, docker_manager, backup_manager, release_manager, habapp_manager
 
     config_path = os.environ.get("CONFIG_PATH", "/data/arfea.yml")
 
@@ -155,6 +238,7 @@ async def lifespan(app: FastAPI):
     docker_manager = DockerManager(config_manager)
     backup_manager = BackupManager(config_manager.config.backup, docker_manager)
     release_manager = ReleaseManager(config_manager, docker_manager, backup_manager)
+    habapp_manager = HABAppManager(config_manager, docker_manager)
 
     # Check for updates at startup (before starting services)
     if _check_startup_update():
@@ -379,10 +463,26 @@ def enable_service(name: str):
             res = docker_manager.create_and_start(svc_name)
             results.append(f"{svc_name}: {res.message}")
 
+    details: dict = {}
+    if results:
+        details["started"] = results
+    if name == "habapp":
+        # Il container puo' partire benissimo e HABApp restare inutile (senza
+        # token non crea item, senza funzioni non ha regole): dirlo subito, non
+        # lasciarlo scoprire dai log.
+        prov_ok, prov_msg = habapp_last_provision()
+        if not prov_ok and prov_msg:
+            details["warning"] = prov_msg
+        elif not habapp_manager.selected_functions():
+            details["warning"] = (
+                "HABApp è avviato ma non ha nessuna funzione attiva: "
+                "scegli quali attivare (termoregolazione, irrigazione, carichi)."
+            )
+
     return OperationResponse(
         success=True,
         message=f"'{name}' enabled",
-        details={"started": results} if results else None,
+        details=details or None,
     )
 
 
@@ -699,9 +799,6 @@ def _deploy_openhab_files(skeleton_dir: Path) -> None:
 # dell'host con nsenter (OpenHAB è network_mode: host).
 # ---------------------------------------------------------------------------
 
-_OH_ADMIN_USER = "admin"
-
-
 def _ui_dir() -> Path:
     return Path(config_manager.config.controller.data_path) / "arfea-controller" / "skeleton-openhab" / "ui"
 
@@ -740,20 +837,6 @@ def _oh_rest_ready() -> bool:
         return False
 
 
-def _mint_oh_token() -> str:
-    """Conia un API token admin via console Karaf (come lo script di setup)."""
-    import re
-    token_name = f"arfeaOTA{int(time.time())}"
-    code, out = docker_manager.karaf_console(
-        f"openhab:users addApiToken {_OH_ADMIN_USER} {token_name} arfea"
-    )
-    if code != 0:
-        return ""
-    # Il token ha forma oh.<nome>.<segreto>; lo estraiamo ignorando banner/prompt.
-    tokens = re.findall(r"oh\.[A-Za-z0-9._-]+", out)
-    return tokens[-1] if tokens else ""
-
-
 def _import_ui_components(wait_ready: bool = True) -> tuple[bool, str]:
     """Reimporta tutti i widget/pagine da skeleton-openhab/ui in OpenHAB via REST."""
     ui_dir = _ui_dir()
@@ -767,7 +850,7 @@ def _import_ui_components(wait_ready: bool = True) -> tuple[bool, str]:
     if not _oh_rest_ready():
         return (False, "OpenHAB REST non raggiungibile")
 
-    token = _mint_oh_token()
+    token = docker_manager.mint_oh_token("OTA")
     if not token:
         return (False, "Impossibile generare il token admin OpenHAB")
 
@@ -1127,6 +1210,93 @@ def get_linphone_status():
         "configured": bool(cfg.sip_host and cfg.sip_username and cfg.emergency_number),
         "registration": registration,
     }
+
+
+# ---------------------------------------------------------------------------
+# HABApp: funzioni attive e configurazione degli impianti (params)
+#
+# Le regole/librerie arrivano con l'OTA del controller (arfea-controller/habapp/
+# <ver>/) e vengono deployate in openhab/conf/habapp per le sole funzioni scelte
+# qui. La configurazione dei singoli impianti (quali termostati, quali zone di
+# irrigazione, quali carichi) sta nei params, editabili da questi endpoint senza
+# mettere le mani sui file via Samba.
+# ---------------------------------------------------------------------------
+
+@app.get("/api/habapp/status", response_model=HABAppStatus, dependencies=[Depends(verify_api_key)])
+def get_habapp_status():
+    return habapp_manager.status()
+
+
+@app.put("/api/habapp/functions", response_model=OperationResponse, dependencies=[Depends(verify_api_key)])
+def set_habapp_functions(body: HABAppFunctionsUpdate):
+    """Sceglie le funzioni attive e le applica subito.
+
+    Il deploy dei sorgenti avviene alla creazione del container, quindi qui si
+    ricrea habapp: un restart non basterebbe a fargli caricare regole nuove.
+    """
+    try:
+        functions = habapp_manager.set_functions(body.functions)
+    except ValueError as exc:
+        raise HTTPException(400, str(exc))
+
+    svc = config_manager.config.services.get("habapp")
+    if svc is None or not svc.enabled:
+        return OperationResponse(
+            success=True,
+            message="Funzioni salvate. Verranno applicate quando abiliterai HABApp.",
+            details={"functions": functions},
+        )
+
+    # La recreate fa passare da _ensure_default_config -> provisioning HABApp.
+    result = docker_manager.recreate_service("habapp")
+    prov_ok, prov_msg = habapp_last_provision()
+
+    details: dict = {"functions": functions}
+    if not prov_ok and prov_msg:
+        details["warning"] = prov_msg
+    return OperationResponse(
+        success=result.success,
+        message=("Funzioni applicate, HABApp ricreato" if result.success
+                 else f"Funzioni salvate ma HABApp non riparte: {result.message}"),
+        details=details,
+    )
+
+
+@app.get("/api/habapp/params/{function}", dependencies=[Depends(verify_api_key)])
+def get_habapp_params(function: str):
+    """YAML grezzo del file params di una funzione."""
+    try:
+        content = habapp_manager.read_params(function)
+    except KeyError:
+        raise HTTPException(404, f"Funzione HABApp sconosciuta: '{function}'")
+    return {"function": function, "content": content}
+
+
+@app.put("/api/habapp/params/{function}", response_model=OperationResponse, dependencies=[Depends(verify_api_key)])
+def put_habapp_params(function: str, body: HABAppParamsUpdate):
+    """Salva un file params (validato) e riavvia HABApp per applicarlo.
+
+    Il riavvio e' esplicito: solo irrigation.py dichiara `reloads on:
+    params/irrigation.yml`, quindi per le altre funzioni un salvataggio da solo
+    non avrebbe alcun effetto visibile — peggio che inutile, ingannevole.
+    """
+    try:
+        habapp_manager.write_params(function, body.content)
+    except KeyError:
+        raise HTTPException(404, f"Funzione HABApp sconosciuta: '{function}'")
+    except ValueError as exc:
+        raise HTTPException(400, str(exc))
+
+    status = docker_manager.get_service_status("habapp")
+    if status.state.value != "running":
+        return OperationResponse(success=True, message="Configurazione salvata (HABApp non è in esecuzione)")
+
+    result = docker_manager.restart_service("habapp")
+    return OperationResponse(
+        success=result.success,
+        message=("Configurazione salvata, HABApp riavviato" if result.success
+                 else f"Configurazione salvata ma riavvio fallito: {result.message}"),
+    )
 
 
 @app.post("/api/linphone/call", response_model=OperationResponse, dependencies=[Depends(verify_api_key)])

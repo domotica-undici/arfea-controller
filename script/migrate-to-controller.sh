@@ -738,6 +738,18 @@ copy_native_data() {
     fi
   fi
 
+  # userdata/logs deve esistere PRIMA del primo avvio. L'entrypoint openhab lo
+  # crea (copiando dist/userdata) solo se la userdata e' vuota, e dopo la
+  # migrazione non lo e' mai. Con userdata a versione diversa dall'immagine
+  # parte l'upgrade, che come prima cosa fa "... | tee $OPENHAB_LOGDIR/update.log":
+  # senza la dir tee fallisce e, con "set -eu -o pipefail" attivo nell'entrypoint,
+  # il container muore prima di avviare openhab.
+  mkdir -p "$DEST/userdata/logs"
+
+  # Log di crash JVM lasciati dall'installazione nativa: inutili e finirebbero
+  # nel tar di backup che l'upgrade crea in userdata/backup.
+  rm -f "$DEST/userdata"/hs_err_pid*.log
+
   # addons manuali (kar/jar)
   if [[ -d "$ADDONS" ]] && [[ -n "$(ls -A "$ADDONS" 2>/dev/null)" ]]; then
     log "  addons:   $ADDONS -> $DEST/addons"
@@ -778,15 +790,13 @@ deploy_arfea_skeleton() {
   chown -R "$OH_UID:$OH_GID" "$DEST/conf" "$DEST/cont-init.d"
 }
 
-# mosquitto: assicura una config minima (il container deve poter partire).
-ensure_mosquitto_config() {
-  $NAT_MOSQUITTO || return 0
-  if [[ ! -f "$DATA_PATH/mosquitto/config/mosquitto.conf" ]]; then
-    log "  mosquitto: creo config minima ($DATA_PATH/mosquitto/config/mosquitto.conf)"
-    mkdir -p "$DATA_PATH/mosquitto"/{config,data,log}
-    printf 'allow_anonymous true\nlistener 1883 0.0.0.0\n' > "$DATA_PATH/mosquitto/config/mosquitto.conf"
-  fi
-}
+# NB: le config di default dei servizi (mosquitto.conf, settings.json di
+# zwave-js-ui, configuration.yaml di zigbee2mqtt) NON si installano qui.
+# Le crea il controller alla creazione del container (_ensure_default_config in
+# app/docker_manager.py), che copre anche i servizi accesi dalla Web UI dopo la
+# migrazione — cosa che questo script, per definizione, non puo' fare.
+# Non reintrodurle: erano duplicate qui e in install.sh e sono andate alla deriva
+# (install.sh creava mosquitto.conf, questo script no → broker senza config).
 
 configure_yml_native() {
   local YML="$DATA_PATH/arfea-controller/config/arfea.yml"
@@ -899,7 +909,6 @@ run_native_migration() {
   echo ""; log "[5/7] Estrazione tarball + configurazione arfea.yml..."
   extract_tarball
   deploy_arfea_skeleton
-  ensure_mosquitto_config
   configure_yml_native
 
   echo ""; log "[6/7] Build e avvio arfea-controller..."

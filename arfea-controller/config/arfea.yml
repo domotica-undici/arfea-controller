@@ -49,6 +49,23 @@ linphone:
   call_timeout: 30             # secondi di attesa risposta
   repeat: 2                    # ripetizioni del messaggio durante la chiamata
 
+# ── HABApp: funzioni di automazione attive su questo impianto ──
+# Si scelgono dalla Web UI (card HABApp). Ad ogni creazione del container il
+# controller deploya in openhab/conf/habapp SOLO le regole/librerie delle
+# funzioni elencate qui, conia il token admin OpenHAB e scrive config.yml.
+# La configurazione dei singoli impianti sta nei params (openhab/conf/habapp/
+# params/*.yml), anch'essi editabili dalla Web UI.
+#
+# Valori: thermo (termoregolazione), irrigation (irrigazione), loads (carichi).
+#   functions: [thermo, irrigation]
+#
+# La chiave functions QUI NON VA MESSA: la scrive il controller alla prima
+# abilitazione, deducendo le funzioni da quelle gia' installate (impianti
+# migrati da HABApp nativo, dove le regole del cliente sono gia' al loro posto).
+# Scriverci "functions: []" a mano significherebbe "nessuna funzione" e al primo
+# avvio le regole dell'impianto verrebbero rimosse.
+habapp: {}
+
 dependencies:
   - when_any_enabled: [zwave-js-ui, zigbee2mqtt]
     then_enable: mosquitto

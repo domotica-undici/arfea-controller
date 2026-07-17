@@ -18,6 +18,9 @@
 #     templates/              # Config predefinite per servizi opzionali
 #       zigbee2mqtt/
 #       zwave-js-ui/
+#     habapp/<ver>/           # Regole + librerie HABApp (config.yml, logging.yml,
+#                             # lib/, rules/): il controller ne deploya le sole
+#                             # funzioni scelte quando si abilita HABApp
 #     migrations/             # Script di migrazione versione (release certificate)
 #     script/                 # Script utili (fallback manuali)
 #       import-ui-components.sh
@@ -61,6 +64,32 @@ cp -r "$REPO_DIR/skeleton-openhab/ui" "$STAGING/skeleton-openhab/ui"
 # ── Template config (zigbee2mqtt, zwave-js-ui) ──
 if [[ -d "$REPO_DIR/templates" ]]; then
   cp -r "$REPO_DIR/templates" "$STAGING/templates"
+fi
+
+# ── Sorgenti HABApp (regole + librerie) ──
+# Viaggiano nell'OTA come skeleton-openhab/ e templates/: sull'impianto finiscono
+# in $DATA_PATH/arfea-controller/habapp/<ver>/ e il controller ne deploya in
+# openhab/conf/habapp SOLO le funzioni scelte (habapp_manager.py). Cosi'
+# abilitare HABApp non richiede rete e la versione dei sorgenti e' sempre quella
+# del controller in esecuzione. Il sottoinsieme e' definito in habapp-subset.sh.
+# shellcheck source=script/habapp-subset.sh
+source "$SCRIPT_DIR/habapp-subset.sh"
+HABAPP_SRC="$REPO_DIR/$HABAPP_SRC_REL"
+if [[ -d "$HABAPP_SRC" ]]; then
+  HABAPP_DST="$STAGING/habapp/$HABAPP_VER"
+  mkdir -p "$HABAPP_DST/lib" "$HABAPP_DST/rules"
+  for f in "${HABAPP_ROOT_FILES[@]}"; do
+    cp "$HABAPP_SRC/$f" "$HABAPP_DST/"
+  done
+  for d in "${HABAPP_LIB_DIRS[@]}"; do
+    cp -r "$HABAPP_SRC/lib/$d" "$HABAPP_DST/lib/$d"
+  done
+  for d in "${HABAPP_RULE_DIRS[@]}"; do
+    cp -r "$HABAPP_SRC/rules/$d" "$HABAPP_DST/rules/$d"
+  done
+  echo "  HABApp $HABAPP_VER: incluse regole [${HABAPP_RULE_DIRS[*]}]"
+else
+  echo "  ATTENZIONE: sorgenti HABApp assenti ($HABAPP_SRC), tarball senza HABApp" >&2
 fi
 
 # ── Migrazioni di versione (release certificate) ──

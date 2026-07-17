@@ -1,7 +1,12 @@
 // ─────────────────────────────────────────────────────────────
 // ARFEA System – portato da HABApp
 //   - rules/aasystem/arfea.py (gPersistence, users_list, messaging, gBatteryPowered)
-//   - rules/aasystem/time.py  (timeSlots, timeSlot, isHoliday, holidayName)
+//   - rules/aasystem/time.py  (timeSlots, timeSlot, isHoliday, holidayName, adesso)
+//
+// Questo file è l'UNICA implementazione delle fasce giornaliere: vive nello
+// skeleton, quindi è presente in OGNI installazione anche senza HABApp.
+// rules/aasystem/time.py faceva le stesse cose in parallelo (e ricreava via
+// REST item già definiti da file): è stato rimosso da habapp/25.12.0.
 //
 // Gli item sono definiti in conf/items/arfea.items
 // ─────────────────────────────────────────────────────────────
@@ -70,6 +75,17 @@ function manageTimeSlot() {
     }
   } catch (e) {
     logger.error('ARFEA manageTimeSlot: {}', e.message);
+  }
+}
+
+// L'item 'adesso' esiste da sempre in arfea.items ma non lo aggiornava NESSUNO:
+// time.py lo creava e gli metteva i metadata senza mai scriverci un valore, e il
+// JS non lo gestiva. Restava a NULL per tutta la vita dell'impianto.
+function updateNow() {
+  try {
+    items.getItem('adesso').postUpdate(time.ZonedDateTime.now());
+  } catch (e) {
+    logger.warn('ARFEA updateNow: {}', e.message);
   }
 }
 
@@ -176,11 +192,16 @@ function checkBatteries() {
 // Rules
 // ─────────────────────────────────────────────────────────────
 
+// Un solo cron al minuto per fascia + orologio: 'adesso' si visualizza al minuto
+// (pattern %1$tH:%1$tM), non serve una seconda regola.
 rules.JSRule({
   name: 'ARFEA Time Slot Manager',
   id: 'arfea_time_slot_manager',
   triggers: [triggers.GenericCronTrigger('0 * * * * ?')],  // ogni minuto
-  execute: manageTimeSlot
+  execute: function () {
+    manageTimeSlot();
+    updateNow();
+  }
 });
 
 rules.JSRule({
@@ -203,4 +224,5 @@ rules.JSRule({
 
 initTimeSlotsDefault();
 manageTimeSlot();
+updateNow();
 updateItalianHoliday();

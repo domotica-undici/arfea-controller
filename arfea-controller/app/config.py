@@ -166,6 +166,13 @@ class ConfigManager:
         logger.info("Auto-migrazione arfea.yml: releases_url impostato a %s", ctrl.releases_url)
         return True
 
+    def set_habapp_functions(self, functions: list[str]) -> None:
+        """Persiste le funzioni HABApp attive. La validazione dei nomi sta in
+        habapp_manager, che e' l'unico a sapere quali esistono."""
+        self.config.habapp.functions = functions
+        self._save()
+        logger.info("Funzioni HABApp persistite in arfea.yml: %s", functions or "(nessuna)")
+
     def set_linphone_config(self, data: dict) -> LinphoneConfig:
         """Aggiorna (parzialmente) la configurazione linphone e persiste arfea.yml."""
         current = self.config.linphone.model_dump()
