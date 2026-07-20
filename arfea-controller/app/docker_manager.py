@@ -315,28 +315,73 @@ class DockerManager:
             timeout,
         )
 
-    def mint_oh_token(self, purpose: str = "arfea") -> str:
-        """Conia un API token admin OpenHAB. Stringa vuota se non ci riesce.
+    def wait_karaf_ready(self, timeout: int = 120) -> bool:
+        """La console Karaf esegue davvero i comandi openhab:* ?
+
+        Non basta che il container sia 'healthy': l'healthcheck guarda la REST
+        sulla 8080, ma i comandi della console sono registrati da un bundle che
+        parte per conto suo, dopo. Nella finestra in mezzo la console risponde e
+        dice "Command not found" — con rc=0 (vedi sotto). Chi conia un token li'
+        in mezzo non ottiene niente e crede che OpenHAB abbia rifiutato.
+        """
+        deadline = time.monotonic() + timeout
+        while True:
+            if self._get_container("openhab") is None:
+                return False  # non e' lentezza: non c'e' proprio, inutile insistere
+            code, out = self.karaf_console("openhab:users list")
+            if code == 0 and "Command not found" not in out:
+                return True
+            if time.monotonic() >= deadline:
+                logger.warning(
+                    "Console Karaf non pronta entro %ss (rc=%s): %s",
+                    timeout, code, out.strip()[:200],
+                )
+                return False
+            time.sleep(5)
+
+    def mint_oh_token(self, purpose: str = "arfea", wait: int = 120) -> tuple[str, str]:
+        """Conia un API token admin OpenHAB. Ritorna (token, errore).
 
         Serve a chiunque debba parlare con la REST di OpenHAB con privilegi di
         amministratore: la Basic Auth e' rifiutata di default
         (org.openhab.restauth:allowBasicAuth=false) e le richieste anonime
         ottengono il solo ruolo USER, che non basta per creare item o scrivere
         metadata (@RolesAllowed({Role.ADMIN})).
+
+        Il motivo del fallimento torna al chiamante e non solo nei log: senza
+        token HABApp e' inutile, e "non ha funzionato" non dice all'utente se
+        deve aspettare OpenHAB o creare l'utente admin.
+
+        (!) Il client Karaf esce SEMPRE con rc=0, anche per "Command not found"
+        e "User not found": l'esito va letto nell'output, non nell'exit code.
         """
+        if not self.wait_karaf_ready(timeout=wait):
+            return ("", "la console di OpenHAB non risponde (OpenHAB e' avviato?)")
+
         token_name = f"arfea{purpose}{int(time.time())}"
         code, out = self.karaf_console(
             f"openhab:users addApiToken {_OH_ADMIN_USER} {token_name} arfea"
         )
         if code != 0:
             logger.warning("Conio token OpenHAB fallito (rc=%s): %s", code, out.strip()[:200])
-            return ""
+            return ("", f"console OpenHAB non raggiungibile (rc={code})")
+
         # Il token ha forma oh.<nome>.<segreto>; lo estraiamo ignorando banner/prompt.
         tokens = re.findall(r"oh\.[A-Za-z0-9._-]+", out)
-        if not tokens:
-            logger.warning("Conio token OpenHAB: nessun token nell'output della console")
-            return ""
-        return tokens[-1]
+        if tokens:
+            return (tokens[-1], "")
+
+        if "User not found" in out:
+            # Tipico dell'impianto appena installato: la prima cosa che si fa
+            # nella UI di OpenHAB e' creare l'utente amministratore.
+            err = (f"l'utente '{_OH_ADMIN_USER}' non esiste in OpenHAB: "
+                   f"crealo dalla UI di OpenHAB (primo accesso), poi riprova")
+        elif "Command not found" in out:
+            err = "OpenHAB non ha ancora caricato i comandi della console: riprova tra un minuto"
+        else:
+            err = "la console di OpenHAB non ha restituito nessun token"
+        logger.warning("Conio token OpenHAB: %s. Output: %s", err, out.strip()[:200])
+        return ("", err)
 
     def pull_image(self, image: str) -> OperationResponse:
         """Scarica un'immagine (repo:tag). Fallisce PRIMA di toccare i container,

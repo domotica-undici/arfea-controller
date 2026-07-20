@@ -165,7 +165,41 @@ logger = logging.getLogger(__name__)
 #             duplicava arfea_system.js). Restano nel JS dello skeleton, quindi
 #             in OGNI impianto anche senza HABApp. L'item 'adesso' ora viene
 #             davvero aggiornato: time.py lo creava senza scriverci mai un valore.
-VERSION = "1.6.0"
+#   1.6.1  FIX Web UI: gli errori HTTP non vengono piu' inghiottiti. apiPost/apiPut
+#          facevano r.json() senza guardare resp.ok, ma un errore FastAPI e'
+#          {"detail": ...} e non {"success", "message"}: ogni HTTPException
+#          arrivava al chiamante come success/message undefined, che mostrava il
+#          proprio fallback generico. "Aggiorna Controller" diceva "Nessun
+#          aggiornamento applicato" — sintomo identico a "sei gia' aggiornato" —
+#          sia che mancasse update_url in arfea.yml (400), sia che nsenter non
+#          funzionasse (503), sia con chiave API errata (401). Ora la risposta e'
+#          normalizzata al contratto OperationResponse e la UI mostra la causa
+#          vera. Riguarda tutti i pulsanti, non solo l'aggiornamento.
+#   1.6.2  FIX HABApp senza token: un guasto transitorio diventava permanente.
+#          Il provisioning (config.yml + conio del token) gira SOLO alla
+#          creazione del container. Se li' fallisce — OpenHAB ancora in avvio,
+#          utente admin non ancora creato al primo accesso, sorgenti non ancora
+#          arrivati con l'OTA — il config.yml non viene scritto; HABApp allora se
+#          ne genera uno suo di default che punta a localhost:8080 (dentro il suo
+#          container: nessun OpenHAB) e non parla piu' con nessuno. E nessuno
+#          riprova: le partenze successive saltano il provisioning perche' il
+#          container esiste gia'. Risultato osservato: token_ok=false per sempre,
+#          HABApp vivo e inutile, e in HABApp.log "'ConnectionHandler' object has
+#          no attribute 'request'". Tre correzioni:
+#          a) Il client Karaf esce con rc=0 ANCHE su "Command not found" e "User
+#             not found": l'esito va letto nell'output, non nell'exit code. Il
+#             check su rc non intercettava nulla e mint_oh_token tornava ""
+#             senza dire perche'. Ora ritorna (token, errore) e il motivo vero
+#             arriva fino alla UI (vale anche per l'import UI dell'OTA).
+#          b) Prima di coniare si aspetta che la console esegua davvero i comandi
+#             openhab:* — 'healthy' guarda la REST sulla 8080, ma i comandi della
+#             console li registra un bundle che parte dopo: in mezzo si prendeva
+#             "Command not found" e si concludeva che OpenHAB avesse rifiutato.
+#          c) Auto-guarigione all'avvio del controller + POST /api/habapp/provision
+#             (pulsante in UI quando manca il token). Il guasto resta possibile
+#             — il token si conia solo con OpenHAB su — ma non e' piu' definitivo,
+#             e l'ordine di accensione dei servizi smette di contare.
+VERSION = "1.6.2"
 
 # -- Globals initialised at startup -----------------------------------------
 
@@ -252,11 +286,47 @@ async def lifespan(app: FastAPI):
         if not r.success:
             logger.warning("Startup issue: %s", r.message)
 
-    # Reimport widget UI se cambiati (post-OTA): in thread per non ritardare lo startup
-    threading.Thread(target=_maybe_import_ui, daemon=True).start()
+    # Lavori di avvio che parlano con OpenHAB: in un thread per non ritardare lo
+    # startup, ma in sequenza fra loro — aprono entrambi la console Karaf, che
+    # non va usata da due parti insieme.
+    threading.Thread(target=_startup_background, daemon=True).start()
 
     logger.info("ARFEA Controller ready")
     yield
+
+
+def _startup_background() -> None:
+    _maybe_import_ui()
+    _heal_habapp()
+
+
+def _heal_habapp() -> None:
+    """Ripara un HABApp rimasto senza token.
+
+    Il provisioning gira solo alla creazione del container. Se in quel momento
+    non riesce — OpenHAB ancora in avvio, utente admin non ancora creato,
+    sorgenti non ancora arrivati con l'OTA — il config.yml non viene scritto,
+    HABApp se ne genera uno suo che punta a localhost:8080 e da li' in poi non
+    parla con nessuno. E nessuno riprova mai, perche' il container ormai esiste
+    e le partenze successive saltano il provisioning: il guasto, transitorio,
+    diventa permanente. L'avvio del controller e' il momento buono per
+    accorgersene, ed e' anche cio' che rende l'ordine di accensione irrilevante.
+    """
+    svc = config_manager.config.services.get("habapp")
+    if svc is None or not svc.enabled or not habapp_manager.needs_config():
+        return
+
+    logger.warning("HABApp e' senza token di accesso a OpenHAB: riprovo il provisioning")
+    ok, msg = habapp_manager.provision()
+    if not ok:
+        logger.warning("HABApp: riparazione non riuscita: %s", msg)
+        return
+
+    # config.yml lo legge solo all'avvio: senza ricreare resterebbe con quello
+    # sbagliato gia' in memoria.
+    logger.info("HABApp: config riparata, ricreo il container")
+    res = docker_manager.recreate_service("habapp")
+    logger.info("HABApp: %s", res.message)
 
 
 api_key_header = APIKeyHeader(name="X-API-Key", auto_error=False)
@@ -850,9 +920,9 @@ def _import_ui_components(wait_ready: bool = True) -> tuple[bool, str]:
     if not _oh_rest_ready():
         return (False, "OpenHAB REST non raggiungibile")
 
-    token = docker_manager.mint_oh_token("OTA")
+    token, mint_err = docker_manager.mint_oh_token("OTA")
     if not token:
-        return (False, "Impossibile generare il token admin OpenHAB")
+        return (False, f"Impossibile generare il token admin OpenHAB: {mint_err}")
 
     ok, ko = 0, 0
     for yml in sorted(ui_dir.glob("*.yaml")):
@@ -957,6 +1027,9 @@ def _check_startup_update() -> bool:
     """Controlla aggiornamenti all'avvio. Ritorna True se un update è stato avviato."""
     update_url = config_manager.config.controller.update_url
     if not update_url:
+        # Senza log qui l'OTA disattivato era indistinguibile da "nessun
+        # aggiornamento disponibile": il controller restava indietro in silenzio.
+        logger.warning("update_url non configurato in arfea.yml: OTA disattivato")
         return False
 
     logger.info("Controllo aggiornamenti da %s", update_url)
@@ -1259,6 +1332,35 @@ def set_habapp_functions(body: HABAppFunctionsUpdate):
         message=("Funzioni applicate, HABApp ricreato" if result.success
                  else f"Funzioni salvate ma HABApp non riparte: {result.message}"),
         details=details,
+    )
+
+
+@app.post("/api/habapp/provision", response_model=OperationResponse, dependencies=[Depends(verify_api_key)])
+def provision_habapp():
+    """Rigenera la config di HABApp (token compreso) e lo ricrea.
+
+    E' il percorso di recupero esplicito per l'unico guasto che il controller
+    non puo' evitare: il token si conia solo se OpenHAB e' su, con l'utente
+    admin gia' creato. Se al momento dell'attivazione non lo era, senza questo
+    l'unico modo per riprovare era ri-applicare le funzioni (poco ovvio) o
+    riavviare il controller.
+    """
+    ok, msg = habapp_manager.provision()
+    if not ok:
+        return OperationResponse(success=False, message=msg)
+
+    svc = config_manager.config.services.get("habapp")
+    if svc is None or not svc.enabled:
+        return OperationResponse(
+            success=True,
+            message="Config HABApp rigenerata. Verrà usata quando abiliterai HABApp.",
+        )
+
+    result = docker_manager.recreate_service("habapp")
+    return OperationResponse(
+        success=result.success,
+        message=("Token rigenerato, HABApp ricreato" if result.success
+                 else f"Token rigenerato ma HABApp non riparte: {result.message}"),
     )
 
 

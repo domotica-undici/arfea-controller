@@ -316,6 +316,11 @@ class HABAppManager:
         impianto migrato si tiene il suo config.yml scritto a mano (location,
         mqtt, ...). Senza token il file va rigenerato dal template: prima se ne
         salva una copia .bak, cosi' niente va perso davvero.
+
+        Il file va rigenerato anche quando c'e' ma senza token, ed e' il caso
+        normale dopo un provisioning fallito: HABApp, se non trova config.yml,
+        se ne scrive uno suo di default che punta a localhost:8080 — dentro il
+        suo container, dove non c'e' nessun OpenHAB.
         """
         dst = dest / "config.yml"
         if self._read_token(dst):
@@ -327,11 +332,10 @@ class HABAppManager:
             logger.warning(msg)
             return (False, msg)
 
-        token = self._mint_token()
+        token, err = self._mint_token()
         if not token:
-            msg = ("Impossibile generare il token admin OpenHAB per HABApp "
-                   "(OpenHAB non pronto?): HABApp non potra' creare item. "
-                   "Riprova ad abilitarlo con OpenHAB avviato.")
+            msg = (f"Impossibile generare il token admin OpenHAB per HABApp: {err}. "
+                   f"Senza token HABApp non puo' creare item.")
             logger.warning(msg)
             return (False, msg)
 
@@ -373,10 +377,15 @@ class HABAppManager:
         user = str(user or "")
         return user if _TOKEN_RE.match(user) else ""
 
-    def _mint_token(self) -> str:
+    def _mint_token(self) -> tuple[str, str]:
         if self.docker is None:
-            return ""
+            return ("", "controller senza accesso a Docker")
         return self.docker.mint_oh_token("HABApp")
+
+    def needs_config(self) -> bool:
+        """True se HABApp sta girando (o partira') con una config che non
+        abbiamo scritto noi, cioe' senza token: non creera' nessun item."""
+        return not self._read_token(self.config_dir() / "config.yml")
 
     # ------------------------------------------------------------------
     # Params (editor Web UI)

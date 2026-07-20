@@ -106,6 +106,7 @@
       <div class="card">
         <h2>HABApp (automazioni)</h2>
         <div id="habappStatus" class="status-bar status-idle">Caricamento...</div>
+        <button class="btn btn-blue btn-block" id="btnHabappFix" onclick="fixHabappToken()" style="display:none; margin-top:8px">Rigenera token e ricrea HABApp</button>
         <p class="hint">Scegli quali funzioni attivare: il controller installa le regole solo per queste. Le altre non vengono nemmeno caricate.</p>
         <div id="habappFunctions"></div>
         <div id="habappProgress"></div>
@@ -249,14 +250,39 @@ function apiFetch(path, opts) {
 }
 
 function apiGet(path) { return apiFetch(path).then(function(r) { return r.json(); }); }
-function apiPost(path) { return apiFetch(path, {method:'POST'}).then(function(r) { return r.json(); }); }
-function apiPut(path) { return apiFetch(path, {method:'PUT'}).then(function(r) { return r.json(); }); }
+
+// Un errore FastAPI e' {"detail": ...}, NON {"success", "message"}: senza
+// normalizzarlo i chiamanti ricevevano un oggetto con success/message undefined e
+// mostravano il loro fallback generico ("Nessun aggiornamento applicato"),
+// nascondendo la causa vera — 401 chiave errata, 400 update_url mancante, 503
+// nsenter non disponibile. L'errore va detto, non inghiottito.
+function apiErrorMessage(resp, body) {
+  var d = body && body.detail;
+  if (typeof d === 'string' && d) return d;
+  if (d) { try { return JSON.stringify(d); } catch (e) { /* body illeggibile */ } }
+  if (body && body.message) return body.message;
+  return 'Errore HTTP ' + resp.status + ' ' + resp.statusText;
+}
+
+// Ritorna sempre il contratto OperationResponse {success, message} che si aspettano
+// tutti i chiamanti, anche quando la risposta e' un errore o non e' JSON affatto.
+function apiSend(path, opts) {
+  return apiFetch(path, opts).then(function(resp) {
+    return resp.json().catch(function() { return null; }).then(function(body) {
+      if (resp.ok) return body || {};
+      return { success: false, message: apiErrorMessage(resp, body) };
+    });
+  });
+}
+
+function apiPost(path) { return apiSend(path, {method:'POST'}); }
+function apiPut(path) { return apiSend(path, {method:'PUT'}); }
 function apiPutJson(path, body) {
-  return apiFetch(path, {
+  return apiSend(path, {
     method: 'PUT',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(body)
-  }).then(function(r) { return r.json(); });
+  });
 }
 
 // ── Refresh ───────────────────────────────────────────────
@@ -571,6 +597,10 @@ function refreshHabapp() {
 function renderHabappStatus(st) {
   var el = document.getElementById('habappStatus');
   var active = st.functions.filter(function(f) { return f.enabled; });
+  // Il pulsante di riparazione compare solo nel caso che ripara: HABApp acceso
+  // e senza token.
+  document.getElementById('btnHabappFix').style.display =
+    (st.installed && st.service_enabled && !st.token_ok) ? '' : 'none';
   if (!st.installed) {
     el.className = 'status-bar status-failed';
     el.textContent = 'Sorgenti HABApp non presenti: aggiorna il controller per riceverli.';
@@ -585,7 +615,8 @@ function renderHabappStatus(st) {
     // Distinzione che conta: il container puo' girare benissimo e HABApp non
     // riuscire comunque a creare un solo item.
     el.className = 'status-bar status-failed';
-    el.textContent = 'Manca il token di accesso a OpenHAB: HABApp non può creare item. Verifica che OpenHAB sia avviato e ri-applica le funzioni.';
+    el.textContent = 'Manca il token di accesso a OpenHAB: HABApp non può creare item. '
+      + 'Con OpenHAB avviato (e l\'utente admin già creato) usa il pulsante qui sotto.';
     return;
   }
   if (active.length === 0) {
@@ -595,6 +626,25 @@ function renderHabappStatus(st) {
   }
   el.className = 'status-bar status-completed';
   el.textContent = 'HABApp ' + st.version + ' attivo — ' + active.map(function(f) { return f.label; }).join(', ');
+}
+
+function fixHabappToken() {
+  if (!confirm('Rigenerare il token di accesso a OpenHAB?\nHABApp verrà ricreato.')) return;
+  var btn = document.getElementById('btnHabappFix');
+  btn.disabled = true; btn.textContent = 'Riparo...';
+  setProgress('habappProgress', 40, 'running');
+  apiPost('/habapp/provision').then(function(r) {
+    setProgress('habappProgress', 100, r.success ? 'completed' : 'failed');
+    alert(r.message || (r.detail || 'Errore'));
+    setTimeout(function() { clearProgress('habappProgress'); }, 1500);
+    btn.disabled = false; btn.textContent = 'Rigenera token e ricrea HABApp';
+    refreshHabapp();
+    refreshServices();
+  }).catch(function(e) {
+    setProgress('habappProgress', 100, 'failed');
+    alert('Errore: ' + e.message);
+    btn.disabled = false; btn.textContent = 'Rigenera token e ricrea HABApp';
+  });
 }
 
 function renderHabappFunctions(st) {
