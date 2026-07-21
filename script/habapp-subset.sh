@@ -13,8 +13,6 @@
 #   rules/aasystem/      arfea.py e' legacy (buona parte gia' portata in
 #                        conf/automation/js/arfea_system.js); time.py e' stato
 #                        rimosso perche' duplicava le fasce del JS.
-#   rules/accessControl/ specifico cliente
-#   rules/infraRed/      specifico cliente + contiene un certificato (pecosoft.ca)
 #   params/              configurazione DELL'IMPIANTO, non un template: thermo.yml
 #                        e' un impianto reale. Sull'impianto i params li crea il
 #                        controller vuoti ({}) e li si edita dalla Web UI.
@@ -38,4 +36,4 @@ HABAPP_ROOT_FILES=(config.yml logging.yml)
 
 # Path (relativi alla radice della repo) esclusi dalla repo pubblica.
 # Usata da export-public.sh, che filtra l'output di `git ls-files`.
-HABAPP_EXCLUDE_REGEX="^habapp/${HABAPP_VER//./\\.}/habapp/(rules/(aasystem|accessControl|infraRed)/|params/|config/|log/)"
+HABAPP_EXCLUDE_REGEX="^habapp/${HABAPP_VER//./\\.}/habapp/(rules/aasystem/|params/|config/|log/)"

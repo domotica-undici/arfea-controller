@@ -48,7 +48,7 @@ class IrrigationZone(HABApp.Rule):
         else:
             myGroups = ['gIrrigation_valves']
 
-        self.openhab.create_item(self._type.capitalize(), itemName, label=self.label, tags=['Equipment', 'Valve'], groups=myGroups)
+        self.openhab.create_item(self._type.capitalize(), itemName, label=self.label, tags=['Valve'], groups=myGroups)
         self.openhab.create_item("Number", f'{itemName}_management', label=f'Attivazione {itemName}', groups=['gPersistence', 'gIrrigation_valves_management'])
         self.openhab.create_item("String", f'{itemName}_schedule', label=f'Pianificazione {itemName}', groups=['gPersistence'])
         """

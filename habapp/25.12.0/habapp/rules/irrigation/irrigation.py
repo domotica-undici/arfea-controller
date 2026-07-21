@@ -25,12 +25,15 @@ class Irrigation(HABApp.Rule):
 
 #Groups and items
         itemName="gIrrigation_pumps"
-        self.openhab.create_item("Group", itemName, label='Pompe irrigazione', category='sani_pump', tags=['Equipment', 'Pump'], groups=None, group_type='Switch', group_function='OR', group_function_params=['ON','OFF'])
+        #aggregatore globale: non e' un equipment fisico e non sta in una Location,
+        #quindi resta fuori dal modello semantico. Il tag Equipment sta sulle singole pompe.
+        self.openhab.create_item("Group", itemName, label='Pompe irrigazione', category='sani_pump', tags=[], groups=None, group_type='Switch', group_function='OR', group_function_params=['ON','OFF'])
         self.openhab.post_update(itemName, "OFF")
         self.utils.set_stateDescription_metadata(itemName,"%s")
         
         itemName="gIrrigation_valves"
-        self.openhab.create_item("Group", itemName, label='Valvole irrigazione', category='sani_valve_50', tags=['Equipment', 'Valve'], groups=None, group_type='Switch', group_function='OR', group_function_params=['ON','OFF'])
+        #aggregatore globale: il tag Equipment sta sulle singole zone (irrigation/zone.py)
+        self.openhab.create_item("Group", itemName, label='Valvole irrigazione', category='sani_valve_50', tags=[], groups=None, group_type='Switch', group_function='OR', group_function_params=['ON','OFF'])
         self.openhab.post_update(itemName, "OFF")
         self.utils.set_stateDescription_metadata(itemName,"%s")
 
@@ -71,7 +74,7 @@ class Irrigation(HABApp.Rule):
                 #the group holds the zones served by this pump: it aggregates them for
                 #the UI, the relay is driven by update_pump()
                 #if not self.oh.item_exists(itemName):
-                self.openhab.create_item("Group", itemName, label=label, group_type='Switch', group_function='OR', group_function_params=['ON','OFF'], groups=['gIrrigation_pumps'])
+                self.openhab.create_item("Group", itemName, label=label, tags=['Pump'], group_type='Switch', group_function='OR', group_function_params=['ON','OFF'], groups=['gIrrigation_pumps'])
 
                 self.openhab.create_item(pumpType.capitalize(), f'{itemName}_switch', label=label, groups=['gIrrigation_pumps'])
 

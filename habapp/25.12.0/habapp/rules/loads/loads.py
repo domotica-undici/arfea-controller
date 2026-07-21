@@ -38,7 +38,8 @@ class Loads(HABApp.Rule):
 
 #Create items for Loads management
         itemName="gLoads"
-        self.openhab.create_item("Group", itemName, label='Carichi', category='poweroutlet', tags=['PowerOutlet'], group_type='Switch', group_function='OR', group_function_params=['ON','OFF'])
+        #aggregatore globale: il tag Equipment sta sui singoli carichi (loads/load.py)
+        self.openhab.create_item("Group", itemName, label='Carichi', category='poweroutlet', tags=[], group_type='Switch', group_function='OR', group_function_params=['ON','OFF'])
         self.utils.set_stateDescription_metadata(itemName,"%s")
 
         #Real time consumption
@@ -53,8 +54,9 @@ class Loads(HABApp.Rule):
         #self.openhab.set_metadata(itemName, "stateDescription", "displayState", {'pattern': 'KW'} )
         self.utils.set_stateDescription_metadata(itemName,"%.1f KW")
 
-        self.openhab.post_update(itemName, 3.0)
-
+        #NON forzare qui un valore: maxPower e' impostato dall'utente e persistito (gPersistence).
+        #Un post_update incondizionato lo riazzerava a 3.0 KW ad ogni riavvio di HABApp.
+        #Il default 3.0 lo applica bindItem, ma solo se l'item e' ancora NULL.
         self._maxPower = float(self.utils.bindItem(
                             itemName, 
                             self.maxPower_changed, 

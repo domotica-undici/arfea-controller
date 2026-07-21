@@ -32,11 +32,13 @@ class ThermoCommons(HABApp.Rule):
 
         itemName="onoffvalves_heat"
         if not self.openhab.item_exists(itemName):
-            self.openhab.create_item("Group", itemName, label='Valvole riscaldamento', category='sani_valve_50', tags=['Status', 'Switch'], groups=[], group_type='Switch', group_function='AND', group_function_params=['ON', 'OFF'])
+            #aggregatore globale: il tag Equipment_Valve sta sui gruppi valvole del singolo termostato
+            self.openhab.create_item("Group", itemName, label='Valvole riscaldamento', category='sani_valve_50', tags=[], groups=[], group_type='Switch', group_function='AND', group_function_params=['ON', 'OFF'])
 
         itemName="onoffvalves_cool"
         if not self.openhab.item_exists(itemName):
-            self.openhab.create_item("Group", itemName, label='Valvole raffrescamento', category='sani_valve_50', tags=['Status', 'Switch'], groups=[], group_type='Switch', group_function='AND', group_function_params=['ON', 'OFF'])
+            #aggregatore globale: il tag Equipment_Valve sta sui gruppi valvole del singolo termostato
+            self.openhab.create_item("Group", itemName, label='Valvole raffrescamento', category='sani_valve_50', tags=[], groups=[], group_type='Switch', group_function='AND', group_function_params=['ON', 'OFF'])
 
         #Raggruppa i sensori di temperatura, usato per l'interazione con HECOS
         itemName="gTemperatureSensors"

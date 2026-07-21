@@ -137,12 +137,14 @@ class THUtils(HABApp.Rule):
             self.openhab.create_item('Group', itemName, label=label, category='window', tags=['Window'], groups=groupName, group_type='Contact', group_function='OR', group_function_params=['OPEN', 'CLOSED'])
             
         if createType == "window":
-            self.openhab.create_item('Contact', itemName, label=f'{itemName}', category='window', tags=['Status'], groups=groupName)
+            self.openhab.create_item('Contact', itemName, label=f'{itemName}', category='window', tags=['Status', 'OpenState'], groups=groupName)
             self.openhab.set_metadata(itemName, "stateDescription", "displayState", {'pattern': '%s'})
             self.openhab.post_update(itemName, 'CLOSED')
 
         if createType == "onoffvalvesGroup":
-            self.openhab.create_item('Group', itemName, label=label, category='sani_valve_50', tags=['Status', 'Valve'], groups=groupName, group_type='Switch', group_function='AND', group_function_params=['ON', 'OFF'])
+            #Equipment_Valve: il gruppo sta nell'ambient (Location) del termostato.
+            #'Status' era un tag Point e non poteva convivere con un Equipment.
+            self.openhab.create_item('Group', itemName, label=label, category='sani_valve_50', tags=['Valve'], groups=groupName, group_type='Switch', group_function='AND', group_function_params=['ON', 'OFF'])
             self.openhab.set_metadata(itemName, "stateDescription", "displayState", {'pattern': '%s'})
 
         if createType == "onoffvalve":
@@ -150,11 +152,13 @@ class THUtils(HABApp.Rule):
             self.openhab.set_metadata(itemName, "stateDescription", "displayState", {'pattern': '%s'})
 
         if createType == "analogvalvesGroup":
-            self.openhab.create_item('Group', itemName, label=f'{label}', category='sani_valve_50', tags=['OpenLevel'], groups=groupName, group_type='Number', group_function='MAX')
+            #Equipment_Valve: 'OpenLevel' e' una Property e da sola non e' un tag valido
+            self.openhab.create_item('Group', itemName, label=f'{label}', category='sani_valve_50', tags=['Valve'], groups=groupName, group_type='Number', group_function='MAX')
             self.openhab.set_metadata(itemName, "stateDescription", "displayState", {'pattern': '%d %%'})
 
         if createType == "analogvalve":
-            self.openhab.create_item('Number', itemName, label=f'{label}', category='sani_valve_50', tags=['OpenLevel'], groups=groupName)
+            #Point_Control + Property_OpenLevel: la Property richiede sempre un tag Point
+            self.openhab.create_item('Number', itemName, label=f'{label}', category='sani_valve_50', tags=['Control', 'OpenLevel'], groups=groupName)
             self.openhab.set_metadata(itemName, "stateDescription", "displayState", {'pattern': '%d %%'})
             
         if createType == "fancoilGroup":

@@ -48,7 +48,8 @@ class Virtual(HABApp.Rule):
         #Mode is a virtual item, not bound to a phisical device so it must be created
         itemName = f'{str(self.name)}_mode'
         #if not self.oh.item_exists(itemName):
-        self.openhab.create_item('Number', itemName, label='funzionamento', tags=['Control', 'Switch'], groups=[name])
+        #un solo tag Point: 'Switch' e' Point_Control_Switch, quindi era in conflitto con 'Control'
+        self.openhab.create_item('Number', itemName, label='funzionamento', tags=['Control'], groups=[name])
       
         self._mode = float(self.utils.bindItem(
                                     itemName, 
