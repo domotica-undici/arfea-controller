@@ -4,7 +4,6 @@ log = logging.getLogger('HABApp')
 import HABApp
 from HABApp.core.events import ValueChangeEventFilter
 import json
-from threading import Timer
 
 from loads.load import Load
 from system.utils import Utils
@@ -23,11 +22,27 @@ class Loads(HABApp.Rule):
 
         self.utils = Utils()
 
+        #Carico con distacco programmato (timer in corso) e nome del timer.
+        #Tools.timers e' condiviso con termostati e irrigazione, quindi il nome va qualificato.
+        self._pendingLoad = None
+        self._shutOffTimer = 'loads_shutOff'
+
         self.run.soon(self.load_configuration)
 
     def load_configuration(self):
+        self.tools = self.get_rule('Tools') #load with this syntax otherwise timers won't works
+
 #Load configuration
         cfg = HABApp.DictParameter('loads')    # this will get the file content
+
+        #Tutta la procedura ragiona in kW, come maxPower. Se il misuratore pubblica Watt su
+        #plantPowerConsumption il confronto salta (2092 W risultano > 5 kW disponibili) e i carichi
+        #vengono staccati tutti a cascata: 'powerUnit' dichiara l'unita' della sorgente ('W' o 'kW').
+        powerUnit = str(cfg['powerUnit']).strip().upper() if 'powerUnit' in cfg else 'KW'
+        self._powerFactor = 0.001 if powerUnit == 'W' else 1.0
+        self._unitWarned = False
+        log.debug(f'plantPowerConsumption letto in {powerUnit} (fattore {self._powerFactor})')
+
         self.loads = []
         if "loads" in cfg:
             for load in cfg['loads']:
@@ -166,9 +181,26 @@ class Loads(HABApp.Rule):
     def maxPower_changed(self, event):
         self.maxPower = float(event.value)
 
+    """
+        Riporta il consumo letto nella stessa unita' di maxPower (kW).
+        Oltre al fattore dichiarato in params c'e' una rete di sicurezza: uno scarto di tre ordini
+        di grandezza rispetto alla potenza disponibile non e' un sovraccarico, sono Watt scambiati
+        per kW. Senza questo controllo la procedura staccherebbe l'intero impianto.
+    """
+    def toKW(self, value):
+        value = float(value) * self._powerFactor
+
+        if self._powerFactor == 1.0 and self.maxPower > 0 and value > self.maxPower * 50:
+            value = value / 1000
+            if self._unitWarned == False:
+                self._unitWarned = True
+                log.warning("plantPowerConsumption e' espresso in Watt ma maxPower vale {} kW: converto in kW. "
+                            "Dichiara 'powerUnit: W' in params/loads.yml oppure fai scrivere i kW sull'item".format(self.maxPower))
+        return value
+
 #triggered each time that changes plantPowerConsumption
     def loadsProcedure(self, event):
-        total_consumption = float(event.value)
+        total_consumption = self.toKW(event.value)
         log.debug("Plant consumption is {} KW, of {} KW available".format(total_consumption, self._maxPower))
 
         #estimate the consumption of the last unplugged load. this is done watching the current consumption and comparing it before unplug the last load
@@ -178,21 +210,35 @@ class Loads(HABApp.Rule):
             log.debug("unpluggedLoads {} with theoricalConsumption {}".format(list(self.unpluggedLoads)[-1].name, list(self.unpluggedLoads)[-1]._theoricalConsumption))
 
         if total_consumption > self.maxPower:
+            #distacco gia' programmato: aggiorno solo il consumo di riferimento e lascio scorrere il timer,
+            #senza programmarne un secondo sullo stesso carico
+            if self._pendingLoad is not None:
+                self._pendingLoad._consumptionWhenUnplugged = total_consumption
+                return
+
             #act on configured loads because this list is correctly ordered. if a load isn't in this list, it will not be evaluated
             found = False
             for cld in self.configuredLoads:
                 if found == False:
                     loads = [loads for loads in self.loads if loads.name == cld['name'] and loads._status == "ON"]
                     for ld in loads:
-                        Timer(60, lambda: self.shutOff(ld)).start()
+                        #il distacco non e' immediato: se entro 60s il consumo rientra, il timer viene annullato
+                        self._pendingLoad = ld
                         ld._consumptionWhenUnplugged = total_consumption
-                        self.unpluggedLoads.append(ld)
-                        self.estimateConsumption = True
-                        log.debug("Unplugging load {} with power consumption {}".format(ld.name, total_consumption))
+                        self.tools.createTimer(self._shutOffTimer, 60, self.shutOff)
+                        self.tools.startCountdown(self._shutOffTimer)
+                        log.debug("Sovraccarico: distacco di {} programmato tra 60s (consumo {})".format(ld.name, total_consumption))
                         found = True
                         break
-                
+
         else:
+            #consumo rientrato entro i 60s: annullo il distacco, il carico resta collegato
+            if self._pendingLoad is not None:
+                log.debug("Consumo rientrato a {}: annullato il distacco programmato di {}".format(total_consumption, self._pendingLoad.name))
+                self.tools.cancelTimer(self._shutOffTimer)
+                self._pendingLoad._consumptionWhenUnplugged = 0.0
+                self._pendingLoad = None
+
             if self.unpluggedLoads != []:
                 ld = list(self.unpluggedLoads)[-1] #last unplugged load
                 log.debug("Powering ON {} with current status {}".format(ld.name, ld._status))
@@ -204,9 +250,20 @@ class Loads(HABApp.Rule):
                     self.openhab.send_command(ld.name, "ON")
                     self.unpluggedLoads.pop()
 
-    def shutOff(self, ld):
+    #chiamato dal timer: il sovraccarico e' durato 60s ininterrotti, stacco davvero
+    def shutOff(self):
+        ld = self._pendingLoad
+        if ld is None:
+            return
+        self._pendingLoad = None
+
         log.debug("Going to power OFF load {}".format(ld.name))
         ld._status = "OFF"
         self.openhab.send_command(ld.name, "OFF")
+
+        #il carico risulta staccato (e la sua potenza va stimata) solo ora, non quando il timer e' partito:
+        #la stima e' il calo di consumo che si vedra' al prossimo aggiornamento di plantPowerConsumption
+        self.unpluggedLoads.append(ld)
+        self.estimateConsumption = True
 
 Loads()

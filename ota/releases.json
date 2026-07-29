@@ -6,17 +6,22 @@
     {
       "version": "2026.06",
       "date": "2026-06-30",
-      "notes": "Baseline: OpenHAB 5.2.0, HABApp 25.12.0, Z-Wave JS UI 11.",
+      "notes": "Baseline: OpenHAB 5.2.0, HABApp 25.12.0, Z-Wave JS UI 11. Codice HABApp 25.12.1: gestione carichi, il distacco programmato viene annullato se il consumo rientra entro i 60s e il consumo letto viene riportato in kW (un misuratore che pubblica Watt faceva staccare tutti i carichi a cascata).",
       "images": {
         "openhab": "openhab/openhab:5.2.0",
         "habapp": "spacemanspiff2007/habapp:25.12.0",
         "zwave-js-ui": "zwavejs/zwave-js-ui:11"
+      },
+      "habapp_code": {
+        "version": "25.12.1",
+        "url": "https://cloud.domoticaundici.it/ota/habapp-25.12.1.tar.xz",
+        "sha256": "4d4d9b663bd92175677a36dc928d4ec3ffb3d24a233c5cc66bc81775562699ee"
       }
     },
     {
       "version": "2026.08-ESEMPIO",
       "date": "2026-08-15",
-      "notes": "ESEMPIO (non attivo: non è 'latest'). Salto a OpenHAB 5.2.0 + HABApp 26.04.01 e una revisione del codice HABApp (25.12.1). Quando lo certifichi: porta 'latest' a questo valore, genera il tarball con script/build-habapp-tarball.sh e incolla url+sha256 reali in habapp_code; se servono fix immagine aggiungi migrations/2026.08-ESEMPIO/pre.sh.",
+      "notes": "ESEMPIO (non attivo: non è 'latest'). Salto a OpenHAB 5.2.0 + HABApp 26.04.01 e una revisione del codice HABApp (25.12.2). Quando lo certifichi: porta 'latest' a questo valore, genera il tarball con script/build-habapp-tarball.sh e incolla url+sha256 reali in habapp_code; se servono fix immagine aggiungi migrations/2026.08-ESEMPIO/pre.sh.",
       "controller_min": "1.7.0",
       "migrations": ["2026.08-ESEMPIO"],
       "images": {
@@ -25,8 +30,8 @@
         "zwave-js-ui": "zwavejs/zwave-js-ui:12"
       },
       "habapp_code": {
-        "version": "25.12.1",
-        "url": "https://cloud.domoticaundici.it/ota/habapp-25.12.1.tar.xz",
+        "version": "25.12.2",
+        "url": "https://cloud.domoticaundici.it/ota/habapp-25.12.2.tar.xz",
         "sha256": "SOSTITUIRE-CON-SHA256-REALE-DA-build-habapp-tarball.sh"
       }
     }

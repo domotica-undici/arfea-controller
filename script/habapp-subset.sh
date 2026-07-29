@@ -2,7 +2,7 @@
 ###############################################################################
 # Definizione UNICA del sottoinsieme HABApp distribuibile.
 #
-# Sorgente di verita': habapp/25.12.0/habapp/ nella repo privata. Da li' i
+# Sorgente di verita': habapp/25.12.1/habapp/ nella repo privata. Da li' i
 # sorgenti vengono presi COSI' COME SONO da:
 #   - script/build-update-tarball.sh -> dentro arfea-controller.tar.xz (OTA),
 #     da cui il controller deploya le sole funzioni scelte sull'impianto;
@@ -20,7 +20,7 @@
 #   log/                 runtime
 ###############################################################################
 
-HABAPP_VER="25.12.0"
+HABAPP_VER="25.12.1"
 HABAPP_SRC_REL="habapp/${HABAPP_VER}/habapp"
 
 # lib/ deployabili. system/ e' la base comune (utils.py), le altre sono per-funzione.

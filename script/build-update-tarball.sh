@@ -34,7 +34,7 @@ set -e
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_DIR="$(dirname "$SCRIPT_DIR")"
-OUTPUT_DIR="${1:-$REPO_DIR}"
+OUTPUT_DIR="${1:-$REPO_DIR/ota}"
 TARBALL_NAME="arfea-controller.tar.xz"
 
 STAGING_DIR=$(mktemp -d)
