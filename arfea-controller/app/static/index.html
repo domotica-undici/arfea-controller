@@ -867,8 +867,10 @@ function checkReleases() {
     st.innerHTML = 'Aggiornamento disponibile: <b>' + (res.current_release || 'n/d') + '</b> → <b>' + res.latest_release + '</b>';
     var html = '';
     res.services.forEach(function(s) {
+      // value = nome tecnico (quello che l'apply seleziona via CSV); label leggibile.
+      var label = s.name === 'habapp-code' ? 'Regole HABApp (codice)' : s.name;
       html += '<label class="chk-row"><input type="checkbox" class="relchk" value="' + s.name + '" checked>' +
-        '<span><b>' + s.name + '</b><br><code>' + s.current_image + '</code> → <code>' + s.target_image + '</code></span></label>';
+        '<span><b>' + label + '</b><br><code>' + s.current_image + '</code> → <code>' + s.target_image + '</code></span></label>';
     });
     if (res.notes) html += '<p class="hint">' + res.notes.replace(/</g, '&lt;') + '</p>';
     document.getElementById('relDiff').innerHTML = html;

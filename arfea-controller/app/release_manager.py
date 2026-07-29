@@ -20,8 +20,15 @@ if TYPE_CHECKING:
     from .backup import BackupManager
     from .config import ConfigManager
     from .docker_manager import DockerManager
+    from .habapp_manager import HABAppManager
 
 logger = logging.getLogger(__name__)
+
+# Il codice HABApp (regole+librerie) viaggia in releases.json come blocco
+# habapp_code e si comporta, nel diff e nella selezione software-per-software,
+# come uno pseudo-servizio con questo nome. NON e' un servizio in arfea.yml: e'
+# un artefatto di dati versionato a parte (source_dir() su disco).
+HABAPP_CODE = "habapp-code"
 
 
 class ReleaseManager:
@@ -46,10 +53,12 @@ class ReleaseManager:
         config_manager: ConfigManager,
         docker_manager: DockerManager,
         backup_manager: BackupManager,
+        habapp_manager: "HABAppManager",
     ):
         self.cfg = config_manager
         self.docker = docker_manager
         self.backup = backup_manager
+        self.habapp = habapp_manager
         self.status = ReleaseUpdateStatus()
 
     # ------------------------------------------------------------------
@@ -68,19 +77,60 @@ class ReleaseManager:
         return data
 
     def _infer_current(self, releases: list[dict]) -> str:
-        """Identifica la release corrente confrontando i tag immagine di arfea.yml.
-        Ritorna "" se nessuna release combacia esattamente."""
-        services = self.cfg.config.services
+        """Identifica la release corrente: la piu' recente i cui componenti
+        (immagini + codice HABApp) combaciano con lo stato dell'impianto.
+        Ritorna "" se nessuna combacia esattamente."""
         for rel in reversed(releases):
-            images = rel.get("images", {})
-            if not images:
-                continue
-            if all(
-                svc in services and services[svc].image == img
-                for svc, img in images.items()
-            ):
+            if self._release_matches(rel):
                 return rel.get("version", "")
         return ""
+
+    def _release_matches(self, rel: dict) -> bool:
+        """True se questa release e' interamente installata: tutti i suoi tag
+        immagine combaciano con arfea.yml E (se dichiara habapp_code) la versione
+        del codice HABApp installata su disco combacia. Il vincolo sul codice e'
+        cio' che rende visibile un bump di SOLO codice (immagini identiche): senza,
+        _infer_current scambierebbe la release nuova per gia' installata."""
+        services = self.cfg.config.services
+        images = rel.get("images", {})
+        if not images:
+            return False
+        if not all(
+            svc in services and services[svc].image == img
+            for svc, img in images.items()
+        ):
+            return False
+        code_ver = self._release_code_version(rel)
+        if code_ver and code_ver != self._installed_code_version():
+            return False
+        return True
+
+    # ------------------------------------------------------------------
+    # Codice HABApp (blocco habapp_code nel manifest)
+    # ------------------------------------------------------------------
+
+    def _installed_code_version(self) -> str:
+        return self.habapp.source_version()
+
+    @staticmethod
+    def _release_habapp_code(rel: dict) -> Optional[dict]:
+        """Blocco habapp_code {version,url,sha256} di una release, o None."""
+        hc = rel.get("habapp_code")
+        if isinstance(hc, dict) and hc.get("version"):
+            return hc
+        return None
+
+    def _release_code_version(self, rel: dict) -> str:
+        hc = self._release_habapp_code(rel)
+        return hc["version"] if hc else ""
+
+    def _target_habapp_code(self, manifest: dict, latest: str) -> Optional[dict]:
+        rel = self._release_by_version(manifest, latest) or {}
+        return self._release_habapp_code(rel)
+
+    def _habapp_enabled(self) -> bool:
+        svc = self.cfg.config.services.get("habapp")
+        return bool(svc and svc.enabled)
 
     def _build_path(self, manifest: dict, current: str) -> tuple[list[str], str]:
         """Ritorna (lista versioni da attraversare in ordine per le migrazioni, latest)."""
@@ -145,6 +195,19 @@ class ReleaseManager:
             )
             for svc, img in pending.items()
         ]
+
+        # Codice HABApp come componente aggiuntivo (pseudo-servizio "habapp-code").
+        # Riusa ServiceUpdateInfo: i campi *_image portano qui le versioni codice.
+        target_code = self._target_habapp_code(manifest, latest)
+        installed_code = self._installed_code_version()
+        if target_code and target_code["version"] != installed_code:
+            services_diff.append(
+                ServiceUpdateInfo(
+                    name=HABAPP_CODE,
+                    current_image=installed_code or "(nessuno)",
+                    target_image=target_code["version"],
+                )
+            )
 
         notes_parts = []
         for v in path or [latest]:
@@ -232,9 +295,16 @@ class ReleaseManager:
         target_images = self._target_images(manifest, latest)
         all_pending = self._pending(target_images)
 
+        # Codice HABApp: pseudo-componente selezionabile accanto ai servizi.
+        target_code = self._target_habapp_code(manifest, latest)
+        installed_code = self._installed_code_version()
+        code_pending = bool(target_code and target_code["version"] != installed_code)
+
         pending = dict(all_pending)
+        apply_code = code_pending
         if selected is not None:
             pending = {svc: img for svc, img in all_pending.items() if svc in selected}
+            apply_code = code_pending and HABAPP_CODE in selected
 
         self.status = ReleaseUpdateStatus(
             state=ReleaseUpdateState.IDLE,
@@ -243,15 +313,18 @@ class ReleaseManager:
             started_at=datetime.now(),
         )
 
-        if not pending:
+        if not pending and not apply_code:
             self.status.state = ReleaseUpdateState.COMPLETED
             self.status.message = "Nessun aggiornamento da applicare"
             self.status.completed_at = datetime.now()
             return self.status
 
-        # Upgrade completo = si stanno aggiornando TUTTI i servizi con diff pendente.
-        # Solo in quel caso girano le migrazioni (pensate per l'intero set release).
-        full_upgrade = set(pending.keys()) == set(all_pending.keys())
+        # Upgrade completo = si stanno aggiornando TUTTI i componenti con diff
+        # pendente (immagini + codice). Solo allora girano le migrazioni (pensate
+        # per l'intero set release).
+        all_keys = set(all_pending) | ({HABAPP_CODE} if code_pending else set())
+        sel_keys = set(pending) | ({HABAPP_CODE} if apply_code else set())
+        full_upgrade = sel_keys == all_keys
 
         # Guard controller_min sulla release finale
         from .main import VERSION  # import locale: evita ciclo all'import
@@ -273,6 +346,8 @@ class ReleaseManager:
             return self.status
 
         prev_images = {svc: self.cfg.config.services[svc].image for svc in pending}
+        prev_code = installed_code       # versione codice pre-apply (per rollback)
+        code_installed = False
         migrate = full_upgrade and bool(path)
 
         try:
@@ -294,13 +369,34 @@ class ReleaseManager:
                 if not res.success:
                     raise RuntimeError(res.message)
 
-            # 3) scrittura chirurgica dei soli tag in arfea.yml
-            self.cfg.set_service_images(pending)
+            # 2b) codice HABApp: scarica+verifica+unpack+provision (NON ricrea ancora
+            # il container: lo fa il passo 4, cosi' un solo recreate applica anche
+            # l'eventuale nuovo tag immagine habapp).
+            if apply_code:
+                self.status.step = HABAPP_CODE
+                self.status.message = f"Installazione codice HABApp {target_code['version']}..."
+                ok, msg = self.habapp.install_code(
+                    target_code["version"],
+                    target_code.get("url", ""),
+                    target_code.get("sha256", ""),
+                )
+                if not ok:
+                    raise RuntimeError(msg)
+                code_installed = True
 
-            # 4) recreate + health-gate
+            # 3) scrittura chirurgica dei soli tag in arfea.yml
+            if pending:
+                self.cfg.set_service_images(pending)
+
+            # 4) recreate + health-gate. Se ho installato codice ma habapp non e' tra
+            # i servizi con tag nuovo (bump di solo codice), va comunque ricreato per
+            # caricare le regole nuove.
+            recreate_targets = list(pending.keys())
+            if code_installed and self._habapp_enabled() and "habapp" not in recreate_targets:
+                recreate_targets.append("habapp")
             self.status.state = ReleaseUpdateState.RECREATING
             self.status.message = "Riavvio servizi aggiornati..."
-            self._recreate_in_order(list(pending.keys()))
+            self._recreate_in_order(recreate_targets)
 
             # 5) migrazioni post, solo upgrade completo
             if migrate:
@@ -314,17 +410,22 @@ class ReleaseManager:
         except Exception as exc:
             logger.error("Aggiornamento fallito: %s", exc)
             self._rollback(prev_images)
+            if code_installed:
+                self._rollback_code(target_code["version"], prev_code)
             self._fail(
-                f"Aggiornamento fallito: {exc}. Tag immagine ripristinati. "
-                f"Backup disponibile per ripristino manuale."
+                f"Aggiornamento fallito: {exc}. Tag immagine e codice HABApp "
+                f"ripristinati. Backup disponibile per ripristino manuale."
             )
             return self.status
 
-        # Marker avanza solo se TUTTE le immagini della release ora combaciano
-        if all(
+        # Marker avanza solo se TUTTE le immagini della release ora combaciano E la
+        # versione del codice HABApp bersaglio (se dichiarata) e' quella installata.
+        images_ok = all(
             self.cfg.config.services[svc].image == img
             for svc, img in target_images.items()
-        ):
+        )
+        code_ok = target_code is None or self._installed_code_version() == target_code["version"]
+        if images_ok and code_ok:
             self.cfg.set_release(latest)
             self.status.current_release = latest
             done_msg = f"Aggiornamento completato: sistema alla versione {latest}"
@@ -339,7 +440,8 @@ class ReleaseManager:
         self.status.message = done_msg
         self.status.step = ""
         self.status.completed_at = datetime.now()
-        logger.info("Apply completato (servizi: %s)", list(pending.keys()))
+        applied = list(pending.keys()) + ([HABAPP_CODE] if code_installed else [])
+        logger.info("Apply completato (componenti: %s)", applied)
         return self.status
 
     # ------------------------------------------------------------------
@@ -354,6 +456,19 @@ class ReleaseManager:
                 self.docker.recreate_service(name)
         except Exception as exc:
             logger.error("Rollback parzialmente fallito: %s", exc)
+
+    def _rollback_code(self, new_version: str, prev_version: str) -> None:
+        """Annulla l'installazione del codice HABApp appena spacchettato: rimuove
+        la dir <new_version> (source_dir() torna a prev_version, o a nulla se non
+        c'era codice prima), ri-provisiona col codice precedente e ricrea habapp."""
+        try:
+            self.habapp.remove_code_version(new_version)
+            self.habapp.provision()
+            if self._habapp_enabled():
+                self.docker.recreate_service("habapp")
+            logger.info("Codice HABApp ripristinato a '%s'", prev_version or "(nessuno)")
+        except Exception as exc:
+            logger.error("Rollback codice HABApp parzialmente fallito: %s", exc)
 
     def _fail(self, message: str) -> None:
         self.status.state = ReleaseUpdateState.FAILED

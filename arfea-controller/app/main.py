@@ -199,7 +199,30 @@ logger = logging.getLogger(__name__)
 #             (pulsante in UI quando manca il token). Il guasto resta possibile
 #             — il token si conia solo con OpenHAB su — ma non e' piu' definitivo,
 #             e l'ordine di accensione dei servizi smette di contare.
-VERSION = "1.6.2"
+#   1.7.0  Versioning e aggiornamento del CODICE HABApp (regole+librerie) via
+#          releases.json, indipendente dall'OTA del controller.
+#          a) Il codice HABApp diventa un componente della release certificata:
+#             ogni release puo' portare un blocco habapp_code {version,url,sha256}
+#             (versione = engine+revisione, es. 25.12.0 -> 25.12.1). Prima il
+#             codice avanzava SOLO con un OTA completo del controller; ora un fix
+#             alle regole si spinge con una release, senza toccare il controller.
+#          b) ReleaseManager lo tratta come pseudo-servizio "habapp-code" nel diff
+#             e nella selezione software-per-software: la stessa card "Aggiornamento
+#             software" (check + conferma) lo mostra e lo applica. L'apply scarica
+#             e VERIFICA lo sha256 del tarball, spacchetta in arfea-controller/
+#             habapp/<ver>/, ri-provisiona e ricrea habapp; rollback rimuove la dir
+#             e riprovisiona il codice precedente.
+#          c) L'inferenza della release corrente ora vincola anche la versione del
+#             codice (_release_matches): senza, un bump di solo codice (immagini
+#             identiche) verrebbe visto come "gia' installato". Nessun campo nuovo
+#             in arfea.yml: la versione codice si deduce da source_dir() su disco,
+#             il marker controller.release avanza solo se immagini E codice
+#             combaciano con la release latest.
+#          d) Nuovo script/build-habapp-tarball.sh: impacchetta il subset HABApp
+#             (habapp-subset.sh) in ota/habapp-<ver>.tar.xz e stampa lo sha256.
+#             build-update-tarball continua a bundlare i sorgenti come pavimento
+#             (abilitare HABApp resta offline; nessun downgrade: vince la piu' alta).
+VERSION = "1.7.0"
 
 # -- Globals initialised at startup -----------------------------------------
 
@@ -271,8 +294,8 @@ async def lifespan(app: FastAPI):
 
     docker_manager = DockerManager(config_manager)
     backup_manager = BackupManager(config_manager.config.backup, docker_manager)
-    release_manager = ReleaseManager(config_manager, docker_manager, backup_manager)
     habapp_manager = HABAppManager(config_manager, docker_manager)
+    release_manager = ReleaseManager(config_manager, docker_manager, backup_manager, habapp_manager)
 
     # Check for updates at startup (before starting services)
     if _check_startup_update():

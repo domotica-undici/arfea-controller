@@ -17,14 +17,17 @@ non vengono ne' aggiornate ne' rimosse.
 
 from __future__ import annotations
 
+import hashlib
 import logging
 import os
 import re
 import shutil
+import tarfile
 import time
 from pathlib import Path
 from typing import TYPE_CHECKING
 
+import httpx
 import yaml
 
 from .config import ConfigManager
@@ -388,6 +391,100 @@ class HABAppManager:
         return not self._read_token(self.config_dir() / "config.yml")
 
     # ------------------------------------------------------------------
+    # Aggiornamento codice (via release: releases.json -> tarball remoto)
+    # ------------------------------------------------------------------
+
+    def _code_base(self) -> Path:
+        """arfea-controller/habapp: dove vivono le versioni dei sorgenti."""
+        return self._data_path / "arfea-controller" / "habapp"
+
+    def install_code(self, version: str, url: str, sha256: str) -> tuple[bool, str]:
+        """Scarica, verifica e installa una versione dei sorgenti HABApp.
+
+        Il tarball (referenziato in releases.json) ha come entry radice
+        <version>/ con {config.yml, logging.yml, lib/, rules/}: viene estratto
+        sotto arfea-controller/habapp/, cosi' source_dir() (che prende la versione
+        piu' alta) inizia a servire il codice nuovo. Poi ri-provisiona per portare
+        rules/lib delle funzioni scelte in openhab/conf/habapp.
+
+        NON ricrea il container: se ne occupa il chiamante (release_manager), che
+        cosi' puo' fondere in un solo recreate anche l'eventuale nuovo tag immagine.
+        Ritorna (ok, messaggio). Idempotente: se la dir <version> esiste gia' non
+        riscarica, si limita a ri-provisionare.
+        """
+        if not version:
+            return (False, "versione codice HABApp non specificata")
+        if not sha256:
+            # Senza sha256 non possiamo garantire l'integrita': meglio fermarsi che
+            # spacchettare codice arbitrario sotto conf/ ed eseguirlo.
+            return (False, f"sha256 mancante per il codice HABApp {version}: rifiuto")
+
+        base = self._code_base()
+        dest = base / version
+        if dest.is_dir():
+            logger.info("HABApp: codice %s gia' presente, ri-provisiono soltanto", version)
+            ok, msg = self.provision()
+            return (ok, msg or f"Codice HABApp {version} gia' installato")
+
+        base.mkdir(parents=True, exist_ok=True)
+        tmp_tar = base / f".{version}.download"
+        staging = base / f".{version}.staging"
+        try:
+            try:
+                with httpx.stream("GET", url, timeout=120, follow_redirects=True) as resp:
+                    resp.raise_for_status()
+                    with open(tmp_tar, "wb") as fh:
+                        for chunk in resp.iter_bytes():
+                            fh.write(chunk)
+            except Exception as exc:
+                return (False, f"Download codice HABApp {version} fallito: {exc}")
+
+            digest = _sha256_file(tmp_tar)
+            if digest.lower() != sha256.lower():
+                return (False,
+                        f"sha256 non combacia per il codice HABApp {version} "
+                        f"(atteso {sha256}, calcolato {digest})")
+
+            if staging.exists():
+                shutil.rmtree(staging)
+            staging.mkdir()
+            try:
+                with tarfile.open(tmp_tar, "r:*") as tf:
+                    _safe_extract(tf, staging)
+            except Exception as exc:
+                return (False, f"Estrazione codice HABApp {version} fallita: {exc}")
+
+            extracted = staging / version
+            if not extracted.is_dir():
+                return (False,
+                        f"Tarball codice HABApp malformato: manca la cartella '{version}/'")
+
+            # rename atomico (stesso filesystem di base) + owner del container
+            extracted.rename(dest)
+            _chown_tree(dest)
+        finally:
+            if tmp_tar.exists():
+                tmp_tar.unlink()
+            if staging.exists():
+                shutil.rmtree(staging, ignore_errors=True)
+
+        logger.info("HABApp: codice %s installato in %s", version, dest)
+        ok, msg = self.provision()
+        if not ok:
+            return (False, f"Codice {version} installato ma provisioning fallito: {msg}")
+        return (True, f"Codice HABApp {version} installato")
+
+    def remove_code_version(self, version: str) -> None:
+        """Rimuove una versione dei sorgenti (rollback di install_code): source_dir()
+        torna alla versione precedente piu' alta rimasta su disco."""
+        if not version:
+            return
+        d = self._code_base() / version
+        if d.is_dir():
+            shutil.rmtree(d, ignore_errors=True)
+            logger.info("HABApp: rimosso codice %s (rollback)", version)
+
+    # ------------------------------------------------------------------
     # Params (editor Web UI)
     # ------------------------------------------------------------------
 
@@ -472,6 +569,26 @@ def _rm_dir(path: Path, why: str) -> None:
     if path.is_dir():
         shutil.rmtree(path)
         logger.info("HABApp: rimosse %s", why)
+
+
+def _sha256_file(path: Path) -> str:
+    h = hashlib.sha256()
+    with open(path, "rb") as fh:
+        for chunk in iter(lambda: fh.read(1 << 20), b""):
+            h.update(chunk)
+    return h.hexdigest()
+
+
+def _safe_extract(tf: tarfile.TarFile, dest: Path) -> None:
+    """extractall con guardia anti path-traversal: nessuna voce puo' finire fuori
+    da dest (tarball ostile con nomi tipo ../../etc)."""
+    dest = dest.resolve()
+    prefix = str(dest) + os.sep
+    for member in tf.getmembers():
+        target = (dest / member.name).resolve()
+        if target != dest and not str(target).startswith(prefix):
+            raise RuntimeError(f"voce non sicura nel tarball: {member.name}")
+    tf.extractall(dest)
 
 
 def _chown(path: Path) -> None:

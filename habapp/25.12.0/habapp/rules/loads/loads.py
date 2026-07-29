@@ -184,7 +184,7 @@ class Loads(HABApp.Rule):
                 if found == False:
                     loads = [loads for loads in self.loads if loads.name == cld['name'] and loads._status == "ON"]
                     for ld in loads:
-                        Timer(10, lambda: self.shutOff(ld)).start()
+                        Timer(60, lambda: self.shutOff(ld)).start()
                         ld._consumptionWhenUnplugged = total_consumption
                         self.unpluggedLoads.append(ld)
                         self.estimateConsumption = True
