@@ -81,7 +81,19 @@ _FUNCTIONS: dict[str, dict] = {
 
 # Librerie comuni a tutte le funzioni (system.utils.Utils)
 _BASE_LIBS = ["system"]
+# Regole della BASE COMUNE: non appartengono a nessuna funzione ma servono a
+# tutte. aasystem/tools.py definisce la regola 'Tools' (i timer), che termostati,
+# carichi e irrigazione prendono con get_rule('Tools'): senza, get_rule solleva
+# KeyError e la funzione muore al primo termostato/carico/zona, lasciando
+# l'impianto con i soli item globali. Deve restare allineato a HABAPP_RULE_FILES
+# in script/habapp-subset.sh, che decide cosa entra nei tarball.
+_BASE_RULE_FILES = ["aasystem/tools.py"]
 _ROOT_FILES = ["config.yml", "logging.yml"]
+
+# Marker con la versione del codice effettivamente deployata in
+# openhab/conf/habapp. I sorgenti (arfea-controller/habapp/<ver>) possono essere
+# piu' avanti: l'OTA del controller li porta a bordo senza deployarli.
+_VERSION_MARKER = ".arfea-habapp-version"
 
 
 def function_names() -> list[str]:
@@ -135,6 +147,28 @@ class HABAppManager:
     def source_version(self) -> str:
         src = self.source_dir()
         return src.name if src else ""
+
+    def deployed_version(self) -> str:
+        """Versione del codice davvero in esecuzione (marker in conf/habapp).
+
+        Diversa da source_version() quando l'OTA del controller ha portato a
+        bordo sorgenti nuovi che nessuno ha ancora deployato. Vuota se il marker
+        non c'e' (impianto provisionato da un controller precedente): sta a chi
+        chiama decidere cosa farne, vedi needs_deploy() e ReleaseManager."""
+        marker = self.config_dir() / _VERSION_MARKER
+        try:
+            return marker.read_text().strip()
+        except OSError:
+            return ""
+
+    def needs_deploy(self) -> bool:
+        """True se a bordo c'e' codice diverso da quello deployato.
+
+        Marker assente = provisioning fatto da un controller che non lo
+        scriveva: si rideploya una volta, ed e' proprio cio' che serve, perche'
+        quei provisioning non copiavano la base comune (rules/aasystem/tools.py)."""
+        src = self.source_version()
+        return bool(src) and src != self.deployed_version()
 
     def config_dir(self) -> Path:
         """openhab/conf/habapp — montata su /habapp/config nel container."""
@@ -253,6 +287,11 @@ class HABAppManager:
         self._ensure_logging(src, dest)
         ok, msg = self._ensure_config(src, dest)
 
+        # Marker: da qui in poi si sa quale versione GIRA, non solo quale e'
+        # a bordo. Senza, un OTA che porta sorgenti nuovi senza deployarli
+        # faceva risultare la release "installata" con le regole vecchie attive.
+        (dest / _VERSION_MARKER).write_text(f"{src.name}\n")
+
         _chown_tree(dest)
 
         if not selected:
@@ -284,6 +323,17 @@ class HABAppManager:
             _replace_tree(src / "rules" / name, dest / "rules" / name)
         for name in sorted(wanted_libs):
             _replace_tree(src / "lib" / name, dest / "lib" / name)
+
+        # Base comune: va deployata sempre, anche senza funzioni attive, perche'
+        # e' quello che le funzioni si aspettano di trovare gia' caricato.
+        for rel in _BASE_RULE_FILES:
+            source = src / "rules" / rel
+            if not source.is_file():
+                logger.warning("HABApp: regola di base assente nei sorgenti: rules/%s", rel)
+                continue
+            target = dest / "rules" / rel
+            target.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(source, target)
 
     def _ensure_params(self, selected: list[str]) -> None:
         """Crea i params mancanti vuoti. Mai sovrascritti: sono la

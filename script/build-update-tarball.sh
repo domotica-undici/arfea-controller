@@ -87,7 +87,11 @@ if [[ -d "$HABAPP_SRC" ]]; then
   for d in "${HABAPP_RULE_DIRS[@]}"; do
     cp -r "$HABAPP_SRC/rules/$d" "$HABAPP_DST/rules/$d"
   done
-  echo "  HABApp $HABAPP_VER: incluse regole [${HABAPP_RULE_DIRS[*]}]"
+  for f in "${HABAPP_RULE_FILES[@]}"; do
+    mkdir -p "$HABAPP_DST/rules/$(dirname "$f")"
+    cp "$HABAPP_SRC/rules/$f" "$HABAPP_DST/rules/$f"
+  done
+  echo "  HABApp $HABAPP_VER: incluse regole [${HABAPP_RULE_DIRS[*]}] + base [${HABAPP_RULE_FILES[*]}]"
 else
   echo "  ATTENZIONE: sorgenti HABApp assenti ($HABAPP_SRC), tarball senza HABApp" >&2
 fi

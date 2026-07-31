@@ -14,6 +14,7 @@
 #     config.yml  logging.yml            # HABAPP_ROOT_FILES
 #     lib/<system,thermostats,...>/      # HABAPP_LIB_DIRS
 #     rules/<thermostats,irrigation,...>/# HABAPP_RULE_DIRS
+#     rules/aasystem/tools.py            # HABAPP_RULE_FILES (base comune)
 # L'entry radice e' <ver>/ cosi' si estrae direttamente in arfea-controller/habapp/.
 #
 # Uso:
@@ -57,6 +58,10 @@ done
 for d in "${HABAPP_RULE_DIRS[@]}"; do
   cp -r "$HABAPP_SRC/rules/$d" "$DST/rules/$d"
 done
+for f in "${HABAPP_RULE_FILES[@]}"; do
+  mkdir -p "$DST/rules/$(dirname "$f")"
+  cp "$HABAPP_SRC/rules/$f" "$DST/rules/$f"
+done
 
 # Pulizia runtime Python (di un'altra versione rispetto al container)
 find "$STAGING_DIR" -name "__pycache__" -type d -exec rm -rf {} + 2>/dev/null || true
@@ -70,7 +75,7 @@ TARBALL_SIZE=$(du -h "$TARBALL_PATH" | cut -f1)
 SHA256=$(sha256sum "$TARBALL_PATH" | cut -d' ' -f1)
 
 echo "Tarball creato: $TARBALL_PATH ($TARBALL_SIZE)"
-echo "  regole:    [${HABAPP_RULE_DIRS[*]}]"
+echo "  regole:    [${HABAPP_RULE_DIRS[*]}] + base [${HABAPP_RULE_FILES[*]}]"
 echo "  librerie:  [${HABAPP_LIB_DIRS[*]}]"
 echo ""
 echo "Blocco per releases.json (release bersaglio):"

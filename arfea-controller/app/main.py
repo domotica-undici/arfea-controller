@@ -237,7 +237,26 @@ logger = logging.getLogger(__name__)
 #             backup resta appeso per sempre, bloccando l'apply che lo aspetta.
 #             Il wrapper espone fileno() cosi' httpx continua a mandare
 #             Content-Length invece di passare a Transfer-Encoding: chunked.
-VERSION = "1.7.1"
+#   1.7.2  La termoregolazione (e carichi, e irrigazione) non partiva su nessun
+#          impianto provisionato dal controller. Due difetti in fila.
+#          a) Il provisioning copiava rules/<funzione> e lib/, ma NON la base
+#             comune rules/aasystem/tools.py, che definisce la regola 'Tools'
+#             (i timer). Termostati, carichi e zone la prendono all'avvio con
+#             get_rule('Tools'): senza, KeyError e la funzione muore al primo
+#             elemento della configurazione. Sull'impianto restavano i soli item
+#             globali (gThermostats, season, ...) e nessun termostato, con
+#             l'errore visibile solo in HABApp.log. Ora _BASE_RULE_FILES la
+#             deploya sempre, allineata a HABAPP_RULE_FILES di habapp-subset.sh
+#             (i tarball non la spedivano affatto).
+#          b) L'OTA del controller porta i sorgenti HABApp come pavimento ma non
+#             li deploya: l'impianto restava con le regole vecchie mentre la
+#             release risultava installata, perche' la versione si leggeva dai
+#             SORGENTI. Ora provision scrive un marker con la versione deployata
+#             in conf/habapp: ReleaseManager guarda quella, e all'avvio il
+#             controller rideploya+ricrea HABApp se il codice a bordo e' diverso
+#             (marker assente = provisioning vecchio, quindi senza tools.py: si
+#             rideploya, ed e' esattamente cio' che serve).
+VERSION = "1.7.2"
 
 # -- Globals initialised at startup -----------------------------------------
 
@@ -351,17 +370,31 @@ def _heal_habapp() -> None:
     accorgersene, ed e' anche cio' che rende l'ordine di accensione irrilevante.
     """
     svc = config_manager.config.services.get("habapp")
-    if svc is None or not svc.enabled or not habapp_manager.needs_config():
+    if svc is None or not svc.enabled:
         return
 
-    logger.warning("HABApp e' senza token di accesso a OpenHAB: riprovo il provisioning")
+    # Due guasti diversi, stessa cura (provision + recreate):
+    #  - manca il token: HABApp e' vivo ma non parla con OpenHAB;
+    #  - a bordo c'e' codice piu' nuovo di quello deployato: succede ad ogni OTA
+    #    del controller, che porta i sorgenti HABApp come pavimento ma non li
+    #    installa. Senza questo, l'impianto continuava a girare con le regole
+    #    vecchie mentre la release risultava gia' installata.
+    if habapp_manager.needs_config():
+        motivo = "e' senza token di accesso a OpenHAB"
+    elif habapp_manager.needs_deploy():
+        motivo = (f"gira con il codice {habapp_manager.deployed_version()} "
+                  f"mentre a bordo c'e' il {habapp_manager.source_version()}")
+    else:
+        return
+
+    logger.warning("HABApp %s: riprovo il provisioning", motivo)
     ok, msg = habapp_manager.provision()
     if not ok:
         logger.warning("HABApp: riparazione non riuscita: %s", msg)
         return
 
-    # config.yml lo legge solo all'avvio: senza ricreare resterebbe con quello
-    # sbagliato gia' in memoria.
+    # config.yml e regole li legge solo all'avvio: senza ricreare resterebbe
+    # con quelli gia' in memoria.
     logger.info("HABApp: config riparata, ricreo il container")
     res = docker_manager.recreate_service("habapp")
     logger.info("HABApp: %s", res.message)

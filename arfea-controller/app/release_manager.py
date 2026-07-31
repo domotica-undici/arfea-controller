@@ -110,7 +110,13 @@ class ReleaseManager:
     # ------------------------------------------------------------------
 
     def _installed_code_version(self) -> str:
-        return self.habapp.source_version()
+        """Versione DEPLOYATA, non quella a bordo: l'OTA del controller porta i
+        sorgenti come pavimento, e prima bastava quello a far risultare la
+        release installata mentre l'impianto girava ancora con le regole
+        vecchie. Se il marker non c'e' (provisioning fatto da un controller
+        precedente) si ricade sui sorgenti, cioe' sul comportamento di prima:
+        meglio che dichiarare l'impianto senza codice."""
+        return self.habapp.deployed_version() or self.habapp.source_version()
 
     @staticmethod
     def _release_habapp_code(rel: dict) -> Optional[dict]:
