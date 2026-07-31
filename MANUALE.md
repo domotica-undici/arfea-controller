@@ -616,8 +616,15 @@ Base: `http://<IP>:8888/api` — documentazione interattiva su `http://<IP>:8888
 **Backup** (UI "Esegui Backup" o `POST /api/backup/run`):
 1. Ferma tutti i container (tranne il controller)
 2. Crea un `tar.gz` di `/opt/docker_store`
-3. Carica su WebDAV (se configurato)
-4. Riavvia i container che erano attivi
+3. Riavvia i container che erano attivi
+4. Carica su WebDAV (se configurato)
+
+L'impianto resta fermo solo per l'archiviazione (passi 1-2): l'upload avviene a
+container riavviati, perche' l'archivio su disco e' gia' completo e coerente e
+mezzo giga su una linea domestica sono decine di minuti. L'upload ha un tetto di
+30 minuti oltre il quale viene interrotto e il backup segnalato fallito: senza,
+un trasferimento che avanza a singhiozzo non fa scattare nessun timeout e resta
+appeso, bloccando anche l'aggiornamento di versione che lo aspetta.
 
 **Ripristino** (UI o `POST /api/backup/restore?backup_name=<FILE>`):
 1. Ferma tutti i container

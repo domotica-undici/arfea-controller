@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import logging
+import os
 import tarfile
+import time
 from datetime import datetime
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -14,6 +16,53 @@ if TYPE_CHECKING:
     from .docker_manager import DockerManager
 
 logger = logging.getLogger(__name__)
+
+# Timeout per singola operazione di rete dell'upload: una connessione che si pianta
+# se ne accorge in fretta, senza aspettare i 10 minuti di prima.
+UPLOAD_TIMEOUT = httpx.Timeout(connect=30.0, write=120.0, read=300.0, pool=30.0)
+
+# Tetto complessivo all'upload. Serve perche' i timeout per operazione NON bastano:
+# un trasferimento che avanza a singhiozzo non li fa mai scattare e il backup resta
+# appeso per sempre, bloccando anche l'apply di release che lo aspetta.
+UPLOAD_MAX_SECONDS = 1800
+
+
+class _DeadlineFile:
+    """File-like con scadenza, da dare a httpx al posto del file aperto.
+
+    httpx legge l'archivio a blocchi mentre lo trasmette (IteratorByteStream usa
+    read() se c'e'), quindi e' qui dentro che si intercetta un upload che non
+    finisce piu'. Espone fileno() perche' httpx ne ricava la dimensione e manda
+    Content-Length invece di Transfer-Encoding: chunked, e __iter__ perche'
+    accetta come content solo oggetti iterabili."""
+
+    CHUNK_SIZE = 65_536
+
+    def __init__(self, fh, max_seconds: int):
+        self._fh = fh
+        self._max_seconds = max_seconds
+        self._deadline = time.monotonic() + max_seconds
+        self.sent = 0
+
+    def read(self, size: int = -1) -> bytes:
+        if time.monotonic() > self._deadline:
+            raise TimeoutError(
+                f"upload non completato entro {self._max_seconds}s "
+                f"(inviati {self.sent / 1024 / 1024:.0f} MB), interrotto"
+            )
+        chunk = self._fh.read(size)
+        self.sent += len(chunk)
+        return chunk
+
+    def fileno(self) -> int:
+        return self._fh.fileno()
+
+    def __iter__(self):
+        while True:
+            chunk = self.read(self.CHUNK_SIZE)
+            if not chunk:
+                return
+            yield chunk
 
 
 class BackupManager:
@@ -49,6 +98,7 @@ class BackupManager:
 
         # Record running services before stopping
         previously_running = self.docker.get_running_services()
+        restarted = False
 
         try:
             # Stop all containers except ourselves
@@ -73,16 +123,20 @@ class BackupManager:
             size_mb = archive_path.stat().st_size / 1024 / 1024
             logger.info("Archive created: %s (%.1f MB)", archive_path, size_mb)
 
+            # I container tornano su PRIMA dell'upload: l'archivio e' gia' su disco ed
+            # e' coerente, tenere l'impianto fermo anche per la trasmissione e' downtime
+            # inutile. Su una linea domestica mezzo giga di backup sono decine di minuti
+            # (e con l'apply di release davanti, decine di minuti di impianto spento).
+            self.status.state = BackupState.RESTARTING_CONTAINERS
+            self.status.message = "Riavvio container..."
+            self._restart_services(previously_running)
+            restarted = True
+
             # Upload to WebDAV
             if self.config.webdav_url:
                 self.status.state = BackupState.UPLOADING
                 self.status.message = f"Upload in corso ({size_mb:.0f} MB)..."
                 self._upload_webdav(archive_path, filename)
-
-            # Restart previously running services
-            self.status.state = BackupState.RESTARTING_CONTAINERS
-            self.status.message = "Riavvio container..."
-            self._restart_services(previously_running)
 
             self.status = BackupStatus(
                 state=BackupState.COMPLETED,
@@ -101,10 +155,11 @@ class BackupManager:
                 completed_at=datetime.now(),
             )
             # Always try to restart services on failure
-            try:
-                self._restart_services(previously_running)
-            except Exception:
-                logger.error("Failed to restart services after backup failure")
+            if not restarted:
+                try:
+                    self._restart_services(previously_running)
+                except Exception:
+                    logger.error("Failed to restart services after backup failure")
 
         return self.status
 
@@ -181,23 +236,29 @@ class BackupManager:
         auth = (self.config.webdav_user, self.config.webdav_password)
 
         logger.info("Uploading to %s", url)
-        with httpx.Client(timeout=600) as client:
+        started = time.monotonic()
+        with httpx.Client(timeout=UPLOAD_TIMEOUT) as client:
             with open(local_path, "rb") as f:
                 response = client.put(
                     url,
-                    content=f,
+                    content=_DeadlineFile(f, UPLOAD_MAX_SECONDS),
                     auth=auth,
                     headers={"X-Requested-With": "XMLHttpRequest"},
                 )
                 response.raise_for_status()
-        logger.info("Upload completed (HTTP %s)", response.status_code)
+        elapsed = max(time.monotonic() - started, 0.001)
+        size_mb = os.path.getsize(local_path) / 1024 / 1024
+        logger.info(
+            "Upload completed (HTTP %s) - %.0f MB in %.0fs (%.2f MB/s)",
+            response.status_code, size_mb, elapsed, size_mb / elapsed,
+        )
 
     def _download_webdav(self, remote_name: str, local_path: Path) -> None:
         url = f"{self.config.webdav_url}/{remote_name}"
         auth = (self.config.webdav_user, self.config.webdav_password)
 
         logger.info("Downloading from %s", url)
-        with httpx.Client(timeout=600) as client:
+        with httpx.Client(timeout=UPLOAD_TIMEOUT) as client:
             with client.stream("GET", url, auth=auth) as response:
                 response.raise_for_status()
                 with open(local_path, "wb") as f:

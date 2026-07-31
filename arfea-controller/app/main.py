@@ -222,7 +222,22 @@ logger = logging.getLogger(__name__)
 #             (habapp-subset.sh) in ota/habapp-<ver>.tar.xz e stampa lo sha256.
 #             build-update-tarball continua a bundlare i sorgenti come pavimento
 #             (abilitare HABApp resta offline; nessun downgrade: vince la piu' alta).
-VERSION = "1.7.0"
+#   1.7.1  Backup: l'impianto non resta piu' fermo per tutto l'upload e l'upload
+#          non puo' piu' restare appeso.
+#          a) I container vengono riavviati SUBITO DOPO il tar, prima dell'upload:
+#             l'archivio su disco e' gia' completo e coerente, tenere fermo
+#             l'impianto anche per la trasmissione era downtime inutile. Su una
+#             centralina reale (439 MB verso Nextcloud) significava mezz'ora di
+#             impianto spento, e con l'apply di release davanti anche di piu'.
+#          b) L'upload ha ora un tetto complessivo (UPLOAD_MAX_SECONDS, 30 min)
+#             applicato dentro la lettura dell'archivio, piu' timeout httpx per
+#             singola operazione (connect/write/read) al posto del timeout=600
+#             indifferenziato. Il timeout per operazione da solo NON basta: un
+#             trasferimento che avanza a singhiozzo non lo fa mai scattare e il
+#             backup resta appeso per sempre, bloccando l'apply che lo aspetta.
+#             Il wrapper espone fileno() cosi' httpx continua a mandare
+#             Content-Length invece di passare a Transfer-Encoding: chunked.
+VERSION = "1.7.1"
 
 # -- Globals initialised at startup -----------------------------------------
 
