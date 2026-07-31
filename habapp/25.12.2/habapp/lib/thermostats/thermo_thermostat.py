@@ -599,13 +599,19 @@ class Thermostat(HABApp.Rule):
         elif self.model == "ztemp2":
             from thermostats.ztemp2 import ZTEMP2
             myDevice = ZTEMP2(self.name, self.thConfig)
+        elif self.model == "ztemp3" or self.model == "z-temp3":
+            from thermostats.ztemp3 import ZTEMP3
+            myDevice = ZTEMP3(self.name, self.thConfig)
+        elif self.model == "ztrm6" or self.model == "z-trm6":
+            from thermostats.ztrm6 import ZTRM6
+            myDevice = ZTRM6(self.name, self.thConfig)
         elif self.model == "lstat":
             from thermostats.lstat import LSTAT
             myDevice = LSTAT(self.name, self.thConfig)
         elif self.model == "bac_3000":
             from thermostats.bac_3000 import BAC_3000
             myDevice = BAC_3000(self.name, self.thConfig)
-        elif self.model == "DANFOSS_014G0160":
+        elif self.model == "danfoss_014g0160":
             from thermostats.danfoss_014G0160 import DANFOSS_014G0160
             myDevice = DANFOSS_014G0160(self.name, self.thConfig)
         else: #even if model is defined as "virtual"
@@ -658,6 +664,12 @@ class Thermostat(HABApp.Rule):
             self.set_fancoils()
         if self._hasRadiators:
             self.set_radiators()
+
+        #i device che regolano da soli (rele' a bordo o valvole in associazione diretta, es. Heatit
+        #Z-TRM6 e Z-TEMP3) non hanno un attuatore dell'impianto da comandare: gli si passa lo stato
+        #calcolato e sono loro a tradurlo sul proprio comando
+        if hasattr(self.device, 'apply_internalState'):
+            self.device.apply_internalState(self.internalMode, self.internalState)
 
     """
         Actuate onoff valves
