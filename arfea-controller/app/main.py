@@ -11,6 +11,7 @@ import tempfile
 import threading
 import time
 from contextlib import asynccontextmanager
+from datetime import datetime
 from pathlib import Path
 
 import httpx
@@ -35,6 +36,8 @@ from .models import (
     OperationResponse,
     ReleaseCheckResult,
     ReleaseUpdateStatus,
+    SelfUpdateState,
+    SelfUpdateStatus,
     SerialDevice,
     ServiceDevicesUpdate,
     ServiceStatus,
@@ -256,7 +259,19 @@ logger = logging.getLogger(__name__)
 #             controller rideploya+ricrea HABApp se il codice a bordo e' diverso
 #             (marker assente = provisioning vecchio, quindi senza tools.py: si
 #             rideploya, ed e' esattamente cio' che serve).
-VERSION = "1.7.2"
+#   1.7.3  Il self-update sembrava non passare. La UI, dopo aver lanciato
+#          l'aggiornamento, aspettava 15s e poi ricaricava la pagina appena
+#          /api/health rispondeva — ma durante il rebuild risponde ancora il
+#          controller VECCHIO (su ARM sono minuti), quindi si ricaricava sulla
+#          versione di prima e sembrava che non fosse successo nulla.
+#          Ora l'aggiornamento ha uno stato (SelfUpdateStatus) esposto da
+#          /api/system/update/status e la UI segue quello. Lo stato e' anche
+#          persistito nel data path, perche' il processo che lo produce viene
+#          sostituito dal rebuild: il controller nuovo lo rilegge all'avvio e,
+#          confrontando la versione bersaglio con la propria, dice se e'
+#          completato o interrotto. Senza il file l'esito non lo saprebbe
+#          nessuno: chi ha avviato il rebuild non sopravvive per vederlo finire.
+VERSION = "1.7.3"
 
 # -- Globals initialised at startup -----------------------------------------
 
@@ -330,6 +345,9 @@ async def lifespan(app: FastAPI):
     backup_manager = BackupManager(config_manager.config.backup, docker_manager)
     habapp_manager = HABAppManager(config_manager, docker_manager)
     release_manager = ReleaseManager(config_manager, docker_manager, backup_manager, habapp_manager)
+
+    # Esito dell'eventuale aggiornamento avviato dal controller precedente
+    _load_update_status()
 
     # Check for updates at startup (before starting services)
     if _check_startup_update():
@@ -777,6 +795,56 @@ def stop_vpn():
 _update_in_progress = False
 _UPDATE_TARBALL = Path("/tmp/arfea-controller-update.tar.xz")
 
+# Stato dell'aggiornamento del controller. Vive in memoria E su file: il rebuild
+# sostituisce questo processo, e senza il file il controller nuovo non saprebbe
+# dire com'e' andata. Il file sta nel data path, che sopravvive alla ricreazione.
+_update_status = SelfUpdateStatus()
+
+
+def _update_status_file() -> Path:
+    return Path(config_manager.config.controller.data_path) / "arfea-controller" / ".update-status.json"
+
+
+def _set_update_status(state: SelfUpdateState, message: str, **fields) -> None:
+    global _update_status
+    _update_status = _update_status.model_copy(update={
+        "state": state, "message": message, **fields,
+    })
+    try:
+        path = _update_status_file()
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(_update_status.model_dump_json())
+    except OSError as exc:
+        logger.warning("Stato aggiornamento non persistito: %s", exc)
+
+
+def _load_update_status() -> None:
+    """All'avvio recupera lo stato lasciato dal controller precedente.
+
+    Se era in rebuild e adesso gira la versione che stava installando, l'esito e'
+    "completato": e' l'unico momento in cui lo si puo' affermare, perche' chi ha
+    avviato il rebuild non e' sopravvissuto per vederlo finire."""
+    global _update_status
+    try:
+        _update_status = SelfUpdateStatus.model_validate_json(_update_status_file().read_text())
+    except Exception:
+        return
+
+    if _update_status.state in (SelfUpdateState.DOWNLOADING, SelfUpdateState.INSTALLING,
+                                SelfUpdateState.REBUILDING):
+        if _update_status.to_version and _update_status.to_version == VERSION:
+            _set_update_status(
+                SelfUpdateState.COMPLETED,
+                f"Aggiornamento completato alla {VERSION}",
+                completed_at=datetime.now(),
+            )
+        else:
+            _set_update_status(
+                SelfUpdateState.FAILED,
+                f"Aggiornamento interrotto: in esecuzione la {VERSION}",
+                completed_at=datetime.now(),
+            )
+
 
 def _compute_file_hash(path: Path) -> str:
     """Compute SHA256 hash of a file."""
@@ -1173,12 +1241,21 @@ def _do_self_update() -> None:
     try:
         dest = Path(config_manager.config.controller.data_path) / "arfea-controller"
         logger.info("Update: estrazione e installazione...")
+        _set_update_status(SelfUpdateState.INSTALLING, "Installazione dei file...")
         _extract_and_install(_UPDATE_TARBALL, dest)
         logger.info("Update: rebuild e restart...")
+        # Da qui il controller ricostruisce la propria immagine e si ricrea: sono
+        # minuti, su ARM anche parecchi, e nel frattempo risponde ancora QUESTO
+        # processo. Senza dirlo, chi guarda la UI vede la versione vecchia e crede
+        # che l'aggiornamento non sia passato.
+        _set_update_status(SelfUpdateState.REBUILDING,
+                           "Ricostruzione dell'immagine in corso, puo' richiedere alcuni minuti...")
         _trigger_rebuild()
         logger.info("Update: rebuild avviato, il controller si riavvierà a breve")
     except Exception as exc:
         logger.error("Update fallito: %s", exc)
+        _set_update_status(SelfUpdateState.FAILED, f"Aggiornamento fallito: {exc}",
+                           completed_at=datetime.now())
     finally:
         _update_in_progress = False
 
@@ -1200,6 +1277,9 @@ async def self_update(background_tasks: BackgroundTasks):
 
     # Scarichiamo subito (tarball di poche decine di KB) per poter confrontare la
     # versione e dare un esito immediato invece di un rebuild "cieco".
+    _set_update_status(SelfUpdateState.DOWNLOADING, "Scaricamento aggiornamento...",
+                       from_version=VERSION, to_version="",
+                       started_at=datetime.now(), completed_at=None)
     try:
         subprocess.run(
             ["curl", "-fsSL", "-o", str(_UPDATE_TARBALL), update_url],
@@ -1207,6 +1287,8 @@ async def self_update(background_tasks: BackgroundTasks):
         )
     except (subprocess.CalledProcessError, subprocess.TimeoutExpired) as exc:
         _UPDATE_TARBALL.unlink(missing_ok=True)
+        _set_update_status(SelfUpdateState.FAILED, f"Download aggiornamento fallito: {exc}",
+                           completed_at=datetime.now())
         return OperationResponse(success=False, message=f"Download aggiornamento fallito: {exc}")
 
     # Anti-downgrade anche sull'update manuale: mai tornare a una versione più
@@ -1214,23 +1296,35 @@ async def self_update(background_tasks: BackgroundTasks):
     tarball_ver = _tarball_version(_UPDATE_TARBALL)
     if tarball_ver and _version_tuple(tarball_ver) < _version_tuple(VERSION):
         _UPDATE_TARBALL.unlink(missing_ok=True)
-        return OperationResponse(
-            success=False,
-            message=(
-                f"Il server offre una versione più vecchia ({tarball_ver}) di quella in "
-                f"esecuzione ({VERSION}): aggiornamento annullato per evitare un downgrade."
-            ),
-        )
+        msg = (f"Il server offre una versione più vecchia ({tarball_ver}) di quella in "
+               f"esecuzione ({VERSION}): aggiornamento annullato per evitare un downgrade.")
+        _set_update_status(SelfUpdateState.IDLE, msg, completed_at=datetime.now())
+        return OperationResponse(success=False, message=msg)
     if tarball_ver and _version_tuple(tarball_ver) == _version_tuple(VERSION):
         _get_hash_file().write_text(_compute_file_hash(_UPDATE_TARBALL))
         _UPDATE_TARBALL.unlink(missing_ok=True)
+        _set_update_status(SelfUpdateState.IDLE, f"Già aggiornato alla versione {VERSION}.",
+                           completed_at=datetime.now())
         return OperationResponse(success=False, message=f"Già aggiornato alla versione {VERSION}.")
 
     _get_hash_file().write_text(_compute_file_hash(_UPDATE_TARBALL))
+    _set_update_status(SelfUpdateState.INSTALLING, f"Aggiornamento alla {tarball_ver} avviato...",
+                       to_version=tarball_ver)
     _update_in_progress = True
     background_tasks.add_task(_do_self_update)
     target = f" alla {tarball_ver}" if tarball_ver else ""
     return OperationResponse(success=True, message=f"Aggiornamento{target} avviato, il controller si riavvierà")
+
+
+@app.get("/api/system/update/status", response_model=SelfUpdateStatus, dependencies=[Depends(verify_api_key)])
+def self_update_status():
+    """Avanzamento dell'aggiornamento del controller.
+
+    Da interrogare mentre il rebuild e' in corso: fino alla ricreazione del
+    container risponde ancora il controller VECCHIO, quindi guardare la versione
+    (o /api/health) non dice nulla sull'esito. Dopo il riavvio lo stato viene
+    riletto dal file e diventa 'completed' o 'failed'."""
+    return _update_status
 
 
 # ---------------------------------------------------------------------------

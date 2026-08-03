@@ -70,9 +70,21 @@ class HeatitZWave(HABApp.Rule):
         self.ts = TemperatureSensor(tsConfig, self.commons)
         self._temperature = self.ts.temperature
 
-        #il modo arriva dal device: l'item e' quello legato al channel thermostat_mode
+        #il modo arriva dal device: l'item e' quello legato al channel thermostat_mode.
+        #Se non c'e' il termostato nasce lo stesso (temperatura, setpoint e pianificazione
+        #restano utili) ma non puo' comandare il device: meglio dirlo una volta con un
+        #messaggio che spiega cosa collegare, che tirare un comando al minuto contro un
+        #item inesistente e riempire il log di 404 senza mai dire perche'.
+        modeItem = f'{str(self.name)}_mode'
+        self._hasModeItem = self.oh.item_exists(modeItem)
+        if not self._hasModeItem:
+            log.warning(f'{self.name}: item {modeItem} assente, il termostato non comandera\' il '
+                        f'dispositivo. Collega il channel del modo (zwave-js: thermostat-mode-mode-N, '
+                        f'zwave classico: thermostat_mode) a un item Number con questo nome, '
+                        f'poi riavvia HABApp')
+
         self._deviceMode = self.to_float(self.utils.bindItem(
-                                    f'{str(self.name)}_mode',
+                                    modeItem,
                                     self.mode_changed,
                                     ValueChangeEventFilter(), self.DEVICE_HEAT))
         self._mode = self.device_to_internal(self._deviceMode)
@@ -153,6 +165,9 @@ class HeatitZWave(HABApp.Rule):
     def set_mode(self, value):
         value = float(value)
         if value != self.mode:
+            if not self._hasModeItem:
+                self._mode = value
+                return
             retValue = self.internal_to_device(value)
             log.debug(f'set mode to {self.name}: {retValue}')
             self.utils.sendCommandToItem(f'{self.name}_mode', retValue)
@@ -179,6 +194,9 @@ class HeatitZWave(HABApp.Rule):
           comando perso via radio o un cambio fatto a HABApp fermo si recupera al ciclo dopo
     '''
     def apply_internalState(self, internalMode, internalState):
+        if not self._hasModeItem:
+            return
+
         if internalState == self.states.internalStates()["WINDOWSTOP"]:
             target = self.DEVICE_OFF
             self._forced = True

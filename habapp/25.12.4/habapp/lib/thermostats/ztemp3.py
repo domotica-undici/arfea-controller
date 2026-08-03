@@ -28,14 +28,18 @@
         OR
         2) if there is not a physycal device this class should not be called and no ztemp3 defined in thermo.yml
 
-    Channel del binding zwave -> item attesi (thing type thermofloor_heatitz-temp3_00_000):
-        sensor_temperature              -> [nome]_temperature
-        sensor_relhumidity              -> [nome]_relhumidity
-        thermostat_mode                 -> [nome]_mode
-        thermostat_state                -> [nome]_operatingstate
-        thermostat_setpoint_heating     -> [nome]_setpoint_heating
-        thermostat_setpoint_cooling     -> [nome]_setpoint_cooling
-        battery-level                   -> [nome]_battery
+    Channel del device -> item attesi. A sinistra il binding zwave-js (quello delle
+    centraline ARFEA), fra parentesi il corrispondente del binding zwave classico:
+        multilevel-sensor-air-temperature-N -> [nome]_temperature       (sensor_temperature)
+        multilevel-sensor-humidity-N        -> [nome]_relhumidity       (sensor_relhumidity)
+        thermostat-mode-mode-N              -> [nome]_mode              (thermostat_mode)
+        thermostat-operating-state-state-N  -> [nome]_operatingstate    (thermostat_state)
+        thermostat-setpoint-setpoint-1-N    -> [nome]_setpoint_heating  (thermostat_setpoint_heating)
+        thermostat-setpoint-setpoint-2-N    -> [nome]_setpoint_cooling  (thermostat_setpoint_cooling)
+        battery-level                       -> [nome]_battery
+
+    Senza [nome]_mode il termostato nasce lo stesso ma non comanda il device, e lo
+    dice nel log.
 '''
 
 import logging

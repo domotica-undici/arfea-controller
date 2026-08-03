@@ -1,7 +1,7 @@
 {
   "_commento": "Manifest delle versioni CERTIFICATE per le centraline ARFEA. Va pubblicato su controller.releases_url (es. https://cloud.domoticaundici.it/ota/releases.json). 'releases' è ordinato dalla più vecchia alla più recente: l'ordine definisce il percorso di upgrade attraversato dall'apply. 'latest' indica la versione bersaglio. Ogni release elenca i tag immagine certificati; l'apply scrive SOLO questi tag in arfea.yml. 'controller_min' (opzionale) blocca l'upgrade se il controller è troppo vecchio. 'migrations' (opzionale) elenca le versioni che hanno script migrations/<versione>/pre.sh|post.sh bundlati nel tarball OTA. 'habapp_code' (opzionale) è il CODICE HABApp (regole+librerie) versionato a parte dall'immagine: {version, url, sha256} del tarball prodotto da script/build-habapp-tarball.sh. version = engine+revisione (es. 25.12.0 -> 25.12.1) e può avanzare anche a immagine habapp invariata. L'apply lo scarica, verifica lo sha256, lo spacchetta e ri-provisiona; nel diff/UI compare come pseudo-servizio 'habapp-code'. Assente = nessun aggiornamento di codice per quella release.",
   "channel": "stable",
-  "latest": "2026.07.05",
+  "latest": "2026.07.06",
   "releases": [
     {
       "version": "2026.07.03",
@@ -50,9 +50,25 @@
       }
     },
     {
+      "version": "2026.07.06",
+      "date": "2026-08-03",
+      "notes": "Immagini invariate. Codice HABApp 25.12.4: sui termostati Heatit, se l'item [nome]_mode non e' collegato al dispositivo, il termostato lo dice una volta nel log con cosa collegare invece di tirare un comando al minuto contro un item inesistente (404 nel log di openHAB, senza mai spiegare il perche'). Il termostato nasce comunque: temperatura, setpoint e pianificazione restano utili.",
+      "controller_min": "1.7.2",
+      "images": {
+        "openhab": "openhab/openhab:5.2.0",
+        "habapp": "spacemanspiff2007/habapp:25.12.0",
+        "zwave-js-ui": "zwavejs/zwave-js-ui:11"
+      },
+      "habapp_code": {
+        "version": "25.12.4",
+        "url": "https://cloud.domoticaundici.it/ota/habapp-25.12.4.tar.xz",
+        "sha256": "e3cf63012d447930f13618d9842c9f60a860b569ecb6a563f36ca1cae139e467"
+      }
+    },
+    {
       "version": "2026.08-ESEMPIO",
       "date": "2026-08-15",
-      "notes": "ESEMPIO (non attivo: non è 'latest'). Salto a OpenHAB 5.2.0 + HABApp 26.04.01 e una revisione del codice HABApp (25.12.4). Quando lo certifichi: porta 'latest' a questo valore, genera il tarball con script/build-habapp-tarball.sh e incolla url+sha256 reali in habapp_code; se servono fix immagine aggiungi migrations/2026.08-ESEMPIO/pre.sh.",
+      "notes": "ESEMPIO (non attivo: non è 'latest'). Salto a OpenHAB 5.2.0 + HABApp 26.04.01 e una revisione del codice HABApp (25.12.5). Quando lo certifichi: porta 'latest' a questo valore, genera il tarball con script/build-habapp-tarball.sh e incolla url+sha256 reali in habapp_code; se servono fix immagine aggiungi migrations/2026.08-ESEMPIO/pre.sh.",
       "controller_min": "1.7.0",
       "migrations": ["2026.08-ESEMPIO"],
       "images": {
@@ -61,8 +77,8 @@
         "zwave-js-ui": "zwavejs/zwave-js-ui:12"
       },
       "habapp_code": {
-        "version": "25.12.4",
-        "url": "https://cloud.domoticaundici.it/ota/habapp-25.12.4.tar.xz",
+        "version": "25.12.5",
+        "url": "https://cloud.domoticaundici.it/ota/habapp-25.12.5.tar.xz",
         "sha256": "SOSTITUIRE-CON-SHA256-REALE-DA-build-habapp-tarball.sh"
       }
     }

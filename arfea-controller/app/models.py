@@ -260,6 +260,29 @@ class ReleaseUpdateStatus(BaseModel):
     completed_at: Optional[datetime] = None
 
 
+class SelfUpdateState(str, Enum):
+    IDLE = "idle"
+    DOWNLOADING = "downloading"
+    INSTALLING = "installing"
+    REBUILDING = "rebuilding"
+    COMPLETED = "completed"
+    FAILED = "failed"
+
+
+class SelfUpdateStatus(BaseModel):
+    """Avanzamento dell'aggiornamento del controller stesso.
+
+    Persistito su file perche' il processo che lo produce viene sostituito dal
+    rebuild: il controller nuovo ci ritrova lo stato lasciato dal vecchio e puo'
+    dire com'e' finita, invece di ripartire smemorato."""
+    state: SelfUpdateState = SelfUpdateState.IDLE
+    message: str = ""
+    from_version: str = ""
+    to_version: str = ""
+    started_at: Optional[datetime] = None
+    completed_at: Optional[datetime] = None
+
+
 class ServiceUpdateInfo(BaseModel):
     """Aggiornamento immagine disponibile per un singolo servizio."""
     name: str                    # nome servizio in arfea.yml (es. "openhab")

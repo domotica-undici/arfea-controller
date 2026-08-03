@@ -480,13 +480,11 @@ function confirmUpdate() {
     if (r.success) {
       btn.textContent = 'Aggiornamento in corso...';
       setProgress('updateProgress', 0, 'indet');
-      // Aspetta il rebuild e riprova a caricare la pagina
-      setTimeout(function pollReload() {
-        fetch('/api/health').then(function(resp) {
-          if (resp.ok) location.reload();
-          else setTimeout(pollReload, 5000);
-        }).catch(function() { setTimeout(pollReload, 5000); });
-      }, 15000);
+      // NON si guarda /api/health: durante il rebuild (minuti, su ARM parecchi)
+      // risponde ancora il controller VECCHIO, quindi la pagina si ricaricava
+      // sulla versione di prima e sembrava che l'aggiornamento non fosse passato.
+      // Si segue invece lo stato, che il controller nuovo ritrova su file.
+      setTimeout(pollUpdateStatus, 5000);
     } else {
       // Include i casi informativi "già aggiornato" e "niente downgrade": nessun errore.
       alert(r.message || 'Nessun aggiornamento applicato');
@@ -499,6 +497,32 @@ function confirmUpdate() {
     clearProgress('updateProgress');
     btn.disabled = false;
     btn.textContent = 'Aggiorna Controller';
+  });
+}
+
+// Segue l'aggiornamento fino alla fine. Durante la ricreazione del container le
+// richieste falliscono: non e' un errore, si continua a chiedere.
+function pollUpdateStatus() {
+  var btn = document.getElementById('btnUpdate');
+  apiGet('/system/update/status').then(function(s) {
+    if (s.state === 'completed') {
+      clearProgress('updateProgress');
+      location.reload();
+      return;
+    }
+    if (s.state === 'failed') {
+      clearProgress('updateProgress');
+      alert(s.message || 'Aggiornamento fallito');
+      btn.disabled = false;
+      btn.textContent = 'Aggiorna Controller';
+      return;
+    }
+    if (s.message) btn.textContent = s.message;
+    setTimeout(pollUpdateStatus, 5000);
+  }).catch(function() {
+    // controller non raggiungibile: si sta ricreando
+    btn.textContent = 'Riavvio del controller...';
+    setTimeout(pollUpdateStatus, 5000);
   });
 }
 

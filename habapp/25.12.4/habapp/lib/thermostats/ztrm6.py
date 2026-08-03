@@ -25,18 +25,23 @@
         OR
         2) if there is not a physycal device this class should not be called and no ztrm6 defined in thermo.yml
 
-    Channel del binding zwave -> item attesi (thing type thermofloor_trm6_00_000):
-        sensor_temperature2             -> [nome]_temperature            (sensore interno)
-        sensor_temperature3             -> [nome]_temperature_external   (sensore esterno cablato)
-        sensor_temperature4             -> [nome]_temperature_floor      (sensore a pavimento)
-        thermostat_mode1                -> [nome]_mode
-        thermostat_state1               -> [nome]_operatingstate
-        thermostat_setpoint_heating1    -> [nome]_setpoint_heating
-        thermostat_setpoint_cooling1    -> [nome]_setpoint_cooling
-        meter_watts1                    -> [nome]_power
-        meter_kwh1                      -> [nome]_energy
-        alarm_heat1                     -> [nome]_alarm_heat             (sovratemperatura)
-        alarm_power1                    -> [nome]_alarm_power            (sovraccarico)
+    Channel del device -> item attesi. A sinistra il binding zwave-js (quello delle
+    centraline ARFEA), fra parentesi il corrispondente del binding zwave classico.
+    L'ultimo numero e' l'endpoint: termostato sull'1, sensori su 2/3/4.
+        multilevel-sensor-air-temperature-2   -> [nome]_temperature           (sensor_temperature2)
+        multilevel-sensor-air-temperature-3   -> [nome]_temperature_external  (sensor_temperature3)
+        multilevel-sensor-air-temperature-4   -> [nome]_temperature_floor     (sensor_temperature4)
+        thermostat-mode-mode-1                -> [nome]_mode                  (thermostat_mode1)
+        thermostat-operating-state-state-1    -> [nome]_operatingstate        (thermostat_state1)
+        thermostat-setpoint-setpoint-1-1      -> [nome]_setpoint_heating      (thermostat_setpoint_heating1)
+        thermostat-setpoint-setpoint-2-1      -> [nome]_setpoint_cooling      (thermostat_setpoint_cooling1)
+        meter-value-66049-1                   -> [nome]_power                 (meter_watts1)
+        meter-value-65537-1                   -> [nome]_energy                (meter_kwh1)
+        notification-heat-alarm-...-1         -> [nome]_alarm_heat            (alarm_heat1)
+        notification-power-management-...-1   -> [nome]_alarm_power           (alarm_power1)
+
+    Senza [nome]_mode il termostato nasce lo stesso (temperatura, setpoint e
+    pianificazione restano utili) ma non comanda il device, e lo dice nel log.
 
     Gli item opzionali (sensori aggiuntivi, allarmi) vengono agganciati solo se esistono gia':
     se il sensore a pavimento non e' cablato non ha senso avere l'item.
