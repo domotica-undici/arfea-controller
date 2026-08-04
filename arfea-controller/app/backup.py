@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import fnmatch
 import logging
 import os
 import tarfile
@@ -25,6 +26,19 @@ UPLOAD_TIMEOUT = httpx.Timeout(connect=30.0, write=120.0, read=300.0, pool=30.0)
 # un trasferimento che avanza a singhiozzo non li fa mai scattare e il backup resta
 # appeso per sempre, bloccando anche l'apply di release che lo aspetta.
 UPLOAD_MAX_SECONDS = 1800
+
+# Roba che nel backup non ci va, per nome (il match e' sul percorso DENTRO
+# l'archivio, a qualsiasi profondita': exclude_paths di arfea.yml invece filtra
+# solo le cartelle di primo livello del data path).
+# Il kar degli addon OpenHAB e' ~600 MB ri-scaricabili in qualsiasi momento, non
+# dati dell'impianto: metterlo dentro raddoppierebbe l'archivio e il tempo di
+# upload su WebDAV — che su una linea domestica si misura in decine di minuti e ha
+# un tetto di mezz'ora, oltre il quale il backup fallisce. Al ripristino ci pensa
+# il controller a riportarlo a bordo (vedi app/addons.py).
+_EXCLUDE_GLOBS = (
+    "openhab/addons/openhab-addons-*.kar",
+    "openhab/addons/.openhab-addons-*.kar.part",
+)
 
 
 class _DeadlineFile:
@@ -63,6 +77,17 @@ class _DeadlineFile:
             if not chunk:
                 return
             yield chunk
+
+
+def _skip_excluded(info: tarfile.TarInfo) -> tarfile.TarInfo | None:
+    """Filtro di tar.add: scarta le voci che combaciano con _EXCLUDE_GLOBS.
+
+    ``info.name`` e' il percorso relativo alla radice dell'archivio, es.
+    ``openhab/addons/openhab-addons-5.2.0.kar``."""
+    if any(fnmatch.fnmatch(info.name, pattern) for pattern in _EXCLUDE_GLOBS):
+        logger.info("Backup: escluso %s", info.name)
+        return None
+    return info
 
 
 class BackupManager:
@@ -118,7 +143,7 @@ class BackupManager:
                     if any(item_path.startswith(ex) for ex in exclude_set):
                         logger.debug("Excluding %s", item_path)
                         continue
-                    tar.add(item_path, arcname=item.name)
+                    tar.add(item_path, arcname=item.name, filter=_skip_excluded)
 
             size_mb = archive_path.stat().st_size / 1024 / 1024
             logger.info("Archive created: %s (%.1f MB)", archive_path, size_mb)

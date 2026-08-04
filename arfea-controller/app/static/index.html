@@ -163,6 +163,15 @@
         <p class="hint">Puoi aggiornare un solo software: spunta solo quello (es. <b>openhab</b>) e premi &laquo;Aggiorna selezionati&raquo;. Prima dell'aggiornamento viene fatto un backup automatico.</p>
       </div>
 
+      <!-- Addon OpenHAB a bordo (installazione senza internet) -->
+      <div class="card">
+        <h2>Addon OpenHAB (offline)</h2>
+        <div id="addonsStatus" class="status-bar status-idle">Caricamento...</div>
+        <div id="addonsProgress"></div>
+        <button class="btn btn-blue btn-block" id="btnAddons" onclick="downloadAddons()">Scarica pacchetto addon</button>
+        <p class="hint">Il pacchetto (~600 MB) contiene <b>tutti</b> gli addon ufficiali della versione di OpenHAB in uso: con quello a bordo i binding si installano anche a centralina senza internet. Lo scarica il controller da s&eacute;; il pulsante serve se l'impianto &egrave; stato installato senza linea e la connessione &egrave; arrivata dopo.</p>
+      </div>
+
       <!-- Telefono di emergenza (linphone) -->
       <div class="card">
         <h2>Telefono di emergenza</h2>
@@ -294,6 +303,7 @@ function refreshAll() {
   refreshNetwork();
   refreshSystem();
   refreshBackupStatus();
+  refreshAddons();
   loadLinphone();
 }
 
@@ -387,6 +397,61 @@ function refreshBackupStatus() {
     el.className = 'status-bar ' + cls;
     el.innerHTML = text + bar;
     return status;
+  });
+}
+
+// ── Addon OpenHAB a bordo (installazione senza internet) ──
+
+var addonsPolling = null;
+
+function refreshAddons() {
+  return apiGet('/openhab/addons').then(function(st) {
+    var el = document.getElementById('addonsStatus');
+    var btn = document.getElementById('btnAddons');
+    var cls = 'status-idle', text = st.message || '', bar = '';
+    if (st.state === 'present') {
+      cls = 'status-completed';
+    } else if (st.state === 'downloading') {
+      cls = 'status-running';
+      text = '<span class="spinner"></span>' + text;
+      // Senza content-length non c'e' percentuale da mostrare: barra indeterminata.
+      bar = st.total_mb ? progressHtml(st.progress, '') : progressHtml(0, 'indet');
+    } else if (st.state === 'failed') {
+      cls = 'status-failed';
+    }
+    el.className = 'status-bar ' + cls;
+    el.innerHTML = text;
+    document.getElementById('addonsProgress').innerHTML = bar;
+    btn.disabled = (st.state === 'downloading' || st.state === 'disabled');
+    btn.dataset.force = (st.state === 'present') ? '1' : '';
+    btn.textContent = (st.state === 'present') ? 'Riscarica pacchetto addon' : 'Scarica pacchetto addon';
+
+    // Il polling vive solo per la durata del download (mezz'ora abbondante su
+    // ADSL): fuori da li' sarebbe una richiesta ogni 5s per niente.
+    if (st.state === 'downloading' && !addonsPolling) {
+      addonsPolling = setInterval(refreshAddons, 5000);
+    } else if (st.state !== 'downloading' && addonsPolling) {
+      clearInterval(addonsPolling);
+      addonsPolling = null;
+    }
+    return st;
+  });
+}
+
+function downloadAddons() {
+  var btn = document.getElementById('btnAddons');
+  var force = btn.dataset.force === '1';
+  if (force && !confirm('Il pacchetto e\' gia\' a bordo. Riscaricarlo comunque (~600 MB)?')) return;
+  btn.disabled = true;
+  apiPost('/openhab/addons/download' + (force ? '?force=true' : '')).then(function(res) {
+    if (res && res.success === false) {
+      var el = document.getElementById('addonsStatus');
+      el.className = 'status-bar status-failed';
+      el.textContent = res.message || 'Download non avviato';
+      btn.disabled = false;
+      return;
+    }
+    refreshAddons();
   });
 }
 

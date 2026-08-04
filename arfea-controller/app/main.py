@@ -21,12 +21,14 @@ from fastapi.responses import FileResponse
 from fastapi.security import APIKeyHeader
 from fastapi.staticfiles import StaticFiles
 
+from .addons import manager as addons_kar_manager
 from .backup import BackupManager
 from .config import ConfigManager
 from .docker_manager import DockerManager
 from .habapp_manager import HABAppManager, last_provision as habapp_last_provision
 from .release_manager import ReleaseManager
 from .models import (
+    AddonsKarStatus,
     BackupStatus,
     HABAppFunctionsUpdate,
     HABAppParamsUpdate,
@@ -271,7 +273,18 @@ logger = logging.getLogger(__name__)
 #          confrontando la versione bersaglio con la propria, dice se e'
 #          completato o interrotto. Senza il file l'esito non lo saprebbe
 #          nessuno: chi ha avviato il rebuild non sopravvive per vederlo finire.
-VERSION = "1.7.3"
+#   1.7.4  Addon OpenHAB installabili senza internet. OpenHAB scarica il binding
+#          dalla rete nel momento in cui lo si installa: su una centralina senza
+#          linea (o riavviata con la linea giu') l'installazione non riesce e
+#          l'impianto resta senza quel pezzo. Ora il controller tiene in
+#          openhab/addons il kar ufficiale con TUTTI gli addon della versione in
+#          uso — l'equivalente del pacchetto 'openhab-addons' delle installazioni
+#          native — scaricandolo in background alla creazione del container e ad
+#          ogni avvio, e ri-scaricandolo quando un aggiornamento cambia la
+#          versione di OpenHAB (il kar deve combaciare col runtime). Stato e
+#          comando manuale in /api/openhab/addons e nella Web UI. Il kar resta
+#          fuori dal backup: sono ~600 MB ri-scaricabili, non dati dell'impianto.
+VERSION = "1.7.4"
 
 # -- Globals initialised at startup -----------------------------------------
 
@@ -360,6 +373,14 @@ async def lifespan(app: FastAPI):
     for r in results:
         if not r.success:
             logger.warning("Startup issue: %s", r.message)
+
+    # Addon OpenHAB per l'uso offline. Serve anche qui e non solo alla creazione
+    # del container: su un impianto gia' in piedi il container c'e' gia' (la
+    # start_all_enabled qui sopra non lo ricrea), quindi questo e' l'unico momento
+    # in cui un controller appena aggiornato — o una centralina installata senza
+    # linea — puo' accorgersi che il pacchetto manca e riprovare.
+    ok, msg = addons_kar_manager(config_manager).ensure()
+    logger.info("Addon OpenHAB: %s", msg)
 
     # Lavori di avvio che parlano con OpenHAB: in un thread per non ritardare lo
     # startup, ma in sequenza fra loro — aprono entrambi la console Karaf, che
@@ -1373,6 +1394,28 @@ async def import_ui():
     l'aggancio manuale."""
     ok, detail = _import_ui_components()
     return OperationResponse(success=ok, message=detail)
+
+
+# ---------------------------------------------------------------------------
+# Addon OpenHAB offline (kar della distribuzione ufficiale)
+# ---------------------------------------------------------------------------
+
+
+@app.get("/api/openhab/addons", response_model=AddonsKarStatus, dependencies=[Depends(verify_api_key)])
+def openhab_addons_status():
+    """Dice se il pacchetto con tutti gli addon è a bordo, e a che punto è il download."""
+    return addons_kar_manager(config_manager).status()
+
+
+@app.post("/api/openhab/addons/download", response_model=OperationResponse, dependencies=[Depends(verify_api_key)])
+def openhab_addons_download(force: bool = False):
+    """Scarica il pacchetto addon (in background: sono ~600 MB).
+
+    Il controller lo fa già da solo all'avvio e alla creazione del container: qui
+    è l'aggancio manuale per chi installa la centralina offline e collega la linea
+    dopo, o per riscaricarlo (``force=true``) se il file è stato cancellato."""
+    ok, msg = addons_kar_manager(config_manager).ensure(force=force)
+    return OperationResponse(success=ok, message=msg)
 
 
 # ---------------------------------------------------------------------------

@@ -461,6 +461,35 @@ Cuore domotico. Regole in JS Scripting (`conf/automation/js/`). File deployati
 dallo skeleton: `arfea.items`, `arfea_controller.js`, `linphone_call.sh`, widget.
 La regola JS aggiorna gli stati verso il controller ogni 60s (cron).
 
+**Addon a bordo (installazione senza internet).** Di suo OpenHAB scarica il
+binding dalla rete nel momento in cui lo si installa: su una centralina senza
+linea l'installazione non riesce e l'impianto resta senza quel pezzo. Il
+controller tiene percio' in `openhab/addons` il *kar* ufficiale con **tutti** gli
+addon della versione in uso — l'equivalente del pacchetto `openhab-addons` delle
+installazioni native. Con quello a bordo i binding si installano offline, dalla
+UI di OpenHAB come sempre.
+
+- **Quando lo scarica**: all'avvio del controller, alla creazione/recreate del
+  container openhab e quando un aggiornamento cambia la versione di OpenHAB (il
+  kar deve combaciare col runtime, altrimenti le feature non si risolvono). Il
+  download e' in background: OpenHAB parte subito e Karaf carica il pacchetto a
+  caldo appena compare nella cartella.
+- **Quanto pesa**: ~600 MB scaricati, ~1,2 GB a bordo (Karaf lo estrae in
+  `openhab/userdata/tmp/kar`). Se il disco libero non basta il download non parte
+  e il motivo finisce nei log: riempire l'eMMC fermerebbe tutto, OpenHAB compreso.
+- **Effetto sull'avvio**: `cont-init.d/20-arfea-custom` ripulisce `userdata/tmp`
+  ad ogni partenza, quindi Karaf riestrae il pacchetto ogni volta che il
+  container parte. Il file `.kar` in `addons/` deve percio' restare dov'e' — e
+  l'avvio di OpenHAB si allunga di qualche minuto.
+- **Dove si vede**: card «Addon OpenHAB (offline)» nella Web UI (stato,
+  avanzamento, pulsante per scaricarlo a mano se la centralina e' stata
+  installata senza linea) e `GET /api/openhab/addons`.
+- **Come si disattiva**: `controller.addons_kar_url: ""` in `arfea.yml`. Con un
+  tag immagine senza numero di versione (`latest`, `snapshot`) il controller non
+  scarica nulla e lo dice: non saprebbe quale kar prendere.
+- Il kar **non entra nel backup**: sono MB ri-scaricabili, non dati
+  dell'impianto. Dopo un ripristino lo riporta a bordo il controller.
+
 ### 6.2 Samba (core, porte 139/445)
 Condivisione file per accesso ai `conf/` di OpenHAB da rete. Attivo di default.
 
@@ -602,6 +631,8 @@ Base: `http://<IP>:8888/api` — documentazione interattiva su `http://<IP>:8888
 | POST | `/api/system/update` | Self-update del controller |
 | GET/POST | `/api/system/releases/check` · `/apply` · `/status` | Aggiornamento immagini |
 | POST | `/api/system/import-ui` | Reimporta widget/pages |
+| GET | `/api/openhab/addons` | Stato del pacchetto addon offline (+ avanzamento download) |
+| POST | `/api/openhab/addons/download?force=` | Scarica il pacchetto addon (background) |
 | POST | `/api/backup/run` · GET `/status` · `/list` | Backup |
 | POST | `/api/backup/restore?backup_name=...` | Ripristino |
 | GET/PUT | `/api/linphone/config` · GET `/status` · POST `/call?number=&message=` | Emergenza |
@@ -635,6 +666,15 @@ appeso, bloccando anche l'aggiornamento di versione che lo aspetta.
 Se il file non è locale ma il WebDAV è configurato, viene scaricato prima del
 ripristino. Assicurati che `exclude_paths` includa la cartella `backups` per non
 gonfiare l'archivio.
+
+Fuori dall'archivio sta anche il pacchetto addon di OpenHAB
+(`openhab/addons/openhab-addons-*.kar`, vedi [6.1](#61-openhab-core-porta-8080-network_mode-host)):
+~600 MB ri-scaricabili in qualsiasi momento, non dati dell'impianto. Tenerli
+dentro raddoppierebbe l'archivio e il tempo di trasmissione, mandando l'upload
+oltre il tetto dei 30 minuti — cioe' facendo fallire i backup su linea lenta. Al
+ripristino lo riporta a bordo il controller al primo avvio con la linea attiva:
+fino a quel momento la centralina e' come una senza pacchetto, gli addon si
+installano solo online.
 
 ---
 

@@ -19,6 +19,15 @@ controller:
   # manifest releases.json (evita un marker hardcoded che diverge dalla realtà).
   # L'apply di un aggiornamento la fa avanzare a quella applicata.
   release: ""
+  # Pacchetto con TUTTI gli addon ufficiali OpenHAB (l'equivalente del pacchetto
+  # 'openhab-addons' delle installazioni native). Il controller lo scarica in
+  # background in openhab/addons — all'avvio, alla creazione del container e
+  # quando un aggiornamento cambia la versione di OpenHAB — così i binding si
+  # installano anche senza internet. {version} = versione dal tag immagine di
+  # openhab. Vuoto = niente download (gli addon si scaricheranno on demand dalla
+  # rete, come fa OpenHAB di suo). Sono ~600 MB scaricati, che diventano ~1,2 GB
+  # a bordo: Karaf estrae il pacchetto in openhab/userdata/tmp/kar.
+  addons_kar_url: "https://openhab.jfrog.io/artifactory/libs-release/org/openhab/distro/openhab-addons/{version}/openhab-addons-{version}.kar"
 
 network:
   name: domotica

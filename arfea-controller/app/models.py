@@ -73,6 +73,16 @@ class ControllerSettings(BaseModel):
     # Release certificata a cui questa centralina è allineata (es. "2026.04").
     # Vuoto = mai allineata: l'apply parte dalla più vecchia del manifest.
     release: str = ""
+    # Pacchetto con TUTTI gli addon ufficiali OpenHAB (l'equivalente del pacchetto
+    # 'openhab-addons' delle installazioni native): il controller lo scarica una
+    # volta in openhab/addons, così i binding si installano anche senza internet.
+    # {version} = versione presa dal tag dell'immagine openhab. Vuoto = disattivato.
+    # Il default sta QUI e non solo in arfea.yml: le centraline aggiornate via OTA
+    # hanno un arfea.yml protetto, che questa chiave non ce l'ha e non l'avrà mai.
+    addons_kar_url: str = (
+        "https://openhab.jfrog.io/artifactory/libs-release/org/openhab/distro/"
+        "openhab-addons/{version}/openhab-addons-{version}.kar"
+    )
 
 
 class HABAppConfig(BaseModel):
@@ -298,6 +308,27 @@ class ReleaseCheckResult(BaseModel):
     services: list[ServiceUpdateInfo] = Field(default_factory=list)  # diff per-servizio verso latest
     notes: str = ""
     error: str = ""
+
+
+# --- Pacchetto addon OpenHAB per l'uso offline ---
+
+
+class AddonsKarState(str, Enum):
+    PRESENT = "present"          # kar della versione giusta in openhab/addons
+    MISSING = "missing"          # da scaricare
+    DOWNLOADING = "downloading"
+    FAILED = "failed"
+    DISABLED = "disabled"        # url vuoto, oppure tag immagine senza versione
+
+
+class AddonsKarStatus(BaseModel):
+    state: AddonsKarState = AddonsKarState.MISSING
+    version: str = ""            # versione attesa, dedotta dal tag di openhab
+    file: str = ""               # nome del kar presente in openhab/addons
+    size_mb: float = 0           # MB già a bordo (scaricati, se in corso)
+    total_mb: float = 0          # MB totali del download in corso
+    progress: int = 0            # percentuale del download in corso
+    message: str = ""
 
 
 class SystemInfo(BaseModel):

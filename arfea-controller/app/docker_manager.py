@@ -207,6 +207,22 @@ class DockerManager:
         Un template mancante non e' fatale — si logga e il container parte
         comunque, come faceva il vecchio codice negli script.
         """
+        if name == "openhab":
+            # Non e' una config ma il pacchetto con tutti gli addon: senza, il
+            # giorno che si installa un binding serve internet. Parte in
+            # background (~600 MB) e non ritarda l'avvio di OpenHAB, che lo
+            # carica a caldo appena arriva. Qui e non solo all'avvio del
+            # controller: dopo un aggiornamento dell'immagine serve il kar della
+            # versione nuova, e la recreate passa da qui.
+            from .addons import manager as addons_manager
+
+            ok, msg = addons_manager(self.cfg).ensure()
+            if ok:
+                logger.info("Addon OpenHAB: %s", msg)
+            else:
+                logger.warning("Addon OpenHAB: %s", msg)
+            return
+
         if name == "habapp":
             # HABApp non e' una copia di template: va scelto COSA deployare (le
             # funzioni attive) e serve un token OpenHAB. Import locale: e'
