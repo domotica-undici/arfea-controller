@@ -107,6 +107,9 @@ fi
 mkdir -p "$STAGING/script"
 cp "$REPO_DIR/script/import-ui-components.sh" "$STAGING/script/"
 cp "$REPO_DIR/script/migrate-to-controller.sh" "$STAGING/script/"
+# Passaggio della rete a NetworkManager (gestione LAN/wifi/AP dalla Web UI):
+# sugli impianti gia' installati arriva con l'OTA e si lancia a mano.
+cp "$REPO_DIR/script/arfea-network-nm.sh" "$STAGING/script/"
 
 # ── Pulizia file non necessari ──
 find "$STAGING" -name "__pycache__" -type d -exec rm -rf {} + 2>/dev/null || true

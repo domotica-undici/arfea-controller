@@ -75,6 +75,21 @@ linphone:
 # avvio le regole dell'impianto verrebbero rimosse.
 habapp: {}
 
+# ── Access point di emergenza (wifi) ──
+# Se la centralina ha una scheda wifi e la rete configurata non si trova per
+# grace_seconds (o non c'e' ne' wifi configurato ne' LAN), il controller accende
+# un access point: ci si collega e si apre http://<address>:8888 per configurare
+# una rete nuova. Si spegne da solo quando la rete torna (riprova ogni
+# retry_seconds, ma mai con qualcuno collegato). Configurabile dalla Web UI.
+# Richiede NetworkManager sull'host: script/arfea-network-nm.sh.
+access_point:
+  enabled: true
+  ssid: ""                     # vuoto = ARFEA-<ultime 4 cifre del MAC wifi>
+  password: ""                 # vuoto = generata dal controller al primo avvio
+  address: 192.168.200.1/24    # deve stare in 192.168.0.0/16 (qui la API key serve)
+  grace_seconds: 120
+  retry_seconds: 300
+
 dependencies:
   - when_any_enabled: [zwave-js-ui, zigbee2mqtt]
     then_enable: mosquitto

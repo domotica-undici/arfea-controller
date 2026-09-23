@@ -181,8 +181,24 @@ dependencies:
     then_enable: mosquitto
 ```
 
+**access_point** — access point wifi di emergenza (vedi [6.11](#611-rete-lan-wifi-e-access-point))
+```yaml
+access_point:
+  enabled: true
+  ssid: ""                     # vuoto = ARFEA-<ultime 4 cifre del MAC wifi>
+  password: ""                 # vuoto = generata dal controller al primo avvio
+  address: 192.168.200.1/24    # deve stare in 192.168.0.0/16
+  grace_seconds: 120           # rete wifi assente da quanto prima di accendere l'AP
+  retry_seconds: 300           # con l'AP acceso, ogni quanto riprova la rete
+```
+Si configura anche dalla Web UI. La LAN e la rete wifi invece **non** stanno
+qui: vivono nei profili di NetworkManager sull'host (`arfea-lan`, `arfea-wifi`).
+
 **services** — definizione di ogni container (`image`, `volumes`, `ports`,
-`environment`, `devices`, `group_add`, `cap_add`, ...).
+`environment`, `devices`, `group_add`, `cap_add`, ...). I valori di
+`environment` sono sempre stringhe: `true`/`8080` scritti senza virgolette
+vengono convertiti (controller ≥ 1.8.0; prima mandavano il controller in crash
+loop).
 
 ### Tipi di servizio
 
@@ -597,6 +613,78 @@ Trigger da OpenHAB:
 > Ownership: ogni file sotto `/opt/docker_store/openhab/` DEVE restare
 > `9001:9001` (UID/GID del container OpenHAB).
 
+### 6.11 Rete: LAN, wifi e access point
+
+Dalla Web UI (schede **Rete**, **Wifi**, **Access point di emergenza**) si
+gestisce la rete della centralina. Il controller non la configura da sé: la fa
+configurare a **NetworkManager** sull'host (via `nsenter` + `nmcli`), quindi la
+configurazione resta valida anche a controller spento.
+
+**Prerequisito: rete gestita da NetworkManager.** Armbian e Ubuntu Server
+nascono con netplan + systemd-networkd, che non sanno cercare reti wifi né fare
+da access point. Il passaggio si fa una volta per centralina:
+
+```bash
+# sulla board (le centraline preparate con lo script di setup ARFEA lo fanno già in fase 2)
+sudo /opt/docker_store/arfea-controller/script/arfea-network-nm.sh            # subito, con rollback
+sudo /opt/docker_store/arfea-controller/script/arfea-network-nm.sh --boot     # al prossimo riavvio
+sudo /opt/docker_store/arfea-controller/script/arfea-network-nm.sh --rollback # torna a netplan/networkd
+```
+
+Lo script riprende la configurazione in uso (stesso MAC e stesso client-id DHCP,
+quindi **stesso IP**, oppure lo stesso IP statico), salva i file netplan in
+`/var/backups/arfea-network/<data>/` e spegne systemd-networkd. Il passaggio
+gira in un'unità systemd: se la sessione SSH cade, arriva comunque in fondo; se
+entro 90 s il gateway non risponde, rimette tutto com'era da solo. Log in
+`/var/log/arfea-network.log`. Senza questo passaggio le schede della Web UI
+mostrano "NetworkManager non installato" e il resto del controller funziona
+come prima.
+
+**LAN (DHCP / IP statico).** Dopo *Applica* hai **2 minuti per confermare**. Se
+non confermi (per esempio perché con i nuovi valori la centralina non è più
+raggiungibile) NetworkManager rimette **da solo** la configurazione di prima
+(checkpoint con rollback automatico). Se cambi indirizzo, apri la Web UI sul
+nuovo IP e conferma da lì: la pagina te lo propone.
+
+**Wifi.** *Cerca reti*, scegli, password, *Collega*. Se la connessione fallisce
+(password errata, rete non trovata) la rete di prima resta com'era. *Dimentica*
+scollega e cancella la rete configurata. Con **LAN e wifi attivi insieme vince
+la LAN** (metrica 100 contro 600): il traffico passa dal cavo e il wifi resta di
+riserva. Se il cavo si stacca, il traffico passa sul wifi da solo.
+
+**Access point di emergenza.** Serve a raggiungere la centralina quando non la
+si trova in rete (cliente che cambia router, password wifi cambiata, centralina
+nuova senza cavo). Il watchdog del controller:
+
+| Situazione | Cosa fa |
+|---|---|
+| Rete wifi configurata ma assente da `grace_seconds` (default 2 min) | Accende l'AP |
+| Nessuna rete wifi configurata **e** LAN scollegata da `grace_seconds` | Accende l'AP |
+| AP acceso, **nessuno collegato**, ogni `retry_seconds` (default 5 min) | Spegne l'AP ~10-20 s, cerca la rete: se c'è si collega e l'AP resta spento, altrimenti lo riaccende |
+| AP acceso con **qualcuno collegato** | Non tocca nulla (sta configurando) |
+| AP acceso, nessuna rete wifi configurata, LAN tornata | Spegne l'AP |
+
+Per configurare una rete nuova tramite l'AP:
+1. dal telefono/PC collegati alla rete `ARFEA-XXXX` (nome e password nella Web
+   UI, sezione *Access point*, e in `/root/arfea-credentials.txt`);
+2. apri `http://192.168.200.1:8888` e inserisci la API key;
+3. *Wifi* → *Cerca reti* (con l'AP acceso l'elenco è quello dell'ultima
+   scansione; *Aggiorna* spegne l'AP per ~15 s e poi ti ricolleghi), scegli la
+   rete, password, *Collega*;
+4. l'AP si spegne e il telefono si scollega: se la connessione riesce la
+   centralina è sulla nuova rete (IP dal router); se fallisce l'AP si riaccende
+   in pochi secondi e nella scheda *Wifi* trovi il motivo.
+
+L'AP serve **solo** a raggiungere la centralina: non instrada verso la LAN né
+verso internet. Si può anche accendere a mano (*Accendi ora*: resta su almeno
+10 minuti) o disattivare del tutto (*Abilitato* off).
+
+**Hardware.** La scheda wifi deve supportare la modalità AP (`iw list` →
+*Supported interface modes* contiene `AP`). Provata la chiavetta USB Realtek
+RTL8821CU (driver `rtw88_8821cu`) su ODROID-C4/Armbian trixie. Una sola radio
+non fa client e AP insieme: per questo l'AP si spegne per qualche secondo quando
+cerca la rete.
+
 ---
 
 ## 7. Interfaccia web e API REST
@@ -639,6 +727,11 @@ Base: `http://<IP>:8888/api` — documentazione interattiva su `http://<IP>:8888
 | GET | `/api/habapp/status` | Funzioni HABApp, versione sorgenti, stato token |
 | PUT | `/api/habapp/functions` | Sceglie le funzioni attive (ricrea HABApp) |
 | GET/PUT | `/api/habapp/params/{thermo\|irrigation\|loads}` | Configurazione impianto (YAML) |
+| GET | `/api/network/status` | LAN, wifi, access point, watchdog, modifica LAN in attesa |
+| PUT | `/api/network/lan` · POST `/lan/confirm` · `/lan/rollback` | DHCP/IP statico (da confermare entro 2 min) |
+| GET | `/api/network/wifi/scan?force=` | Reti visibili (con AP acceso: ultima scansione) |
+| POST/DELETE | `/api/network/wifi/connect` · `/api/network/wifi` | Collega / dimentica la rete wifi |
+| PUT | `/api/network/ap` · POST `/ap/start` · `/ap/stop` | Configura / accendi / spegni l'access point |
 
 ---
 
@@ -691,6 +784,9 @@ bridge trusted; reboot da remoto via OpenHAB Cloud → regola JS → localhost.
 - [ ] OpenVPN/WireGuard configurato per l'accesso remoto
 - [ ] Se usi il self-update, `update_url` punta a un server **fidato** (il tarball
       viene estratto ed eseguito)
+- [ ] Access point di emergenza: password annotata (o cambiata) e rete in
+      `192.168.0.0/16`, così dall'AP la API key resta obbligatoria (10.x e
+      172.16.x sono reti fidate, senza key: il validatore le rifiuta)
 
 ---
 

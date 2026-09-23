@@ -1,10 +1,11 @@
 from __future__ import annotations
 
+import ipaddress
 from datetime import datetime
 from enum import Enum
 from typing import Optional
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 
 # --- Config models (parsed from arfea.yml) ---
@@ -41,6 +42,19 @@ class ServiceDefinition(BaseModel):
     healthcheck: Optional[HealthcheckConfig] = None
     log_max_size: str = "10m"
     env_file: Optional[str] = None
+
+    @field_validator("environment", mode="before")
+    @classmethod
+    def _env_as_strings(cls, v):
+        # Per Docker le variabili d'ambiente sono sempre stringhe, ma in YAML
+        # `FRONTEND: true` o `PORT: 8080` arrivano come bool/int: senza questa
+        # conversione un arfea.yml ritoccato a mano faceva fallire il load e il
+        # controller restava in crash loop. true/false in minuscolo, come li
+        # scriverebbe docker compose.
+        if not isinstance(v, dict):
+            return v
+        return {k: (str(val).lower() if isinstance(val, bool) else "" if val is None else str(val))
+                for k, val in v.items()}
 
 
 class DependencyRule(BaseModel):
@@ -83,6 +97,54 @@ class ControllerSettings(BaseModel):
         "https://openhab.jfrog.io/artifactory/libs-release/org/openhab/distro/"
         "openhab-addons/{version}/openhab-addons-{version}.kar"
     )
+
+
+class AccessPointConfig(BaseModel):
+    """Access point di emergenza della centralina (vedi host_network.py).
+
+    Si accende da solo quando la rete wifi configurata non si trova (o quando
+    non c'e' ne' wifi configurato ne' LAN), cosi' ci si collega direttamente
+    alla centralina per configurare una rete nuova; si spegne da solo quando la
+    rete torna. La rete dell'AP deve stare in 192.168.0.0/16: da li' il
+    controller chiede la API key, come dalla LAN (10.x e 172.16.x sono fidate).
+    """
+    enabled: bool = True
+    ssid: str = ""                      # vuoto = ARFEA-<ultime 4 cifre del MAC wifi>
+    password: str = ""                  # vuoto = generata al primo avvio e salvata qui
+    address: str = "192.168.200.1/24"   # indirizzo della centralina sulla rete dell'AP
+    grace_seconds: int = 120            # wifi giu' da quanto prima di accendere l'AP
+    retry_seconds: int = 300            # con l'AP acceso e nessuno collegato, ogni quanto riprova la rete
+
+    @field_validator("ssid")
+    @classmethod
+    def _ssid(cls, v: str) -> str:
+        if len(v.encode()) > 32:
+            raise ValueError("SSID troppo lungo (max 32 byte)")
+        return v
+
+    @field_validator("password")
+    @classmethod
+    def _password(cls, v: str) -> str:
+        if v and not 8 <= len(v) <= 63:
+            raise ValueError("la password dell'access point deve avere da 8 a 63 caratteri")
+        return v
+
+    @field_validator("address")
+    @classmethod
+    def _address(cls, v: str) -> str:
+        iface = ipaddress.ip_interface(v)
+        if iface.version != 4 or iface.ip not in ipaddress.ip_network("192.168.0.0/16"):
+            raise ValueError("l'access point deve stare in 192.168.0.0/16 (es. 192.168.200.1/24)")
+        if iface.network.prefixlen > 29:
+            raise ValueError("rete dell'access point troppo piccola")
+        return str(iface)
+
+    @field_validator("grace_seconds", "retry_seconds")
+    @classmethod
+    def _seconds(cls, v: int) -> int:
+        if v < 30:
+            raise ValueError("almeno 30 secondi")
+        return v
 
 
 class HABAppConfig(BaseModel):
@@ -147,6 +209,31 @@ class LinphoneConfigUpdate(BaseModel):
     repeat: Optional[int] = None
 
 
+class AccessPointUpdate(BaseModel):
+    """Body parziale per la configurazione dell'access point (campi opzionali)."""
+    enabled: Optional[bool] = None
+    ssid: Optional[str] = None
+    password: Optional[str] = None
+    address: Optional[str] = None
+    grace_seconds: Optional[int] = None
+    retry_seconds: Optional[int] = None
+
+
+class LanConfigUpdate(BaseModel):
+    """Configurazione della scheda cablata. Per ``static`` servono indirizzo con
+    subnet (es. 192.168.1.50/24) e gateway; senza DNS si usa il gateway."""
+    method: str                         # dhcp | static
+    address: str = ""
+    gateway: str = ""
+    dns: list[str] = Field(default_factory=list)
+
+
+class WifiConnectRequest(BaseModel):
+    ssid: str
+    password: str = ""                  # vuota = rete aperta
+    hidden: bool = False
+
+
 class HABAppFunctionInfo(BaseModel):
     """Una funzione HABApp attivabile, come la mostra la Web UI."""
     name: str                    # chiave tecnica (thermo/irrigation/loads)
@@ -180,6 +267,7 @@ class ArfeaConfig(BaseModel):
     backup: BackupConfig = Field(default_factory=BackupConfig)
     linphone: LinphoneConfig = Field(default_factory=LinphoneConfig)
     habapp: HABAppConfig = Field(default_factory=HABAppConfig)
+    access_point: AccessPointConfig = Field(default_factory=AccessPointConfig)
     dependencies: list[DependencyRule] = Field(default_factory=list)
     services: dict[str, ServiceDefinition] = Field(default_factory=dict)
 

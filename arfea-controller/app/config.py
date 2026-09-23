@@ -7,7 +7,7 @@ from pathlib import Path
 
 import yaml
 
-from .models import ArfeaConfig, DependencyRule, LinphoneConfig, ServiceDefinition
+from .models import AccessPointConfig, ArfeaConfig, DependencyRule, LinphoneConfig, ServiceDefinition
 
 logger = logging.getLogger(__name__)
 
@@ -181,6 +181,18 @@ class ConfigManager:
         self._save()
         logger.info("Configurazione linphone aggiornata (enabled=%s)", self.config.linphone.enabled)
         return self.config.linphone
+
+    def set_access_point(self, data: dict) -> AccessPointConfig:
+        """Aggiorna (parzialmente) la configurazione dell'access point e persiste
+        arfea.yml. Valida tutto prima di salvare: un valore sbagliato non arriva
+        mai su file."""
+        current = self.config.access_point.model_dump()
+        current.update(data)
+        self.config.access_point = AccessPointConfig.model_validate(current)
+        self._save()
+        logger.info("Configurazione access point aggiornata (enabled=%s)",
+                    self.config.access_point.enabled)
+        return self.config.access_point
 
     def _save(self) -> None:
         # Atomic write: scrive in file temporaneo, poi rename.

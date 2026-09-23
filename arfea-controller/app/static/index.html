@@ -124,6 +124,73 @@
       <div class="card">
         <h2>Rete</h2>
         <div id="networkInfo">Caricamento...</div>
+        <div id="netPending"></div>
+        <div id="netUnavailable" class="status-bar status-failed" style="display:none"></div>
+
+        <div id="lanBox" style="display:none">
+          <h2 style="margin-top:20px">LAN (cavo)</h2>
+          <div id="lanState"></div>
+          <div class="radio-group" style="display:flex; gap:6px">
+            <label class="radio-item" style="flex:1" id="lanOptDhcp"><input type="radio" name="lanMethod" value="dhcp" onchange="lanMethodChanged()"><span class="radio-label">DHCP (automatico)</span></label>
+            <label class="radio-item" style="flex:1" id="lanOptStatic"><input type="radio" name="lanMethod" value="static" onchange="lanMethodChanged()"><span class="radio-label">IP statico</span></label>
+          </div>
+          <div id="lanStaticFields" style="display:none">
+            <div style="display:flex; gap:6px">
+              <input class="lp-input" id="lanAddr" placeholder="Indirizzo IP (es. 192.168.1.50)" style="flex:2">
+              <input class="lp-input" id="lanMask" placeholder="Subnet (24 o 255.255.255.0)" style="flex:1">
+            </div>
+            <input class="lp-input" id="lanGw" placeholder="Gateway (es. 192.168.1.1)">
+            <input class="lp-input" id="lanDns" placeholder="DNS separati da virgola (vuoto = gateway)">
+          </div>
+          <button class="btn btn-green btn-block" id="btnLanApply" onclick="applyLan()" style="margin-top:6px">Applica</button>
+          <p class="hint">Dopo aver applicato hai 2 minuti per confermare. Se non confermi (per esempio perch&eacute; con i nuovi valori la centralina non &egrave; pi&ugrave; raggiungibile) torna da sola la configurazione di prima.</p>
+        </div>
+      </div>
+
+      <!-- Wifi -->
+      <div class="card" id="wifiCard" style="display:none">
+        <h2>Wifi</h2>
+        <div id="wifiState" class="status-bar status-idle">Caricamento...</div>
+        <div id="wifiOp"></div>
+        <div id="wifiConfigured"></div>
+
+        <h2 style="margin-top:16px">Collegati a una rete</h2>
+        <div id="wifiApWarn" class="status-bar status-running" style="display:none">Sei collegato tramite l'access point della centralina: collegandola a una rete wifi l'access point si spegne e perderai la connessione. Se la rete funziona ritrovi la centralina l&igrave; (indirizzo assegnato dal router, oppure dalla LAN); se non funziona l'access point si riaccende in pochi secondi.</div>
+        <button class="btn btn-blue btn-block" id="btnWifiScan" onclick="scanWifi(false)">Cerca reti</button>
+        <div id="wifiScanInfo"></div>
+        <div id="wifiList" class="radio-group"></div>
+        <input class="lp-input" id="wifiSsid" placeholder="Nome rete (SSID)">
+        <input class="lp-input" id="wifiPass" type="password" placeholder="Password (vuota per reti aperte)">
+        <label class="chk-row" style="cursor:pointer"><input type="checkbox" id="wifiHidden"><span class="radio-label">Rete nascosta</span></label>
+        <button class="btn btn-green btn-block" id="btnWifiConnect" onclick="connectWifi()">Collega</button>
+        <p class="hint">Se la centralina ha anche il cavo LAN collegato, il traffico passa dalla LAN: il wifi resta di riserva.</p>
+      </div>
+
+      <!-- Access point di emergenza -->
+      <div class="card" id="apCard" style="display:none">
+        <h2>Access point di emergenza</h2>
+        <div id="apState" class="status-bar status-idle">Caricamento...</div>
+        <p class="hint">Si accende da solo quando la rete wifi configurata non si trova per pi&ugrave; di <b id="apGraceTxt">2 minuti</b> (oppure quando non c'&egrave; n&eacute; wifi configurato n&eacute; LAN). Collegati all'access point e apri l'indirizzo indicato per configurare una rete nuova. Quando la rete torna l'access point si spegne da solo, ma non finch&eacute; qualcuno &egrave; collegato.</p>
+        <label class="info-row" style="cursor:pointer"><span class="info-label">Abilitato</span><input type="checkbox" id="apEnabled"></label>
+        <input class="lp-input" id="apSsid" placeholder="Nome (SSID)">
+        <input class="lp-input" id="apPass" type="text" placeholder="Password (8-63 caratteri)">
+        <input class="lp-input" id="apAddr" placeholder="Indirizzo centralina (es. 192.168.200.1/24)">
+        <div style="display:flex; gap:8px">
+          <label style="flex:1; display:block">
+            <span class="hint" style="display:block; margin:0 0 2px">Attesa prima dell'AP (s)</span>
+            <input class="lp-input" id="apGrace" type="number" style="margin:0">
+          </label>
+          <label style="flex:1; display:block">
+            <span class="hint" style="display:block; margin:0 0 2px">Riprova la rete ogni (s)</span>
+            <input class="lp-input" id="apRetry" type="number" style="margin:0">
+          </label>
+        </div>
+        <div id="apMsg"></div>
+        <button class="btn btn-blue btn-block" onclick="saveAp()" style="margin-top:8px">Salva configurazione</button>
+        <div style="display:flex; gap:6px">
+          <button class="btn btn-orange" style="flex:1" id="btnApStart" onclick="apAction('start')">Accendi ora</button>
+          <button class="btn btn-red" style="flex:1" id="btnApStop" onclick="apAction('stop')">Spegni ora</button>
+        </div>
       </div>
 
       <!-- Backup -->
@@ -334,6 +401,298 @@ function refreshNetwork() {
     html += '<div class="info-row"><span class="info-label">IP VPN</span><span>' + net.vpn_ip + '</span></div>';
     html += '<div class="info-row"><span class="info-label">IP Pubblico</span><span>' + net.external_ip + '</span></div>';
     document.getElementById('networkInfo').innerHTML = html;
+  });
+  refreshNetStatus(true);
+}
+
+// ── Rete: LAN, wifi, access point (NetworkManager sull'host) ──
+
+var netPolling = null;
+var netLast = null;
+var wifiNets = [];
+
+// Gli SSID arrivano dall'aria: chiunque puo' chiamare una rete "<script>".
+function esc(s) {
+  return String(s == null ? '' : s).replace(/[&<>"']/g, function(c) {
+    return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c];
+  });
+}
+
+function infoRow(label, value) {
+  return '<div class="info-row"><span class="info-label">' + label + '</span><span>' + value + '</span></div>';
+}
+
+// Sono collegato tramite l'access point della centralina?
+function viaAp(st) {
+  var ap = st && st.access_point;
+  return !!(ap && ap.address && ap.address.split('/')[0] === location.hostname);
+}
+
+function refreshNetStatus(fillForms) {
+  return apiGet('/network/status').then(function(st) {
+    netLast = st;
+    var unav = document.getElementById('netUnavailable');
+    if (!st.available) {
+      unav.style.display = 'block';
+      unav.textContent = st.message || 'Gestione rete non disponibile';
+      ['lanBox', 'wifiCard', 'apCard'].forEach(function(id) { document.getElementById(id).style.display = 'none'; });
+      return st;
+    }
+    unav.style.display = 'none';
+    renderPending(st);
+    renderLan(st.lan, fillForms);
+    renderWifi(st);
+    renderAp(st, fillForms);
+
+    // Polling solo mentre c'e' qualcosa in corso (connessione, modifica LAN da confermare)
+    var busy = st.pending_lan_change || (st.operation && st.operation.state === 'running') || st.wifi.mode === 'connecting';
+    if (busy && !netPolling) netPolling = setInterval(function() { refreshNetStatus(false); }, 3000);
+    if (!busy && netPolling) { clearInterval(netPolling); netPolling = null; }
+    return st;
+  }).catch(function() { /* durante un cambio di IP la risposta puo' non arrivare */ });
+}
+
+function renderPending(st) {
+  var el = document.getElementById('netPending');
+  var p = st.pending_lan_change;
+  if (!p) { el.innerHTML = ''; return; }
+  el.innerHTML = '<div class="status-bar status-running"><b>Nuova configurazione LAN in prova.</b> Se tutto funziona confermala, altrimenti tra <b>' +
+    p.seconds_left + ' s</b> torna da sola quella di prima.</div>' +
+    '<div style="display:flex; gap:6px"><button class="btn btn-green" style="flex:1" onclick="lanConfirm()">Conferma</button>' +
+    '<button class="btn btn-red" style="flex:1" onclick="lanRollback()">Annulla subito</button></div>';
+}
+
+function renderLan(lan, fillForms) {
+  var box = document.getElementById('lanBox');
+  if (!lan || !lan.device) { box.style.display = 'none'; return; }
+  box.style.display = 'block';
+  var cur = lan.current || {};
+  var html = infoRow('Scheda', esc(lan.device) + ' &middot; ' + esc(lan.mac || ''));
+  html += infoRow('Stato', lan.connected ? '<span class="badge badge-running">collegata</span>' : '<span class="badge badge-stopped">scollegata</span>');
+  if (lan.connected) {
+    html += infoRow('Indirizzo', esc((cur.addresses || []).join(', ')));
+    html += infoRow('Gateway', esc(cur.gateway || '-'));
+    html += infoRow('DNS', esc((cur.dns || []).join(', ') || '-'));
+  }
+  if (!lan.managed) html += '<div class="status-bar status-failed">La LAN non &egrave; gestita da NetworkManager: eseguire lo script arfea-network-nm.sh sulla centralina.</div>';
+  document.getElementById('lanState').innerHTML = html;
+  document.getElementById('btnLanApply').disabled = !lan.managed;
+  if (!fillForms) return;
+  var method = lan.method || 'dhcp';
+  document.querySelector('input[name=lanMethod][value=' + method + ']').checked = true;
+  var cfg = lan.config || {};
+  // Da DHCP a statico si parte dai valori in uso: di solito si vuole "fissare" quelli.
+  var src = method === 'static' ? cfg.address : (cur.addresses || [])[0];
+  var parts = (src || '').split('/');
+  document.getElementById('lanAddr').value = parts[0] || '';
+  document.getElementById('lanMask').value = parts[1] || '24';
+  document.getElementById('lanGw').value = (method === 'static' ? cfg.gateway : cur.gateway) || '';
+  document.getElementById('lanDns').value = ((method === 'static' ? cfg.dns : cur.dns) || []).join(', ');
+  lanMethodChanged();
+}
+
+function lanMethodChanged() {
+  var m = (document.querySelector('input[name=lanMethod]:checked') || {}).value;
+  document.getElementById('lanStaticFields').style.display = m === 'static' ? 'block' : 'none';
+  document.getElementById('lanOptDhcp').classList.toggle('selected', m === 'dhcp');
+  document.getElementById('lanOptStatic').classList.toggle('selected', m === 'static');
+}
+
+// "24" oppure "255.255.255.0" → prefisso
+function maskToPrefix(m) {
+  m = (m || '').trim();
+  if (/^\d{1,2}$/.test(m)) return m;
+  var bits = m.split('.').map(function(o) { return (parseInt(o, 10) >>> 0).toString(2); }).join('');
+  return String((bits.match(/1/g) || []).length);
+}
+
+function applyLan() {
+  var m = (document.querySelector('input[name=lanMethod]:checked') || {}).value;
+  var body = { method: m };
+  var msg = 'Passare la LAN in DHCP?';
+  if (m === 'static') {
+    var ip = document.getElementById('lanAddr').value.trim();
+    body.address = ip + '/' + maskToPrefix(document.getElementById('lanMask').value);
+    body.gateway = document.getElementById('lanGw').value.trim();
+    body.dns = document.getElementById('lanDns').value.split(/[,\s]+/).filter(function(x) { return x; });
+    msg = 'Impostare la LAN a ' + body.address + ' (gateway ' + body.gateway + ')?';
+    if (ip !== location.hostname && !viaAp(netLast)) {
+      msg += '\n\nSe stai usando la LAN, dopo l\'applicazione la centralina sara\' su http://' + ip + ':8888 : aprila e conferma entro 2 minuti.';
+    }
+  } else if (!viaAp(netLast)) {
+    msg += '\n\nL\'indirizzo potrebbe cambiare: se questa pagina smette di rispondere, cerca il nuovo IP sul router e conferma da li\' entro 2 minuti.';
+  }
+  if (!confirm(msg)) return;
+  document.getElementById('btnLanApply').disabled = true;
+  apiSend('/network/lan', { method: 'PUT', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(body) }).then(function(r) {
+    document.getElementById('btnLanApply').disabled = false;
+    var el = document.getElementById('netPending');
+    if (r.success === false) {
+      el.innerHTML = '<div class="status-bar status-failed">' + esc(r.message) + '</div>';
+      return;
+    }
+    if (r.new_ip && r.new_ip !== location.hostname && !viaAp(netLast)) {
+      var url = 'http://' + r.new_ip + ':' + (location.port || '8888') + '/';
+      el.innerHTML = '<div class="status-bar status-running">Configurazione in applicazione. Apri <a href="' + esc(url) + '" target="_blank">' + esc(url) + '</a> e premi <b>Conferma</b> entro 2 minuti, altrimenti torna quella di prima.</div>';
+    }
+    setTimeout(function() { refreshNetStatus(false); }, 4000);
+    if (!netPolling) netPolling = setInterval(function() { refreshNetStatus(false); }, 3000);
+  });
+}
+
+function lanConfirm() {
+  apiPost('/network/lan/confirm').then(function(r) {
+    document.getElementById('netPending').innerHTML = '<div class="status-bar ' + (r.success ? 'status-completed' : 'status-failed') + '">' + esc(r.message) + '</div>';
+    refreshNetStatus(true);
+  });
+}
+
+function lanRollback() {
+  apiPost('/network/lan/rollback').then(function(r) {
+    document.getElementById('netPending').innerHTML = '<div class="status-bar status-idle">' + esc(r.message) + '</div>';
+    setTimeout(function() { refreshNetStatus(true); }, 4000);
+  });
+}
+
+function renderWifi(st) {
+  var w = st.wifi, card = document.getElementById('wifiCard');
+  if (!w || !w.device) { card.style.display = 'none'; return; }
+  card.style.display = 'block';
+  var el = document.getElementById('wifiState'), cls = 'status-idle', text;
+  if (w.mode === 'client') {
+    cls = 'status-completed';
+    text = 'Collegata a <b>' + esc(w.ssid) + '</b>' + (w.signal != null ? ' &middot; segnale ' + w.signal + '%' : '') +
+      '<br>' + esc(((w.ip || {}).addresses || []).join(', '));
+  } else if (w.mode === 'ap') {
+    cls = 'status-running'; text = 'Access point acceso: la scheda wifi non &egrave; collegata a nessuna rete';
+  } else if (w.mode === 'connecting') {
+    cls = 'status-running'; text = '<span class="spinner"></span>Connessione in corso...';
+  } else {
+    text = 'Non collegata';
+  }
+  var note = st.watchdog && st.watchdog.note;
+  if (note && w.mode !== 'client') text += '<br><small>' + esc(note) + '</small>';
+  el.className = 'status-bar ' + cls;
+  el.innerHTML = text + '<br><small>Scheda ' + esc(w.device) + '</small>';
+
+  var op = st.operation || {}, opEl = document.getElementById('wifiOp');
+  if (op.state === 'running') opEl.innerHTML = '<div class="status-bar status-running"><span class="spinner"></span>' + esc(op.message) + '</div>' + progressHtml(0, 'indet');
+  else if (op.state === 'failed') opEl.innerHTML = '<div class="status-bar status-failed">' + esc(op.message) + '</div>';
+  else if (op.state === 'ok') opEl.innerHTML = '<div class="status-bar status-completed">' + esc(op.message) + '</div>';
+  else opEl.innerHTML = '';
+  document.getElementById('btnWifiConnect').disabled = op.state === 'running';
+
+  var conf = w.configured || [];
+  document.getElementById('wifiConfigured').innerHTML = conf.length
+    ? infoRow('Rete configurata', '<b>' + esc(conf.join(', ')) + '</b> <button class="btn btn-red" style="padding:4px 10px; font-size:0.8em" onclick="forgetWifi()">Dimentica</button>')
+    : infoRow('Rete configurata', 'nessuna');
+  document.getElementById('wifiApWarn').style.display = viaAp(st) ? 'block' : 'none';
+}
+
+function scanWifi(force) {
+  var btn = document.getElementById('btnWifiScan');
+  btn.disabled = true;
+  btn.innerHTML = '<span class="spinner"></span>Ricerca...';
+  apiGet('/network/wifi/scan' + (force ? '?force=true' : '')).then(function(r) {
+    btn.disabled = false;
+    btn.textContent = 'Cerca reti';
+    wifiNets = r.networks || [];
+    var info = '';
+    if (r.cached) {
+      var age = r.age != null ? ' (' + Math.round(r.age / 60) + ' min fa)' : '';
+      info = '<p class="hint">' + esc(r.message) + age + '. <a href="#" onclick="scanWifi(true); return false">Aggiorna</a>: spegne l\'access point per circa 15 secondi' +
+        (viaAp(netLast) ? ', dovrai ricollegarti' : '') + '.</p>';
+    }
+    document.getElementById('wifiScanInfo').innerHTML = info;
+    var html = '';
+    wifiNets.forEach(function(n, i) {
+      html += '<div class="radio-item" onclick="pickWifi(' + i + ', this)"><div style="flex:1"><div class="radio-label">' +
+        (n.security ? '&#x1F512; ' : '') + esc(n.ssid) + (n.in_use ? ' <span class="badge badge-running">in uso</span>' : '') +
+        '</div><div class="radio-sublabel">segnale ' + n.signal + '% &middot; canale ' + esc(n.channel) + (n.security ? ' &middot; ' + esc(n.security) : ' &middot; aperta') + '</div></div></div>';
+    });
+    document.getElementById('wifiList').innerHTML = html || (r.cached ? '' : '<p class="hint">Nessuna rete trovata</p>');
+  }).catch(function() { btn.disabled = false; btn.textContent = 'Cerca reti'; });
+}
+
+function pickWifi(i, el) {
+  document.querySelectorAll('#wifiList .radio-item').forEach(function(r) { r.classList.remove('selected'); });
+  el.classList.add('selected');
+  document.getElementById('wifiSsid').value = wifiNets[i].ssid;
+  document.getElementById('wifiHidden').checked = false;
+  document.getElementById('wifiPass').focus();
+}
+
+function connectWifi() {
+  var body = {
+    ssid: document.getElementById('wifiSsid').value.trim(),
+    password: document.getElementById('wifiPass').value,
+    hidden: document.getElementById('wifiHidden').checked
+  };
+  if (!body.ssid) { alert('Scegli o scrivi il nome della rete'); return; }
+  if (viaAp(netLast) && !confirm('Sei collegato tramite l\'access point: la connessione si interrompera\'. Continuare?')) return;
+  apiSend('/network/wifi/connect', { method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(body) }).then(function(r) {
+    if (r.success === false) {
+      document.getElementById('wifiOp').innerHTML = '<div class="status-bar status-failed">' + esc(r.message) + '</div>';
+      return;
+    }
+    document.getElementById('wifiPass').value = '';
+    refreshNetStatus(false);
+  });
+}
+
+function forgetWifi() {
+  if (!confirm('Dimenticare la rete wifi configurata? La centralina si scollega dal wifi.')) return;
+  apiSend('/network/wifi', { method: 'DELETE' }).then(function() { refreshNetStatus(false); });
+}
+
+function renderAp(st, fillForms) {
+  var ap = st.access_point, card = document.getElementById('apCard');
+  if (!st.wifi || !st.wifi.device) { card.style.display = 'none'; return; }
+  card.style.display = 'block';
+  var el = document.getElementById('apState');
+  var ip = (ap.address || '').split('/')[0];
+  var html = infoRow('Stato', ap.active ? '<span class="badge badge-other">acceso</span>' : (ap.enabled ? '<span class="badge badge-running">pronto</span>' : '<span class="badge badge-stopped">disattivato</span>'));
+  html += infoRow('Nome rete', '<b>' + esc(ap.ssid) + '</b>');
+  html += infoRow('Password', '<code>' + esc(ap.password) + '</code>');
+  html += infoRow('Indirizzo', 'http://' + esc(ip) + ':8888');
+  if (ap.active) html += infoRow('Dispositivi collegati', ap.clients);
+  el.className = 'status-bar ' + (ap.active ? 'status-running' : 'status-idle');
+  el.innerHTML = html;
+  var g = ap.grace_seconds;
+  document.getElementById('apGraceTxt').textContent = g < 120 ? g + ' secondi' : Math.round(g / 60) + ' minuti';
+  document.getElementById('btnApStart').disabled = ap.active;
+  document.getElementById('btnApStop').disabled = !ap.active;
+  if (!fillForms) return;
+  document.getElementById('apEnabled').checked = ap.enabled;
+  document.getElementById('apSsid').value = ap.ssid;
+  document.getElementById('apPass').value = ap.password;
+  document.getElementById('apAddr').value = ap.address;
+  document.getElementById('apGrace').value = ap.grace_seconds;
+  document.getElementById('apRetry').value = ap.retry_seconds;
+}
+
+function saveAp() {
+  var body = {
+    enabled: document.getElementById('apEnabled').checked,
+    ssid: document.getElementById('apSsid').value.trim(),
+    password: document.getElementById('apPass').value,
+    address: document.getElementById('apAddr').value.trim(),
+    grace_seconds: parseInt(document.getElementById('apGrace').value, 10),
+    retry_seconds: parseInt(document.getElementById('apRetry').value, 10)
+  };
+  apiPutJson('/network/ap', body).then(function(r) {
+    document.getElementById('apMsg').innerHTML = '<div class="status-bar ' + (r.success ? 'status-completed' : 'status-failed') + '">' + esc(r.message) + '</div>';
+    refreshNetStatus(true);
+  });
+}
+
+function apAction(what) {
+  if (what === 'stop' && viaAp(netLast) && !confirm('Sei collegato tramite l\'access point: spegnendolo perderai la connessione. Continuare?')) return;
+  document.getElementById('btnApStart').disabled = true;
+  document.getElementById('btnApStop').disabled = true;
+  apiPost('/network/ap/' + what).then(function(r) {
+    document.getElementById('apMsg').innerHTML = '<div class="status-bar ' + (r.success ? 'status-completed' : 'status-failed') + '">' + esc(r.message) + '</div>';
+    refreshNetStatus(false);
   });
 }
 

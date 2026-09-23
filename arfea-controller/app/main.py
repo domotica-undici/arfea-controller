@@ -26,13 +26,16 @@ from .backup import BackupManager
 from .config import ConfigManager
 from .docker_manager import DockerManager
 from .habapp_manager import HABAppManager, last_provision as habapp_last_provision
+from .host_network import HostNetworkManager, ap_lan_conflict
 from .release_manager import ReleaseManager
 from .models import (
+    AccessPointUpdate,
     AddonsKarStatus,
     BackupStatus,
     HABAppFunctionsUpdate,
     HABAppParamsUpdate,
     HABAppStatus,
+    LanConfigUpdate,
     LinphoneConfigUpdate,
     NetworkInfo,
     OperationResponse,
@@ -44,6 +47,7 @@ from .models import (
     ServiceDevicesUpdate,
     ServiceStatus,
     SystemInfo,
+    WifiConnectRequest,
 )
 
 logger = logging.getLogger(__name__)
@@ -284,7 +288,21 @@ logger = logging.getLogger(__name__)
 #          versione di OpenHAB (il kar deve combaciare col runtime). Stato e
 #          comando manuale in /api/openhab/addons e nella Web UI. Il kar resta
 #          fuori dal backup: sono ~600 MB ri-scaricabili, non dati dell'impianto.
-VERSION = "1.7.4"
+#   1.8.0  Rete della centralina gestita dalla Web UI (host_network.py), via
+#          NetworkManager sull'host (script/arfea-network-nm.sh fa il passaggio
+#          da netplan/systemd-networkd). LAN in DHCP o IP statico, con rollback
+#          automatico se la modifica non viene confermata entro 2 minuti
+#          (checkpoint di NetworkManager: un gateway sbagliato non rende piu'
+#          irraggiungibile la centralina). Wifi: scansione, connessione,
+#          "dimentica". Access point di emergenza: si accende da solo quando la
+#          rete wifi configurata non si trova (o senza wifi configurato e senza
+#          LAN) e si spegne da solo quando la rete torna; con qualcuno collegato
+#          all'AP non si tocca nulla. Con LAN e wifi attivi insieme vince la
+#          LAN (metrica 100 contro 600). Config AP in arfea.yml (access_point).
+#          FIX: una variabile d'ambiente non stringa in arfea.yml (es.
+#          `ZIGBEE2MQTT_SETTINGS_FRONTEND: true`) mandava il controller in crash
+#          loop al load della config: ora bool/numeri vengono convertiti.
+VERSION = "1.8.0"
 
 # -- Globals initialised at startup -----------------------------------------
 
@@ -293,6 +311,7 @@ docker_manager: DockerManager
 backup_manager: BackupManager
 release_manager: ReleaseManager
 habapp_manager: HABAppManager
+host_network: HostNetworkManager
 
 HOST_PROC = "/host/proc"
 
@@ -335,7 +354,7 @@ def _restore_config_if_missing(config_path: str) -> None:
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    global config_manager, docker_manager, backup_manager, release_manager, habapp_manager
+    global config_manager, docker_manager, backup_manager, release_manager, habapp_manager, host_network
 
     config_path = os.environ.get("CONFIG_PATH", "/data/arfea.yml")
 
@@ -358,6 +377,7 @@ async def lifespan(app: FastAPI):
     backup_manager = BackupManager(config_manager.config.backup, docker_manager)
     habapp_manager = HABAppManager(config_manager, docker_manager)
     release_manager = ReleaseManager(config_manager, docker_manager, backup_manager, habapp_manager)
+    host_network = HostNetworkManager(config_manager)
 
     # Esito dell'eventuale aggiornamento avviato dal controller precedente
     _load_update_status()
@@ -386,6 +406,15 @@ async def lifespan(app: FastAPI):
     # startup, ma in sequenza fra loro — aprono entrambi la console Karaf, che
     # non va usata da due parti insieme.
     threading.Thread(target=_startup_background, daemon=True).start()
+
+    # Rete: password dell'AP al primo avvio e watchdog wifi/access point. Il
+    # watchdog parte anche se NetworkManager non c'e' (lo segnala nello stato):
+    # cosi' basta lanciare arfea-network-nm.sh, senza riavviare il controller.
+    try:
+        host_network.ensure_ap_password()
+    except Exception as exc:
+        logger.warning("Password access point non generata: %s", exc)
+    host_network.start()
 
     logger.info("ARFEA Controller ready")
     yield
@@ -807,6 +836,102 @@ def stop_vpn():
     except (subprocess.CalledProcessError, subprocess.TimeoutExpired) as exc:
         logger.error("VPN stop failed: %s", exc)
         return OperationResponse(success=False, message=f"Arresto VPN fallito: {exc}")
+
+
+# ---------------------------------------------------------------------------
+# Rete della centralina: LAN, wifi, access point (via NetworkManager sull'host)
+# ---------------------------------------------------------------------------
+
+@app.get("/api/network/status", dependencies=[Depends(verify_api_key)])
+def network_status():
+    """Stato completo: LAN, wifi, access point, watchdog, modifica LAN in attesa."""
+    return host_network.status()
+
+
+@app.get("/api/network/wifi/scan", dependencies=[Depends(verify_api_key)])
+def network_wifi_scan(force: bool = False):
+    """Reti wifi visibili. Con l'AP acceso restituisce l'ultima scansione; con
+    ``force=true`` spegne l'AP per qualche secondo e scansiona davvero."""
+    return host_network.scan(force=force)
+
+
+@app.post("/api/network/wifi/connect", response_model=OperationResponse, dependencies=[Depends(verify_api_key)])
+def network_wifi_connect(body: WifiConnectRequest):
+    """Collega la centralina a una rete wifi (in background: fino a ~45 s).
+    Se si riesce, la rete sostituisce quella configurata prima; se no si torna
+    com'era (AP compreso). Esito in /api/network/status → operation."""
+    ok, msg = host_network.connect_wifi(body.ssid.strip(), body.password, body.hidden)
+    return OperationResponse(success=ok, message=msg)
+
+
+@app.delete("/api/network/wifi", response_model=OperationResponse, dependencies=[Depends(verify_api_key)])
+def network_wifi_forget():
+    ok, msg = host_network.forget_wifi()
+    return OperationResponse(success=ok, message=msg)
+
+
+@app.put("/api/network/lan", dependencies=[Depends(verify_api_key)])
+def network_lan_apply(body: LanConfigUpdate):
+    """Applica DHCP o IP statico alla LAN. Va confermata entro ``confirm_within``
+    secondi con /api/network/lan/confirm, altrimenti torna quella di prima."""
+    try:
+        res = host_network.apply_lan(body.method, body.address.strip(), body.gateway.strip(),
+                                     [d for d in body.dns if d.strip()])
+    except ValueError as exc:
+        raise HTTPException(400, str(exc))
+    return {"success": True, "message": "Configurazione in applicazione: confermala entro "
+            f"{res['confirm_within']} secondi", **res}
+
+
+@app.post("/api/network/lan/confirm", response_model=OperationResponse, dependencies=[Depends(verify_api_key)])
+def network_lan_confirm():
+    ok, msg = host_network.confirm_lan()
+    return OperationResponse(success=ok, message=msg)
+
+
+@app.post("/api/network/lan/rollback", response_model=OperationResponse, dependencies=[Depends(verify_api_key)])
+def network_lan_rollback():
+    ok, msg = host_network.rollback_lan()
+    return OperationResponse(success=ok, message=msg)
+
+
+@app.put("/api/network/ap", response_model=OperationResponse, dependencies=[Depends(verify_api_key)])
+def network_ap_config(body: AccessPointUpdate):
+    """Configura l'access point di emergenza (SSID, password, rete, tempi)."""
+    data = body.model_dump(exclude_none=True)
+    if data.get("password", None) == "":
+        data.pop("password")          # vuota = mantieni quella attuale
+    if data.get("address"):
+        try:
+            conflict = ap_lan_conflict(data["address"])
+        except ValueError:
+            conflict = None           # indirizzo malformato: lo dice il validatore
+        if conflict:
+            raise HTTPException(400, f"address: {conflict}")
+    try:
+        config_manager.set_access_point(data)
+    except ValueError as exc:         # ValidationError di pydantic e' un ValueError
+        errors = getattr(exc, "errors", None)
+        if callable(errors):
+            msg = "; ".join(f"{e['loc'][0]}: {e['msg'].removeprefix('Value error, ')}" for e in errors())
+        else:
+            msg = str(exc)
+        raise HTTPException(400, msg)
+    ok, msg = host_network.reapply_ap()
+    return OperationResponse(success=ok, message=msg)
+
+
+@app.post("/api/network/ap/start", response_model=OperationResponse, dependencies=[Depends(verify_api_key)])
+def network_ap_start():
+    """Accende subito l'access point (resta su almeno 10 minuti)."""
+    ok, msg = host_network.start_ap()
+    return OperationResponse(success=ok, message=msg)
+
+
+@app.post("/api/network/ap/stop", response_model=OperationResponse, dependencies=[Depends(verify_api_key)])
+def network_ap_stop():
+    ok, msg = host_network.stop_ap()
+    return OperationResponse(success=ok, message=msg)
 
 
 # ---------------------------------------------------------------------------

@@ -27,6 +27,7 @@
 #        ARFEA_MODBUS_DEVICE="/dev/ttyUSB0" \
 #        ARFEA_OPENHAB_DEVICES="/dev/ttyAML1:/dev/rs485,/dev/ttyUSB1:/dev/ttyUSB1"  # porte OpenHAB extra (csv) \
 #        ARFEA_OTBR_DEVICE="/dev/ttyACM0" ARFEA_OTBR_INFRA_IF="end0" \
+#        ARFEA_AP_PASSWORD="…"        # opzionale: password AP wifi (se assente, generata) \
 #        ./script/install.sh
 #
 # NB: nessun segreto è incluso nel repo. La password admin di OpenHAB è generata
@@ -65,6 +66,10 @@ ARFEA_RELEASES_URL="${ARFEA_RELEASES_URL:-${ARFEA_RELEASES_URL_DEFAULT:-}}"
 ARFEA_WEBDAV_URL="${ARFEA_WEBDAV_URL:-${ARFEA_WEBDAV_URL_DEFAULT:-}}"
 ARFEA_WEBDAV_USER="${ARFEA_WEBDAV_USER:-${ARFEA_WEBDAV_USER_DEFAULT:-}}"
 ARFEA_WEBDAV_PASS="${ARFEA_WEBDAV_PASS:-${ARFEA_WEBDAV_PASS_DEFAULT:-}}"
+# Password dell'access point wifi di emergenza. Vuota = la genera il controller
+# al primo avvio (visibile nella Web UI). Un default aziendale unico si mette in
+# arfea-defaults.env come ARFEA_AP_PASSWORD_DEFAULT (8-63 caratteri).
+ARFEA_AP_PASSWORD="${ARFEA_AP_PASSWORD:-${ARFEA_AP_PASSWORD_DEFAULT:-}}"
 ARFEA_ZWAVE_DEVICE="${ARFEA_ZWAVE_DEVICE:-}"
 ARFEA_ZIGBEE_DEVICE="${ARFEA_ZIGBEE_DEVICE:-}"
 ARFEA_MODBUS_DEVICE="${ARFEA_MODBUS_DEVICE:-}"
@@ -246,6 +251,8 @@ configure_yml() {
     yml_scalar webdav_user     "$ARFEA_WEBDAV_USER" "$YML"
     yml_scalar webdav_password "$ARFEA_WEBDAV_PASS" "$YML"
   fi
+  # "  password:" a 2 spazi c'e' solo in access_point (le altre sono webdav_/sip_)
+  [[ -n "$ARFEA_AP_PASSWORD" ]] && yml_scalar password "$ARFEA_AP_PASSWORD" "$YML"
 
   $INSTALL_HABAPP  && enable_service habapp      "$YML"
   $INSTALL_ZWAVE   && enable_service zwave-js-ui "$YML"
