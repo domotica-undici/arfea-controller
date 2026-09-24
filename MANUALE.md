@@ -840,8 +840,10 @@ appeso, bloccando anche l'aggiornamento di versione che lo aspetta.
 4. Riavvia i servizi abilitati
 
 Se il file non è locale ma il WebDAV è configurato, viene scaricato prima del
-ripristino. Assicurati che `exclude_paths` includa la cartella `backups` per non
-gonfiare l'archivio.
+ripristino. La cartella `backups` resta sempre fuori dall'archivio, e così ogni
+percorso in `exclude_paths`, a qualsiasi profondità. Fino al controller 1.8.4
+valeva solo per le cartelle di primo livello di `/opt/docker_store`, quindi ogni
+backup conteneva quello precedente.
 
 Fuori dall'archivio stanno il pacchetto addon di OpenHAB
 (`openhab/addons/*.kar`, vedi [6.1](#61-openhab-core-porta-8080-network_mode-host)), le

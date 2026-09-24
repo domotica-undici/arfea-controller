@@ -98,19 +98,22 @@ class _DeadlineFile:
             yield chunk
 
 
-def _excluded(rel: str) -> bool:
-    return any(fnmatch.fnmatch(rel, pattern) for pattern in _EXCLUDE_GLOBS)
+def _excluded(rel: str, extra: tuple[str, ...] = ()) -> bool:
+    return any(fnmatch.fnmatch(rel, pattern) for pattern in (*_EXCLUDE_GLOBS, *extra))
 
 
-def _skip_excluded(info: tarfile.TarInfo) -> tarfile.TarInfo | None:
-    """Filtro di tar.add: scarta le voci che combaciano con _EXCLUDE_GLOBS.
+def _tar_filter(extra: tuple[str, ...]):
+    """Filtro di tar.add: scarta le voci che combaciano con _EXCLUDE_GLOBS o con
+    ``extra`` (cartella dei backup ed exclude_paths di arfea.yml).
 
     ``info.name`` e' il percorso relativo alla radice dell'archivio, es.
     ``openhab/addons/openhab-addons-5.2.0.kar``."""
-    if _excluded(info.name):
-        logger.info("Backup: escluso %s", info.name)
-        return None
-    return info
+    def _filter(info: tarfile.TarInfo) -> tarfile.TarInfo | None:
+        if _excluded(info.name, extra):
+            logger.info("Backup: escluso %s", info.name)
+            return None
+        return info
+    return _filter
 
 
 class BackupManager:
@@ -123,7 +126,27 @@ class BackupManager:
     # Spazio su disco (Redmine #201)
     # ------------------------------------------------------------------
 
-    def _estimate_size(self, data_path: Path, exclude_set: set[str]) -> int:
+    def _run_excludes(self, data_path: Path, backup_dir: Path) -> tuple[str, ...]:
+        """La cartella dei backup e gli exclude_paths di arfea.yml come pattern
+        relativi all'archivio, validi a QUALSIASI profondita'.
+
+        Prima si confrontavano solo le cartelle di primo livello del data path:
+        backups/ sta in arfea-controller/, che passava il filtro, e cosi' ogni
+        backup conteneva i backup locali del momento (Redmine #220). Il pattern
+        della cartella la toglie con tutto il contenuto."""
+        base = data_path.resolve()
+        pats: list[str] = []
+        for p in (backup_dir, *(Path(x) for x in self.config.exclude_paths)):
+            try:
+                rel = p.resolve().relative_to(base).as_posix()
+            except ValueError:
+                continue            # fuori dal data path: non finirebbe comunque nell'archivio
+            if rel != ".":
+                pats += [rel, rel + "/*"]
+        return tuple(pats)
+
+    def _estimate_size(self, data_path: Path, exclude_set: set[str],
+                       extra: tuple[str, ...] = ()) -> int:
         """Byte che finiscono nell'archivio, NON compressi: per eccesso. Meglio
         chiedere un po' di spazio in piu' che riempire il disco a meta' archivio."""
         total = 0
@@ -135,9 +158,9 @@ class BackupManager:
                 continue
             for root, dirs, files in os.walk(item):
                 rel_root = os.path.relpath(root, data_path)
-                dirs[:] = [d for d in dirs if not _excluded(os.path.join(rel_root, d))]
+                dirs[:] = [d for d in dirs if not _excluded(os.path.join(rel_root, d), extra)]
                 for name in files:
-                    if _excluded(os.path.join(rel_root, name)):
+                    if _excluded(os.path.join(rel_root, name), extra):
                         continue
                     try:
                         total += os.lstat(os.path.join(root, name)).st_size
@@ -200,11 +223,12 @@ class BackupManager:
 
         exclude_set = set(self.config.exclude_paths)
         exclude_set.add(str(backup_dir))
+        extra = self._run_excludes(data_path, backup_dir)
 
         # Spazio PRIMA di fermare qualunque cosa: senza, l'impianto si spegneva per
         # riempire il disco a meta' archivio (Redmine #201).
         try:
-            needed = self._estimate_size(data_path, exclude_set) + _SPACE_MARGIN
+            needed = self._estimate_size(data_path, exclude_set, extra) + _SPACE_MARGIN
             self._make_room(backup_dir, needed)
         except NoSpaceError as exc:
             logger.error("%s", exc)
@@ -244,7 +268,7 @@ class BackupManager:
                     if any(item_path.startswith(ex) for ex in exclude_set):
                         logger.debug("Excluding %s", item_path)
                         continue
-                    tar.add(item_path, arcname=item.name, filter=_skip_excluded)
+                    tar.add(item_path, arcname=item.name, filter=_tar_filter(extra))
 
             size_mb = archive_path.stat().st_size / 1024 / 1024
             logger.info("Archive created: %s (%.1f MB)", archive_path, size_mb)

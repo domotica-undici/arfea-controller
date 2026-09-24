@@ -350,7 +350,13 @@ logger = logging.getLogger(__name__)
 #          arfea-network-nm.sh sull'host (subito o al prossimo riavvio) e ne
 #          mostra i passi. Addon offline (#205): oltre a seguire la versione di
 #          OpenHAB, ogni ora si riscarica il pacchetto se il download era fallito.
-VERSION = "1.8.4"
+#   1.8.5  FIX (Redmine #220): ogni backup conteneva il backup precedente. La
+#          cartella backups e gli exclude_paths di arfea.yml si escludevano solo
+#          se di primo livello nel data path, e backups sta in arfea-controller/:
+#          sulla .19 un backup da 2,3 GB ne conteneva uno da 2 GB. Con la 1.8.4,
+#          che ne lascia uno a bordo, sarebbe raddoppiato a ogni giro. Ora sono
+#          pattern validi a qualsiasi profondita', nel tar e nella stima.
+VERSION = "1.8.5"
 
 # -- Globals initialised at startup -----------------------------------------
 
