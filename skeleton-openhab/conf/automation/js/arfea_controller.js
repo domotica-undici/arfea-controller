@@ -22,6 +22,54 @@ function httpPut(path) {
   return HTTP.sendHttpPutRequest(BASE_URL + path, 'application/json', '', TIMEOUT);
 }
 
+// Contesto passato dal widget (actionRuleContext) quando la regola parte con
+// "run now". openhab-js lo mette in event.raw, ma non sempre nella stessa forma:
+// mappa Java fino alla 5.19 e dalla 5.21, oggetto JS nella 5.20 (quella di
+// OpenHAB 5.2.0). Leggerlo solo con raw.get() lasciava l'azione vuota su
+// OpenHAB 5.2.0, e nessun pulsante del widget funzionava (Redmine #198). Le
+// chiavi possono arrivare anche col prefisso del modulo ("<modulo>.action").
+function contextValue(event, key) {
+  var raw = event && event.raw;
+  if (!raw) return '';
+  var isMap = typeof raw.get === 'function' && typeof raw.keySet === 'function';
+  var v = null;
+  try {
+    v = isMap ? raw.get(key) : raw[key];
+    if (v === null || v === undefined) {
+      var keys = isMap ? raw.keySet().toArray() : Object.keys(raw);
+      for (var i = 0; i < keys.length; i++) {
+        if (String(keys[i]).endsWith('.' + key)) {
+          v = isMap ? raw.get(keys[i]) : raw[keys[i]];
+          break;
+        }
+      }
+    }
+  } catch (e) {
+    logger.warn('ARFEA: contesto illeggibile ({}): {}', key, e.message);
+  }
+  return (v === null || v === undefined) ? '' : String(v);
+}
+
+// Chiavi del contesto ricevuto, per il log quando l'azione manca.
+function contextKeys(event) {
+  var raw = event && event.raw;
+  if (!raw) return '(nessun contesto)';
+  try {
+    return typeof raw.keySet === 'function' ? String(raw.keySet()) : Object.keys(raw).join(', ');
+  } catch (e) {
+    return '(illeggibile)';
+  }
+}
+
+function itemState(name) {
+  try {
+    var st = items.getItem(name).state;
+    return (st === null || st === undefined) ? '' : String(st);
+  } catch (e) {
+    return '';
+  }
+}
+
 // Map service names in arfea.yml → item name fragments
 var SERVICE_ITEM_MAP = {
   'openhab':      'openhab',
@@ -45,21 +93,13 @@ rules.JSRule({
   // Con triggers: [] la regola si perde dopo il riavvio di OpenHAB.
   triggers: [triggers.GenericCronTrigger('0 0 0 29 2 ? 2099')],
   execute: function (event) {
-    var action = '';
-    var target = '';
-
-    // runnow context is in event.raw (Java Map) in OpenHAB 4+/5
-    try {
-      var raw = event && event.raw;
-      if (raw && typeof raw.get === 'function') {
-        action = String(raw.get('action') || '');
-        target = String(raw.get('target') || '');
-      }
-    } catch (e) {
-      logger.warn('ARFEA: error reading context: {}', e.message);
-    }
+    var action = contextValue(event, 'action');
+    var target = contextValue(event, 'target');
 
     logger.info('ARFEA action={}, target={}', action, target);
+    if (!action) {
+      logger.warn('ARFEA: azione assente nel contesto, chiavi ricevute: {}', contextKeys(event));
+    }
 
     try {
       switch (action) {
@@ -114,6 +154,21 @@ rules.JSRule({
 // ─────────────────────────────────────────────────────────────
 // Periodic refresh: update all service states every 60 seconds
 // ─────────────────────────────────────────────────────────────
+
+// Avanzamento dell'aggiornamento di versione: ogni 10 secondi, ma solo mentre
+// ce n'e' uno in corso (Redmine #197). Prima la regola del pulsante restava ferma
+// fino a 40 minuti dentro un ciclo di sleep, e teneva bloccate tutte le altre
+// regole di questo file.
+rules.JSRule({
+  name: 'ARFEA Update Progress',
+  id: 'arfea_update_progress_poll',
+  triggers: [triggers.GenericCronTrigger('0/10 * * * * ?')],
+  execute: function () {
+    if (updateActive()) {
+      refreshReleaseStatus();
+    }
+  }
+});
 
 rules.JSRule({
   name: 'ARFEA Status Refresh',
@@ -405,15 +460,68 @@ function doApplyUpdate() {
       }
     } catch (e) { /* item assente */ }
   }
+  if (updateActive()) {
+    logger.warn('ARFEA apply update: un aggiornamento e\' gia\' in corso');
+    return;   // la riga di stato del widget lo sta gia' mostrando
+  }
   if (selected.length === 0) {
-    items.getItem('arfea_update_progress').postUpdate('Nessun software selezionato');
+    setUpdateStatus('failed', 'Nessun software selezionato: accendi almeno un interruttore', 100, '');
     logger.warn('ARFEA apply update: nessun software selezionato');
     return;
   }
-  items.getItem('arfea_update_progress').postUpdate('Avvio aggiornamento...');
+  // Riscontro immediato: fino a qui l'utente non vedeva niente per decine di
+  // secondi, e non sapeva se il clic era arrivato.
+  cache.private.put('arfea_update_requested_at', Date.now());
+  setUpdateStatus('starting', 'Richiesta inviata al controller...', 3, 'software: ' + selected.join(', '));
   var response = httpPost('/system/releases/apply?services=' + encodeURIComponent(selected.join(',')));
   logger.warn('ARFEA apply update ({}): {}', selected.join(','), response);
-  pollReleaseStatus();
+  if (!response) {
+    setUpdateStatus('failed', 'Il controller non ha accettato la richiesta o non risponde: riprova fra poco, ' +
+      'o apri la sua pagina da «Funzioni di sistema»', 100, '');
+    return;
+  }
+  try {
+    var res = JSON.parse(response);
+    if (res.success === false && !/in corso/i.test(res.message || '')) {
+      setUpdateStatus('failed', res.message || 'Il controller ha rifiutato la richiesta', 100, '');
+      return;
+    }
+  } catch (e) { /* risposta non JSON: lo stato lo dice il giro successivo */ }
+  refreshReleaseStatus();
+}
+
+// Fasi in cui l'aggiornamento e' in corso, e fasi in cui e' finito.
+var UPDATE_ACTIVE = ['starting', 'backup', 'migrating_pre', 'pulling', 'recreating',
+                     'waiting_healthy', 'migrating_post'];
+var UPDATE_DONE = ['completed', 'failed', 'rolled_back'];
+
+function updateActive() {
+  return UPDATE_ACTIVE.indexOf(itemState('arfea_update_state')) >= 0;
+}
+
+function setUpdateStatus(state, message, percent, detail) {
+  try {
+    items.getItem('arfea_update_state').postUpdate(state);
+    items.getItem('arfea_update_progress').postUpdate(message || '');
+    items.getItem('arfea_update_percent').postUpdate(String(percent || 0));
+    if (detail !== undefined) {
+      items.getItem('arfea_update_detail').postUpdate(detail);
+    }
+  } catch (e) {
+    logger.error('ARFEA setUpdateStatus failed: {}', e.message);
+  }
+}
+
+// "verso la 2026.09.01 · openhab · iniziato alle 09:12"
+function updateDetail(st) {
+  var parts = [];
+  if (st.target_release) parts.push('verso la ' + st.target_release);
+  if (st.step) parts.push(st.step);
+  if (st.started_at) parts.push('iniziato alle ' + String(st.started_at).substring(11, 16));
+  if (st.completed_at && UPDATE_DONE.indexOf(st.state) >= 0) {
+    parts.push('finito alle ' + String(st.completed_at).substring(11, 16));
+  }
+  return parts.join(' · ');
 }
 
 // ─────────────────────────────────────────────────────────────
@@ -432,19 +540,43 @@ function refreshAll() {
   refreshReleaseStatus();
 }
 
-// Riconcilia l'avanzamento dell'upgrade nel giro periodico: serve soprattutto
-// dopo che un upgrade ha ricreato OpenHAB (il thread del poll muore col container,
-// ma il controller completa l'apply per conto suo). Mostra il progresso solo se
-// un aggiornamento è effettivamente in corso o concluso da poco.
+// Porta negli item lo stato dell'aggiornamento tenuto dal controller. Gira ogni
+// 10 s durante un aggiornamento e ogni minuto nel giro periodico: quest'ultimo
+// serve dopo che l'aggiornamento ha ricreato OpenHAB (gli item ripartono vuoti,
+// ma il controller completa l'apply per conto suo e sa a che punto e').
 function refreshReleaseStatus() {
+  var prev = itemState('arfea_update_state');
+  var response = null;
   try {
-    var response = httpGet('/system/releases/status');
-    if (!response) return;
+    response = httpGet('/system/releases/status');
+  } catch (e) {
+    logger.error('ARFEA refreshReleaseStatus failed: {}', e.message);
+  }
+  if (!response) {
+    if (updateActive()) {
+      items.getItem('arfea_update_detail').postUpdate('il controller non risponde, riprovo...');
+    }
+    return;
+  }
+  try {
     var st = JSON.parse(response);
-    if (!st.state || st.state === 'idle') return;
-    var label = st.message || st.state;
-    if (st.step) label = '[' + st.step + '] ' + label;
-    items.getItem('arfea_update_progress').postUpdate(label);
+    var state = st.state || 'idle';
+    if (state === 'idle') {
+      // Il controller non sa di nessun aggiornamento. Se il widget ne crede uno in
+      // corso: appena richiesto aspetta, altrimenti lo dice invece di restare appeso.
+      if (prev === 'starting' && Date.now() - (cache.private.get('arfea_update_requested_at') || 0) < 60000) return;
+      if (UPDATE_ACTIVE.indexOf(prev) >= 0) {
+        setUpdateStatus('failed', 'Il controller non ha piu\' notizie dell\'aggiornamento (si e\' riavviato?): ' +
+          'controlla le versioni e riprova', 100, '');
+      }
+      return;
+    }
+    setUpdateStatus(state, st.message || state, typeof st.progress === 'number' ? st.progress : 0, updateDetail(st));
+    if (UPDATE_DONE.indexOf(state) >= 0 && UPDATE_ACTIVE.indexOf(prev) >= 0) {
+      refreshServices();
+      refreshReleaseCheck();
+      refreshSystemInfo();
+    }
   } catch (e) {
     logger.error('ARFEA refreshReleaseStatus failed: {}', e.message);
   }
@@ -477,8 +609,12 @@ function refreshReleaseCheck() {
       var target = byService[svcName];
       try {
         if (target) {
-          items.getItem('arfea_upd_' + frag).postUpdate(target);
-          items.getItem('arfea_upd_' + frag + '_ok').postUpdate('ON');   // default: aggiorna
+          // Default ON solo quando compare un aggiornamento nuovo: rimetterlo a ON
+          // a ogni giro annullava dopo un minuto la scelta di chi l'aveva spento.
+          if (itemState('arfea_upd_' + frag) !== target) {
+            items.getItem('arfea_upd_' + frag).postUpdate(target);
+            items.getItem('arfea_upd_' + frag + '_ok').postUpdate('ON');
+          }
         } else {
           items.getItem('arfea_upd_' + frag).postUpdate('');
           items.getItem('arfea_upd_' + frag + '_ok').postUpdate('OFF');
@@ -488,32 +624,6 @@ function refreshReleaseCheck() {
   } catch (e) {
     logger.error('ARFEA refreshReleaseCheck failed: {}', e.message);
   }
-}
-
-// Segue l'avanzamento dell'aggiornamento di versione fino a fine/errore.
-function pollReleaseStatus() {
-  // Poll ogni 15s per max 40 minuti (upgrade + backup possono essere lunghi)
-  var maxAttempts = 160;
-  for (var i = 0; i < maxAttempts; i++) {
-    java.lang.Thread.sleep(15000);
-    try {
-      var response = httpGet('/system/releases/status');
-      if (!response) continue;
-      var st = JSON.parse(response);
-      var label = st.message || st.state;
-      if (st.step) label = '[' + st.step + '] ' + label;
-      items.getItem('arfea_update_progress').postUpdate(label);
-
-      if (st.state === 'completed' || st.state === 'failed' || st.state === 'rolled_back') {
-        refreshServices();
-        refreshReleaseCheck();
-        return;
-      }
-    } catch (e) {
-      logger.error('ARFEA pollReleaseStatus error: {}', e.message);
-    }
-  }
-  logger.warn('ARFEA: polling aggiornamento versione scaduto');
 }
 
 function refreshLinphoneStatus() {

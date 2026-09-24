@@ -58,6 +58,13 @@ String  arfea_current_release     "Versione sistema [%s]"             (gArfea)
 String  arfea_update_available     "Aggiornamento disponibile [%s]"    (gArfea)
 String  arfea_update_changelog     "Novità versione [%s]"             (gArfea)
 String  arfea_update_progress      "Avanzamento aggiornamento [%s]"    (gArfea)
+// Dove e' arrivato l'aggiornamento, per il widget (Redmine #197): la fase del
+// controller (idle, starting, backup, migrating_pre, pulling, recreating,
+// waiting_healthy, migrating_post, completed, failed, rolled_back), la
+// percentuale e il dettaglio (versione bersaglio, ora di inizio, componente).
+String  arfea_update_state         "Stato aggiornamento [%s]"          (gArfea)
+Number  arfea_update_percent       "Avanzamento [%d %%]"               (gArfea)
+String  arfea_update_detail        "Dettaglio aggiornamento [%s]"      (gArfea)
 Switch  arfea_apply_update_trigger "Applica aggiornamento versione"    (gArfea)  {autoupdate="false"}
 
 // Conferma software-per-software: per ogni componente con una nuova versione,

@@ -1288,10 +1288,8 @@ function saveDevices() {
 
 // ── Aggiornamento software (immagini certificate) ─────────
 
-var REL_PCT = {
-  backup: 10, migrating_pre: 25, pulling: 45, recreating: 70,
-  waiting_healthy: 80, migrating_post: 90, completed: 100, failed: 100, rolled_back: 100
-};
+// La percentuale per fase la dà il controller (s.progress): una tabella sola,
+// la stessa che usa il widget di OpenHAB.
 var relPolling = null;
 
 function checkReleases() {
@@ -1360,7 +1358,7 @@ function pollReleaseStatus() {
       var kind = s.state === 'completed' ? 'done' : (s.state === 'failed' || s.state === 'rolled_back') ? 'err' : '';
       st.className = 'status-bar ' + (s.state === 'completed' ? 'status-completed' : (s.state === 'failed' || s.state === 'rolled_back') ? 'status-failed' : 'status-running');
       st.innerHTML = (terminal ? '' : '<span class="spinner"></span>') + (s.message || s.state) + (s.step ? ' [' + s.step + ']' : '');
-      setProgress('relProgress', REL_PCT[s.state] || 5, kind);
+      setProgress('relProgress', typeof s.progress === 'number' ? Math.max(s.progress, 3) : 5, kind);
       if (terminal) {
         clearInterval(relPolling); relPolling = null;
         document.getElementById('btnRelApply').style.display = 'none';

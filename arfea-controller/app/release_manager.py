@@ -274,12 +274,30 @@ class ReleaseManager:
             if not res.success:
                 raise RuntimeError(f"Recreate '{name}' fallito: {res.message}")
 
+    def mark_starting(self) -> bool:
+        """Prenota l'aggiornamento prima di rispondere alla richiesta. False se ce
+        n'e' gia' uno in corso (anche solo prenotato)."""
+        if self.status.state not in (
+            ReleaseUpdateState.IDLE,
+            ReleaseUpdateState.COMPLETED,
+            ReleaseUpdateState.FAILED,
+            ReleaseUpdateState.ROLLED_BACK,
+        ):
+            return False
+        self.status = ReleaseUpdateStatus(
+            state=ReleaseUpdateState.STARTING,
+            message="Richiesta ricevuta, avvio dell'aggiornamento...",
+            started_at=datetime.now(),
+        )
+        return True
+
     def run_apply(self, selected: Optional[list[str]] = None) -> ReleaseUpdateStatus:
         """Applica l'aggiornamento verso ``latest``. Se ``selected`` è dato, aggiorna
         solo quei servizi (conferma software-per-software). Bloccante: usare come
         background task."""
         if self.status.state not in (
             ReleaseUpdateState.IDLE,
+            ReleaseUpdateState.STARTING,     # impostato da mark_starting()
             ReleaseUpdateState.COMPLETED,
             ReleaseUpdateState.FAILED,
             ReleaseUpdateState.ROLLED_BACK,
@@ -313,10 +331,11 @@ class ReleaseManager:
             apply_code = code_pending and HABAPP_CODE in selected
 
         self.status = ReleaseUpdateStatus(
-            state=ReleaseUpdateState.IDLE,
+            state=ReleaseUpdateState.STARTING,
+            message=f"Preparazione dell'aggiornamento alla versione {latest}...",
             current_release=current,
             target_release=latest,
-            started_at=datetime.now(),
+            started_at=self.status.started_at or datetime.now(),
         )
 
         if not pending and not apply_code:
@@ -368,9 +387,9 @@ class ReleaseManager:
 
             # 2) pull (fail-fast prima di toccare i container)
             self.status.state = ReleaseUpdateState.PULLING
-            self.status.message = "Scaricamento nuove immagini..."
             for svc, img in pending.items():
                 self.status.step = svc
+                self.status.message = f"Scaricamento della nuova versione di {svc}..."
                 res = self.docker.pull_image(img)
                 if not res.success:
                     raise RuntimeError(res.message)
@@ -401,7 +420,16 @@ class ReleaseManager:
             if code_installed and self._habapp_enabled() and "habapp" not in recreate_targets:
                 recreate_targets.append("habapp")
             self.status.state = ReleaseUpdateState.RECREATING
-            self.status.message = "Riavvio servizi aggiornati..."
+            self.status.step = ""
+            if "openhab" in recreate_targets:
+                # Chi guarda il widget di OpenHAB sta per perdere la pagina: che lo
+                # sappia prima, invece di vederla sparire (Redmine #197).
+                self.status.message = (
+                    "Riavvio di OpenHAB con la nuova versione: la pagina torna "
+                    "disponibile fra qualche minuto e riprende da qui"
+                )
+            else:
+                self.status.message = "Riavvio dei servizi aggiornati..."
             self._recreate_in_order(recreate_targets)
 
             # 5) migrazioni post, solo upgrade completo

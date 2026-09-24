@@ -320,6 +320,23 @@ docker logs -f arfea-controller
 3. Premi **"Applica aggiornamento"**. Sequenza: backup → (migrazioni) → pull nuove
    immagini → riavvio servizi aggiornati → verifica ripartenza. In caso di
    problema fa **rollback** dei tag.
+4. **Segui l'avanzamento nella stessa card** (dal controller 1.8.3). Compare una riga
+   *"Aggiornamento in corso"* con la fase (backup, scaricamento, riavvio, …), la
+   percentuale, una barra e il dettaglio (versione di destinazione, componente, ora
+   di inizio), aggiornata ogni 10 secondi. Il pulsante sparisce finché l'aggiornamento
+   gira. Alla fine la riga dice *"Aggiornamento completato"* (verde) o *"Aggiornamento
+   non riuscito"* (rosso) con il motivo.
+   - Se si aggiorna OpenHAB, la pagina **sparisce per qualche minuto**, mentre OpenHAB
+     riparte con la versione nuova: la riga lo annuncia prima. Quando la pagina torna,
+     entro un minuto la riga riprende da dove era arrivato il controller.
+   - Lo stesso avanzamento si vede nella Web UI del controller (`http://<IP>:8888`,
+     card *"Aggiornamento software"*), che resta raggiungibile anche mentre OpenHAB
+     si riavvia.
+
+> ⚠️ **OpenHAB 5.2.0 e controller fino alla 1.8.2:** i pulsanti del widget ARFEA non
+> fanno niente (la regola riceve l'azione vuota: nel log `ARFEA action=` e `unknown
+> action ""`). Il controller 1.8.3 corregge la regola; nel frattempo l'aggiornamento
+> si applica dalla Web UI del controller o dalla riga di comando qui sotto.
 
 Da riga di comando (equivalente, da localhost senza API key):
 ```bash
@@ -327,7 +344,8 @@ Da riga di comando (equivalente, da localhost senza API key):
 curl -s localhost:8888/api/system/releases/check          # cosa è disponibile
 curl -s -X POST localhost:8888/api/system/releases/apply  # aggiorna tutto
 curl -s -X POST 'localhost:8888/api/system/releases/apply?services=openhab,habapp'  # solo alcuni
-watch -n5 'curl -s localhost:8888/api/system/releases/status'
+watch -n5 'curl -s localhost:8888/api/system/releases/status'   # fase, messaggio, progress (%)
+cd /opt/docker_store/arfea-controller && docker compose logs -f --tail 50 arfea-controller   # il dettaglio
 ```
 
 ### 4.5 Certificare e pubblicare una nuova release (interno)

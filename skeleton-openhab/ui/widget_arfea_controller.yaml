@@ -246,11 +246,34 @@ slots:
               subtitle: "=items.arfea_upd_nodered.state"
               icon: f7:flowchart_fill
               visible: "=items.arfea_upd_nodered.state != '' && items.arfea_upd_nodered.state != 'NULL' && items.arfea_upd_nodered.state != 'UNDEF'"
-          - component: oh-label-item
+          # Stato dell'aggiornamento (Redmine #197): dal clic su «Applica» fino alla
+          # fine, e poi con l'esito. Titolo, icona e colore dicono lo stato, l'header
+          # il dettaglio (versione, componente, ora), il piede la fase, il badge la
+          # percentuale; sotto, la barra. NB: in una lista non "media" il subtitle
+          # non si vede: per questo header e footer.
+          - component: oh-list-item
             config:
-              item: arfea_update_progress
-              title: Avanzamento
-              visible: "=items.arfea_update_progress.state != '' && items.arfea_update_progress.state != 'NULL' && items.arfea_update_progress.state != 'UNDEF'"
+              header: "=(items.arfea_update_detail.state != 'NULL' && items.arfea_update_detail.state != 'UNDEF') ? items.arfea_update_detail.state : ''"
+              title: "=items.arfea_update_state.state == 'completed' ? 'Aggiornamento completato' : (items.arfea_update_state.state == 'failed' || items.arfea_update_state.state == 'rolled_back') ? 'Aggiornamento non riuscito' : 'Aggiornamento in corso'"
+              footer: "=items.arfea_update_progress.state"
+              badge: "=((items.arfea_update_percent.state != 'NULL' && items.arfea_update_percent.state != 'UNDEF') ? items.arfea_update_percent.state : '0') + ' %'"
+              badgeColor: "=items.arfea_update_state.state == 'completed' ? 'green' : (items.arfea_update_state.state == 'failed' || items.arfea_update_state.state == 'rolled_back') ? 'red' : 'blue'"
+              icon: "=items.arfea_update_state.state == 'completed' ? 'f7:checkmark_circle_fill' : (items.arfea_update_state.state == 'failed' || items.arfea_update_state.state == 'rolled_back') ? 'f7:xmark_circle_fill' : 'f7:arrow_2_circlepath'"
+              iconColor: "=items.arfea_update_state.state == 'completed' ? 'green' : (items.arfea_update_state.state == 'failed' || items.arfea_update_state.state == 'rolled_back') ? 'red' : 'blue'"
+              visible: "=items.arfea_update_state.state != 'idle' && items.arfea_update_state.state != 'NULL' && items.arfea_update_state.state != 'UNDEF' && items.arfea_update_state.state != ''"
+          - component: f7-list-item
+            config:
+              visible: "=items.arfea_update_state.state != 'idle' && items.arfea_update_state.state != 'NULL' && items.arfea_update_state.state != 'UNDEF' && items.arfea_update_state.state != ''"
+            slots:
+              default:
+                - component: f7-progressbar
+                  config:
+                    # * 1: allo stato dell'item arriva una stringa, la barra vuole un numero
+                    progress: "=(items.arfea_update_percent.state != 'NULL' && items.arfea_update_percent.state != 'UNDEF') ? items.arfea_update_percent.state * 1 : 0"
+                    color: "=items.arfea_update_state.state == 'completed' ? 'green' : (items.arfea_update_state.state == 'failed' || items.arfea_update_state.state == 'rolled_back') ? 'red' : 'blue'"
+                    style:
+                      width: 100%
+                      height: 6px
           - component: oh-button
             config:
               action: rule
@@ -270,7 +293,8 @@ slots:
               text: Applica aggiornamento
               iconF7: arrow_up_circle
               iconSize: 20
-              visible: "=items.arfea_update_available.state != '' && items.arfea_update_available.state != 'NULL' && items.arfea_update_available.state != 'UNDEF'"
+              # Nascosto mentre un aggiornamento e' in corso: un secondo clic non serve.
+              visible: "=items.arfea_update_available.state != '' && items.arfea_update_available.state != 'NULL' && items.arfea_update_available.state != 'UNDEF' && (items.arfea_update_state.state == 'idle' || items.arfea_update_state.state == 'completed' || items.arfea_update_state.state == 'failed' || items.arfea_update_state.state == 'rolled_back' || items.arfea_update_state.state == 'NULL' || items.arfea_update_state.state == 'UNDEF' || items.arfea_update_state.state == '')"
 
     # ──────────────────────────────────────
     # FUNZIONI DI SISTEMA

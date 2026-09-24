@@ -5,7 +5,7 @@ from datetime import datetime
 from enum import Enum
 from typing import Optional
 
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, computed_field, field_validator
 
 
 # --- Config models (parsed from arfea.yml) ---
@@ -344,6 +344,10 @@ class NetworkInfo(BaseModel):
 
 class ReleaseUpdateState(str, Enum):
     IDLE = "idle"
+    # Richiesta accettata, apply non ancora nel vivo (lettura del manifest). Lo
+    # imposta l'endpoint PRIMA di rispondere: un secondo clic trova l'aggiornamento
+    # gia' in corso invece di avviarne un altro in parallelo.
+    STARTING = "starting"
     BACKUP = "backup"
     MIGRATING_PRE = "migrating_pre"
     PULLING = "pulling"
@@ -355,6 +359,15 @@ class ReleaseUpdateState(str, Enum):
     ROLLED_BACK = "rolled_back"
 
 
+# Avanzamento percentuale per fase. Una tabella sola: la usano la Web UI del
+# controller e il widget di OpenHAB (Redmine #197).
+_RELEASE_PROGRESS = {
+    "idle": 0, "starting": 3, "backup": 10, "migrating_pre": 25, "pulling": 45,
+    "recreating": 70, "waiting_healthy": 80, "migrating_post": 90,
+    "completed": 100, "failed": 100, "rolled_back": 100,
+}
+
+
 class ReleaseUpdateStatus(BaseModel):
     state: ReleaseUpdateState = ReleaseUpdateState.IDLE
     message: str = ""
@@ -363,6 +376,12 @@ class ReleaseUpdateStatus(BaseModel):
     step: str = ""               # es. "2/3"
     started_at: Optional[datetime] = None
     completed_at: Optional[datetime] = None
+
+    @computed_field
+    @property
+    def progress(self) -> int:
+        """Percentuale 0-100 della fase in corso (100 anche su errore: e' finito)."""
+        return _RELEASE_PROGRESS.get(self.state.value, 0)
 
 
 class SelfUpdateState(str, Enum):

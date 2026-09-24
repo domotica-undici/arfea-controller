@@ -313,7 +313,22 @@ logger = logging.getLogger(__name__)
 #          migrate-to-controller.sh non lo svuota piu', conserva la versione di
 #          OpenHAB che girava (#190) e controlla lo spazio su disco prima di
 #          fermare qualunque cosa (#191).
-VERSION = "1.8.2"
+#   1.8.3  Aggiornamento di versione dal widget di OpenHAB: si vede a che punto
+#          e' (Redmine #197). Riga di stato con fase, percentuale, barra e
+#          dettaglio (versione, componente, ora), aggiornata ogni 10 s; il
+#          pulsante «Applica» sparisce mentre gira. Il controller da' la
+#          percentuale per fase (campo progress, una tabella sola per Web UI e
+#          widget), avvisa prima che OpenHAB si riavvii, e prenota
+#          l'aggiornamento prima di rispondere (stato "starting"): due clic
+#          ravvicinati ne avviavano due in parallelo.
+#          FIX (#198): su OpenHAB 5.2.0 nessun pulsante del widget funzionava. La
+#          regola leggeva il contesto con event.raw.get(), ma openhab-js 5.20.0
+#          lo passa come oggetto JS: azione sempre vuota. Ora lo legge in tutte e
+#          due le forme (provato su 5.2.0 e 5.2.1). La regola del pulsante non
+#          resta piu' ferma fino a 40 minuti in un ciclo di sleep (bloccava le
+#          altre regole del file), e gli interruttori dei software spenti
+#          dall'utente non tornano ON da soli dopo un minuto.
+VERSION = "1.8.3"
 
 # -- Globals initialised at startup -----------------------------------------
 
@@ -1509,12 +1524,13 @@ async def releases_apply(background_tasks: BackgroundTasks, services: str = ""):
     (conferma software-per-software). Se assente, aggiorna tutti quelli con una
     versione più recente disponibile. Operazione su conferma utente: backup,
     migrazioni (solo upgrade completo), recreate con health-gate, rollback se fallisce."""
-    if release_manager.status.state.value in (
-        "backup", "migrating_pre", "pulling", "recreating", "waiting_healthy", "migrating_post",
-    ):
-        return OperationResponse(success=False, message="Aggiornamento già in corso")
     if not config_manager.config.controller.releases_url:
         raise HTTPException(400, "releases_url non configurato in arfea.yml")
+    # La prenotazione avviene PRIMA di rispondere: due clic ravvicinati non
+    # avviano due aggiornamenti in parallelo (lo stato restava "idle" finché il
+    # task in background non leggeva il manifest).
+    if not release_manager.mark_starting():
+        return OperationResponse(success=False, message="Aggiornamento già in corso")
 
     selected = [s.strip() for s in services.split(",") if s.strip()] or None
     background_tasks.add_task(release_manager.run_apply, selected)
