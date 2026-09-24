@@ -3,276 +3,412 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="theme-color" content="#ffffff">
   <title>ARFEA Controller</title>
   <style>
+    /* ── Base ────────────────────────────────────────────────
+       Una pagina sola, niente librerie ne' font esterni: la centralina puo'
+       essere senza internet. Pensata prima per il telefono (barra delle sezioni
+       in basso, a portata di pollice), poi per lo schermo grande (barra a
+       sinistra, card su due colonne). */
+    :root {
+      --bg: #f2f4f7; --card: #fff; --text: #1d2433; --muted: #6b7280; --line: #e5e7eb;
+      --primary: #1f6feb; --primary-soft: #e8f0fe;
+      --ok: #1a7f37; --ok-soft: #e7f5ec; --warn: #b45309; --warn-soft: #fff4e5;
+      --err: #c62828; --err-soft: #fdecec; --idle-soft: #f1f3f5;
+      --radius: 14px; --nav-h: 64px; --top-h: 56px;
+    }
     * { box-sizing: border-box; margin: 0; padding: 0; }
-    body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; background: #f5f5f5; color: #333; }
-    .container { max-width: 600px; margin: 0 auto; padding: 16px; }
-    h1 { font-size: 1.4em; padding: 16px 0; color: #1a1a1a; }
-    .card { background: #fff; border-radius: 12px; padding: 16px; margin-bottom: 16px; box-shadow: 0 1px 3px rgba(0,0,0,.1); }
-    .card h2 { font-size: 1.1em; margin-bottom: 12px; color: #555; }
-    .service-row { display: flex; align-items: center; justify-content: space-between; padding: 8px 0; border-bottom: 1px solid #eee; }
-    .service-row:last-child { border-bottom: none; }
-    .service-name { font-weight: 500; }
-    .badge { display: inline-block; padding: 2px 10px; border-radius: 12px; font-size: 0.8em; color: #fff; }
-    .badge-running { background: #4caf50; }
-    .badge-stopped { background: #f44336; }
-    .badge-other { background: #ff9800; }
-    .btn { display: inline-block; padding: 10px 20px; border: none; border-radius: 8px; font-size: 0.95em; cursor: pointer; margin: 4px; transition: opacity .2s; }
-    .btn:hover { opacity: 0.85; }
-    .btn:disabled { opacity: 0.4; cursor: not-allowed; }
-    .btn-blue { background: #2196f3; color: #fff; }
-    .btn-green { background: #4caf50; color: #fff; }
-    .btn-orange { background: #ff9800; color: #fff; }
-    .btn-red { background: #f44336; color: #fff; }
-    .btn-block { display: block; width: 100%; text-align: center; }
-    .status-bar { padding: 10px; border-radius: 8px; margin: 8px 0; font-size: 0.9em; }
-    .status-idle { background: #e8e8e8; }
-    .status-running { background: #fff3e0; color: #e65100; }
-    .status-completed { background: #e8f5e9; color: #2e7d32; }
-    .status-failed { background: #ffebee; color: #c62828; }
-    .radio-group { margin: 8px 0; }
-    .radio-item { display: flex; align-items: center; padding: 10px; margin: 4px 0; border: 1px solid #ddd; border-radius: 8px; cursor: pointer; }
-    .radio-item:hover { background: #fafafa; }
-    .radio-item.selected { border-color: #ff9800; background: #fff8e1; }
-    .radio-item input { margin-right: 10px; }
-    .radio-label { font-size: 0.9em; }
-    .radio-sublabel { font-size: 0.8em; color: #888; }
-    .info-row { display: flex; justify-content: space-between; padding: 6px 0; font-size: 0.9em; }
-    .info-label { color: #888; }
-    .login-box { text-align: center; padding: 40px 16px; }
-    .login-box input { padding: 10px; border: 1px solid #ddd; border-radius: 8px; font-size: 1em; width: 100%; max-width: 300px; margin: 8px 0; text-align: center; }
-    .lp-input { display: block; width: 100%; padding: 10px; border: 1px solid #ddd; border-radius: 8px; font-size: 0.95em; margin: 6px 0; font-family: inherit; }
+    html { -webkit-text-size-adjust: 100%; }
+    body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; background: var(--bg); color: var(--text); line-height: 1.4; }
+    a { color: var(--primary); }
+    code { font-family: ui-monospace, Menlo, Consolas, monospace; font-size: .9em; word-break: break-all; }
     #app { display: none; }
-    .spinner { display: inline-block; width: 16px; height: 16px; border: 2px solid #ccc; border-top-color: #2196f3; border-radius: 50%; animation: spin .6s linear infinite; margin-right: 8px; vertical-align: middle; }
+
+    /* ── Barra in alto ── */
+    .topbar { position: sticky; top: 0; z-index: 20; height: var(--top-h); display: flex; align-items: center; gap: 10px; padding: 0 16px; background: var(--card); border-bottom: 1px solid var(--line); }
+    .logo { width: 34px; height: 34px; border-radius: 10px; background: var(--primary); color: #fff; display: grid; place-items: center; font-weight: 700; flex: none; }
+    .brand { flex: 1; min-width: 0; }
+    .brand b { display: block; font-size: 1em; }
+    .brand small { display: block; color: var(--muted); font-size: .8em; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .icon-btn { width: 40px; height: 40px; border: none; border-radius: 10px; background: transparent; color: var(--muted); display: grid; place-items: center; cursor: pointer; }
+    .icon-btn:hover { background: var(--idle-soft); color: var(--text); }
+    .icon-btn svg, .tab svg { width: 22px; height: 22px; fill: none; stroke: currentColor; stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round; }
+
+    /* ── Sezioni: barra in basso sul telefono ── */
+    .tabs { position: fixed; left: 0; right: 0; bottom: 0; z-index: 20; display: flex; background: var(--card); border-top: 1px solid var(--line); padding-bottom: env(safe-area-inset-bottom); }
+    .tab { flex: 1; min-width: 0; height: var(--nav-h); display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 3px; color: var(--muted); text-decoration: none; font-size: .72em; position: relative; }
+    .tab span { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 100%; }
+    .tab.active { color: var(--primary); }
+    .tab .l-short { display: none; }
+    @media (max-width: 420px) { .tab .l-long { display: none; } .tab .l-short { display: inline; } }
+    .tab .dot { position: absolute; top: 9px; left: calc(50% + 7px); width: 9px; height: 9px; border-radius: 50%; border: 2px solid var(--card); display: none; }
+    .tab .dot.warn { display: block; background: #f59e0b; }
+    .tab .dot.err { display: block; background: var(--err); }
+    main { padding: 16px 12px calc(var(--nav-h) + 24px + env(safe-area-inset-bottom)); max-width: 1200px; margin: 0 auto; }
+
+    /* ── Sezione e griglia delle card ── */
+    .section { display: none; }
+    .section.active { display: block; }
+    .section-head { margin: 4px 4px 14px; }
+    .section-head h1 { font-size: 1.35em; }
+    .section-head p { color: var(--muted); font-size: .9em; margin-top: 2px; }
+    .grid { display: grid; gap: 14px; grid-template-columns: minmax(0, 1fr); align-items: start; }
+    .card { background: var(--card); border-radius: var(--radius); padding: 16px; box-shadow: 0 1px 2px rgba(16,24,40,.06), 0 1px 3px rgba(16,24,40,.05); min-width: 0; }
+    .card h2 { font-size: 1.02em; margin-bottom: 4px; }
+    .card h3 { font-size: .92em; margin: 18px 0 6px; color: var(--muted); text-transform: uppercase; letter-spacing: .03em; }
+    .card-sub { color: var(--muted); font-size: .85em; margin-bottom: 10px; }
+    .stack > * + * { margin-top: 8px; }
+    .row { display: flex; gap: 8px; }
+    .col { display: grid; gap: 14px; align-content: start; min-width: 0; }
+    .row > * { flex: 1; min-width: 0; }
+
+    /* Schermo grande: barra delle sezioni a sinistra, card su due colonne */
+    @media (min-width: 900px) {
+      .tabs { top: var(--top-h); bottom: 0; right: auto; width: 210px; flex-direction: column; border-top: none; border-right: 1px solid var(--line); padding: 12px 10px; gap: 2px; }
+      .tab { flex: none; height: 44px; flex-direction: row; justify-content: flex-start; gap: 12px; padding: 0 12px; border-radius: 10px; font-size: .95em; }
+      .tab.active { background: var(--primary-soft); font-weight: 600; }
+      .tab .dot { top: 50%; left: auto; right: 12px; transform: translateY(-50%); }
+      main { margin-left: 210px; padding: 24px 28px 40px; }
+      .grid { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 18px; }
+      .span-2 { grid-column: 1 / -1; }
+    }
+
+    /* ── Pulsanti ── (le classi colore le usa anche il JS che genera l'HTML) */
+    .btn { display: inline-flex; align-items: center; justify-content: center; gap: 6px; min-height: 44px; padding: 10px 16px; border: 1px solid transparent; border-radius: 10px; font: inherit; font-size: .95em; font-weight: 600; cursor: pointer; margin: 4px 0; transition: filter .15s, opacity .15s; background: var(--idle-soft); color: var(--text); }
+    .btn:hover { filter: brightness(.95); }
+    .btn:disabled { opacity: .45; cursor: not-allowed; }
+    .btn-blue { background: var(--primary); color: #fff; }
+    .btn-green { background: var(--ok); color: #fff; }
+    .btn-orange { background: #e8830c; color: #fff; }
+    .btn-red { background: var(--err); color: #fff; }
+    .btn-ghost { background: transparent; border-color: var(--line); color: var(--text); }
+    .btn-danger-ghost { background: transparent; border-color: #f3b8b8; color: var(--err); }
+    .btn-block { display: flex; width: 100%; }
+    a.btn { text-decoration: none; white-space: nowrap; }
+    .btn-small { min-height: 34px; padding: 4px 10px; font-size: .85em; margin: 0; }
+
+    /* ── Stato, badge, righe ── */
+    .status-bar { padding: 10px 12px; border-radius: 10px; margin: 8px 0; font-size: .9em; border-left: 4px solid transparent; overflow-wrap: anywhere; }
+    .status-idle { background: var(--idle-soft); border-left-color: #c9ced6; }
+    .status-running { background: var(--warn-soft); color: #7c3d06; border-left-color: #f59e0b; }
+    .status-completed { background: var(--ok-soft); color: #14532d; border-left-color: var(--ok); }
+    .status-failed { background: var(--err-soft); color: #7f1d1d; border-left-color: var(--err); }
+    .badge { display: inline-block; padding: 2px 10px; border-radius: 999px; font-size: .78em; font-weight: 600; color: #fff; }
+    .badge-running { background: var(--ok); }
+    .badge-stopped { background: var(--err); }
+    .badge-other { background: #e8830c; }
+    .service-row { display: flex; align-items: center; justify-content: space-between; gap: 8px; min-height: 48px; border-bottom: 1px solid var(--line); }
+    .service-row:last-child { border-bottom: none; }
+    .service-name { font-weight: 600; overflow: hidden; text-overflow: ellipsis; }
+    .service-row > span:last-child { display: flex; align-items: center; gap: 8px; flex: none; }
+    .info-row { display: flex; justify-content: space-between; gap: 12px; padding: 8px 0; font-size: .92em; border-bottom: 1px solid var(--line); }
+    .info-row:last-child { border-bottom: none; }
+    .info-row > span:last-child { text-align: right; overflow-wrap: anywhere; }
+    .info-label { color: var(--muted); flex: none; }
+    .hint { font-size: .82em; color: var(--muted); margin: 6px 0 0; }
+
+    /* ── Moduli ── (font 16px: sotto, iOS ingrandisce la pagina al tocco) */
+    .lp-input, .sel { display: block; width: 100%; min-height: 44px; padding: 10px 12px; border: 1px solid #d0d5dd; border-radius: 10px; font: inherit; font-size: 16px; margin: 6px 0; background: #fff; color: var(--text); }
+    .lp-input:focus, .sel:focus { outline: 2px solid var(--primary-soft); border-color: var(--primary); }
+    textarea.lp-input, textarea.sel { min-height: 80px; }
+    .field-label { display: block; font-size: .8em; color: var(--muted); margin: 8px 0 -2px; }
+    .radio-group { margin: 8px 0; }
+    .radio-item { display: flex; align-items: center; min-height: 48px; padding: 10px 12px; margin: 6px 0; border: 1px solid var(--line); border-radius: 10px; cursor: pointer; }
+    .radio-item:hover { background: #fafbfc; }
+    .radio-item.selected { border-color: var(--primary); background: var(--primary-soft); }
+    .radio-item input, .chk-row input { margin-right: 10px; width: 18px; height: 18px; flex: none; }
+    .radio-label { font-size: .92em; }
+    .radio-sublabel { font-size: .78em; color: var(--muted); overflow-wrap: anywhere; }
+    .chk-row { display: flex; align-items: center; min-height: 48px; padding: 8px 12px; margin: 6px 0; border: 1px solid var(--line); border-radius: 10px; }
+    .switch-row { display: flex; align-items: center; justify-content: space-between; min-height: 48px; font-weight: 600; cursor: pointer; }
+    .switch-row input { width: 22px; height: 22px; }
+    .dev-row { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 8px 10px; margin: 6px 0; border: 1px solid var(--line); border-radius: 10px; font-size: .88em; }
+    .dev-add { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; margin-top: 8px; }
+    .dev-add .sel { margin: 0; }
+    .dev-add #devPort { flex: 1 1 100%; }
+    .dev-add #devTarget { flex: 1 1 auto; width: auto; }
+    .fn-row { display: flex; align-items: flex-start; gap: 10px; padding: 10px 12px; margin: 6px 0; border: 1px solid var(--line); border-radius: 10px; cursor: pointer; }
+    .fn-row input { width: 18px; height: 18px; margin-top: 2px; flex: none; }
+    .dev-add .btn { margin: 0; flex: none; min-width: 48px; }
+    textarea.editor { min-height: 320px; font-family: ui-monospace, Menlo, Consolas, monospace; font-size: 14px !important; white-space: pre; overflow-wrap: normal; overflow-x: auto; }
+
+    /* ── Avvisi ("Da guardare") ── */
+    .alert-item { display: flex; align-items: center; gap: 10px; width: 100%; min-height: 52px; padding: 10px 12px; margin: 6px 0; border: 1px solid var(--line); border-left: 4px solid; border-radius: 10px; background: #fff; color: var(--text); text-align: left; font: inherit; font-size: .9em; cursor: pointer; }
+    .alert-item.warn { border-left-color: #f59e0b; }
+    .alert-item.err { border-left-color: var(--err); }
+    .alert-item .go { margin-left: auto; color: var(--muted); flex: none; }
+
+    /* ── Accesso ── */
+    .login-box { min-height: 100vh; display: grid; place-items: center; padding: 16px; }
+    .login-card { width: 100%; max-width: 360px; text-align: center; }
+    .login-card .logo { width: 52px; height: 52px; margin: 0 auto 12px; font-size: 1.4em; border-radius: 14px; }
+    .login-card input { text-align: center; }
+
+    /* ── Avanzamento ── */
+    .spinner { display: inline-block; width: 16px; height: 16px; border: 2px solid #ccc; border-top-color: var(--primary); border-radius: 50%; animation: spin .6s linear infinite; margin-right: 8px; vertical-align: middle; }
     @keyframes spin { to { transform: rotate(360deg); } }
-    /* Progress bar per operazioni lunghe (backup, aggiornamenti) */
-    .progress { height: 8px; background: #e0e0e0; border-radius: 6px; overflow: hidden; margin: 10px 0 4px; }
-    .progress-bar { height: 100%; width: 0; background: #2196f3; border-radius: 6px; transition: width .4s ease; }
-    .progress-bar.done { background: #4caf50; }
-    .progress-bar.err { background: #f44336; }
+    .progress { height: 8px; background: #e4e7ec; border-radius: 6px; overflow: hidden; margin: 10px 0 4px; }
+    .progress-bar { height: 100%; width: 0; background: var(--primary); border-radius: 6px; transition: width .4s ease; }
+    .progress-bar.done { background: var(--ok); }
+    .progress-bar.err { background: var(--err); }
     .progress-track.indet { position: relative; }
     .progress-track.indet .progress-bar { width: 40%; animation: indet 1.1s ease-in-out infinite; }
     @keyframes indet { 0% { margin-left: -40%; } 100% { margin-left: 100%; } }
-    .dev-row { display: flex; align-items: center; justify-content: space-between; padding: 6px 8px; margin: 4px 0; border: 1px solid #eee; border-radius: 8px; font-size: 0.88em; }
-    .dev-row code { font-family: ui-monospace, Menlo, Consolas, monospace; font-size: 0.92em; word-break: break-all; }
-    .sel { display: block; width: 100%; padding: 10px; border: 1px solid #ddd; border-radius: 8px; font-size: 0.95em; margin: 6px 0; font-family: inherit; background: #fff; }
-    .hint { font-size: 0.8em; color: #888; margin: 4px 0 0; }
-    .chk-row { display: flex; align-items: center; padding: 8px; margin: 4px 0; border: 1px solid #ddd; border-radius: 8px; }
-    .chk-row input { margin-right: 10px; }
-    .chk-row code { font-family: ui-monospace, Menlo, Consolas, monospace; font-size: 0.85em; }
   </style>
 </head>
 <body>
-  <div class="container">
 
-    <!-- Login -->
-    <div id="login" class="login-box">
-      <h1>ARFEA Controller</h1>
-      <p style="color:#888; margin-bottom:16px">Inserisci la API Key</p>
-      <input type="password" id="apiKeyInput" placeholder="API Key" autofocus>
-      <br>
-      <button class="btn btn-blue" onclick="doLogin()">Accedi</button>
-      <p id="loginError" style="color:red; margin-top:8px; display:none">API Key non valida</p>
+  <!-- Accesso -->
+  <div id="login" class="login-box">
+    <div class="card login-card">
+      <div class="logo">A</div>
+      <h2>ARFEA Controller</h2>
+      <p class="card-sub">Inserisci la API Key della centralina</p>
+      <input class="lp-input" type="password" id="apiKeyInput" placeholder="API Key" autofocus>
+      <button class="btn btn-blue btn-block" onclick="doLogin()">Accedi</button>
+      <p id="loginError" class="status-bar status-failed" style="display:none">API Key non valida</p>
     </div>
+  </div>
 
-    <!-- App -->
-    <div id="app">
-      <h1>ARFEA Controller</h1>
+  <div id="app">
+    <header class="topbar">
+      <div class="logo">A</div>
+      <div class="brand"><b>ARFEA Controller</b><small id="hdrInfo">&nbsp;</small></div>
+      <button class="icon-btn" onclick="refreshAll()" title="Aggiorna i dati" aria-label="Aggiorna i dati">
+        <svg viewBox="0 0 24 24"><path d="M21 12a9 9 0 1 1-2.64-6.36L21 8"/><path d="M21 3v5h-5"/></svg>
+      </button>
+    </header>
 
-      <!-- Servizi -->
-      <div class="card">
-        <h2>Servizi</h2>
-        <div id="servicesList">Caricamento...</div>
-      </div>
+    <nav class="tabs" id="tabs" aria-label="Sezioni">
+      <a class="tab" href="#stato" data-tab="stato"><svg viewBox="0 0 24 24"><path d="M3 11l9-8 9 8v9a1 1 0 0 1-1 1h-5v-6h-6v6H4a1 1 0 0 1-1-1z"/></svg><span>Stato</span><i class="dot"></i></a>
+      <a class="tab" href="#impianto" data-tab="impianto"><svg viewBox="0 0 24 24"><path d="M4 6h9M17 6h3M4 12h3M11 12h9M4 18h11M19 18h1"/><circle cx="15" cy="6" r="2"/><circle cx="9" cy="12" r="2"/><circle cx="17" cy="18" r="2"/></svg><span>Impianto</span><i class="dot"></i></a>
+      <a class="tab" href="#rete" data-tab="rete"><svg viewBox="0 0 24 24"><path d="M2 9a15 15 0 0 1 20 0M5 12.5a10 10 0 0 1 14 0M8.5 16a5 5 0 0 1 7 0"/><circle cx="12" cy="19.5" r="1"/></svg><span>Rete</span><i class="dot"></i></a>
+      <a class="tab" href="#aggiornamenti" data-tab="aggiornamenti"><svg viewBox="0 0 24 24"><path d="M12 3v12M7 10l5 5 5-5"/><path d="M4 17v2a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-2"/></svg><span><span class="l-long">Aggiornamenti</span><span class="l-short">Aggiorna</span></span><i class="dot"></i></a>
+      <a class="tab" href="#backup" data-tab="backup"><svg viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="4" rx="1"/><path d="M5 8v11a1 1 0 0 0 1 1h12a1 1 0 0 0 1-1V8M10 12h4"/></svg><span>Backup</span><i class="dot"></i></a>
+    </nav>
 
-      <!-- Dispositivi (porte seriali) -->
-      <div class="card">
-        <h2>Dispositivi (porte seriali)</h2>
-        <p class="hint">Assegna le porte seriali dell'host (Modbus, Z-Wave, Zigbee, Thread) ai servizi. Non serve più configurarle nel file: si aggiungono qui.</p>
-        <select id="devService" class="sel" onchange="loadDevices()"></select>
-        <div id="devCurrent"></div>
-        <div style="display:flex; gap:6px; margin-top:8px; align-items:center">
-          <select id="devPort" class="sel" style="flex:2; margin:0"></select>
-          <input id="devTarget" class="sel" style="flex:1.2; margin:0" placeholder="target nel container">
-          <button class="btn btn-blue" style="padding:9px 14px; margin:0" onclick="addDevice()" title="Aggiungi">+</button>
-        </div>
-        <p class="hint">Sorgente = porta host (i nomi <code>by-id</code> sono stabili al riavvio). Target = come la vede il servizio (es. <code>/dev/ttyUSB0</code> per Modbus, <code>/dev/zwave</code>, <code>/dev/zigbee</code>).</p>
-        <div id="devProgress"></div>
-        <button class="btn btn-green btn-block" id="btnSaveDevices" onclick="saveDevices()" style="margin-top:8px">Salva e applica</button>
-      </div>
+    <main>
 
-      <!-- HABApp -->
-      <div class="card">
-        <h2>HABApp (automazioni)</h2>
-        <div id="habappStatus" class="status-bar status-idle">Caricamento...</div>
-        <button class="btn btn-blue btn-block" id="btnHabappFix" onclick="fixHabappToken()" style="display:none; margin-top:8px">Rigenera token e ricrea HABApp</button>
-        <p class="hint">Scegli quali funzioni attivare: il controller installa le regole solo per queste. Le altre non vengono nemmeno caricate.</p>
-        <div id="habappFunctions"></div>
-        <div id="habappProgress"></div>
-        <button class="btn btn-green btn-block" id="btnSaveHabapp" onclick="saveHabappFunctions()" style="margin-top:8px">Salva e applica</button>
-
-        <h2 style="margin-top:24px">Configurazione impianto</h2>
-        <p class="hint">Definizione dell'impianto per la funzione scelta (termostati, zone, carichi). Prima si scriveva a mano nei file: ora si edita qui e HABApp riparte da solo.</p>
-        <select id="habappParamsFn" class="sel" onchange="loadHabappParams()"></select>
-        <textarea id="habappParamsEditor" class="sel" spellcheck="false" style="min-height:280px; font-family:ui-monospace,Menlo,Consolas,monospace; font-size:0.85em; white-space:pre; overflow-wrap:normal; overflow-x:auto"></textarea>
-        <div id="habappParamsMsg"></div>
-        <button class="btn btn-blue btn-block" id="btnSaveParams" onclick="saveHabappParams()">Salva e riavvia HABApp</button>
-      </div>
-
-      <!-- Rete -->
-      <div class="card">
-        <h2>Rete</h2>
-        <div id="networkInfo">Caricamento...</div>
-        <div id="netPending"></div>
-        <div id="netUnavailable" class="status-bar status-failed" style="display:none"></div>
-        <div id="netInstall"></div>
-
-        <div id="lanBox" style="display:none">
-          <h2 style="margin-top:20px">LAN (cavo)</h2>
-          <div id="lanState"></div>
-          <div class="radio-group" style="display:flex; gap:6px">
-            <label class="radio-item" style="flex:1" id="lanOptDhcp"><input type="radio" name="lanMethod" value="dhcp" onchange="lanMethodChanged()"><span class="radio-label">DHCP (automatico)</span></label>
-            <label class="radio-item" style="flex:1" id="lanOptStatic"><input type="radio" name="lanMethod" value="static" onchange="lanMethodChanged()"><span class="radio-label">IP statico</span></label>
+      <!-- ═══════════ STATO ═══════════ -->
+      <section class="section" id="sec-stato">
+        <div class="section-head"><h1>Stato</h1><p>La centralina a colpo d'occhio: cosa gira, come è raggiungibile, cosa va guardato.</p></div>
+        <div class="grid">
+          <div class="card span-2" id="alertsCard" style="display:none">
+            <h2>Da guardare</h2>
+            <div id="alertsList"></div>
           </div>
-          <div id="lanStaticFields" style="display:none">
-            <div style="display:flex; gap:6px">
-              <input class="lp-input" id="lanAddr" placeholder="Indirizzo IP (es. 192.168.1.50)" style="flex:2">
-              <input class="lp-input" id="lanMask" placeholder="Subnet (24 o 255.255.255.0)" style="flex:1">
+          <div class="card">
+            <h2>Servizi</h2>
+            <p class="card-sub">Stato dei container. &#x21bb; riavvia il servizio.</p>
+            <div id="servicesList">Caricamento...</div>
+          </div>
+          <div class="col">
+          <div class="card">
+            <h2>Centralina</h2>
+            <div id="systemInfo">Caricamento...</div>
+            <div id="networkInfo"></div>
+          </div>
+          <div class="card">
+            <h2>Sistema</h2>
+            <p class="card-sub">Operazioni sulla centralina intera.</p>
+            <button class="btn btn-danger-ghost btn-block" onclick="confirmReboot()">Riavvia il sistema operativo</button>
+            <div class="row">
+              <a class="btn btn-ghost" href="/docs" target="_blank">Documentazione API</a>
+              <button class="btn btn-ghost" onclick="logout()">Esci</button>
             </div>
-            <input class="lp-input" id="lanGw" placeholder="Gateway (es. 192.168.1.1)">
-            <input class="lp-input" id="lanDns" placeholder="DNS separati da virgola (vuoto = gateway)">
           </div>
-          <button class="btn btn-green btn-block" id="btnLanApply" onclick="applyLan()" style="margin-top:6px">Applica</button>
-          <p class="hint">Dopo aver applicato hai 2 minuti per confermare. Se non confermi (per esempio perch&eacute; con i nuovi valori la centralina non &egrave; pi&ugrave; raggiungibile) torna da sola la configurazione di prima.</p>
+          </div>
         </div>
-      </div>
+      </section>
 
-      <!-- Wifi -->
-      <div class="card" id="wifiCard" style="display:none">
-        <h2>Wifi</h2>
-        <div id="wifiState" class="status-bar status-idle">Caricamento...</div>
-        <div id="wifiOp"></div>
-        <div id="wifiConfigured"></div>
-
-        <h2 style="margin-top:16px">Collegati a una rete</h2>
-        <div id="wifiApWarn" class="status-bar status-running" style="display:none">Sei collegato tramite l'access point della centralina: collegandola a una rete wifi l'access point si spegne e perderai la connessione. Se la rete funziona ritrovi la centralina l&igrave; (indirizzo assegnato dal router, oppure dalla LAN); se non funziona l'access point si riaccende in pochi secondi.</div>
-        <button class="btn btn-blue btn-block" id="btnWifiScan" onclick="scanWifi(false)">Cerca reti</button>
-        <div id="wifiScanInfo"></div>
-        <div id="wifiList" class="radio-group"></div>
-        <input class="lp-input" id="wifiSsid" placeholder="Nome rete (SSID)">
-        <input class="lp-input" id="wifiPass" type="password" placeholder="Password (vuota per reti aperte)">
-        <label class="chk-row" style="cursor:pointer"><input type="checkbox" id="wifiHidden"><span class="radio-label">Rete nascosta</span></label>
-        <button class="btn btn-green btn-block" id="btnWifiConnect" onclick="connectWifi()">Collega</button>
-        <p class="hint">Se la centralina ha anche il cavo LAN collegato, il traffico passa dalla LAN: il wifi resta di riserva.</p>
-      </div>
-
-      <!-- Access point di emergenza -->
-      <div class="card" id="apCard" style="display:none">
-        <h2>Access point di emergenza</h2>
-        <div id="apState" class="status-bar status-idle">Caricamento...</div>
-        <p class="hint">Si accende da solo quando la rete wifi configurata non si trova per pi&ugrave; di <b id="apGraceTxt">2 minuti</b> (oppure quando non c'&egrave; n&eacute; wifi configurato n&eacute; LAN). Collegati all'access point e apri l'indirizzo indicato per configurare una rete nuova. Quando la rete torna l'access point si spegne da solo, ma non finch&eacute; qualcuno &egrave; collegato.</p>
-        <label class="info-row" style="cursor:pointer"><span class="info-label">Abilitato</span><input type="checkbox" id="apEnabled"></label>
-        <input class="lp-input" id="apSsid" placeholder="Nome (SSID)">
-        <input class="lp-input" id="apPass" type="text" placeholder="Password (8-63 caratteri)">
-        <input class="lp-input" id="apAddr" placeholder="Indirizzo centralina (es. 192.168.200.1/24)">
-        <div style="display:flex; gap:8px">
-          <label style="flex:1; display:block">
-            <span class="hint" style="display:block; margin:0 0 2px">Attesa prima dell'AP (s)</span>
-            <input class="lp-input" id="apGrace" type="number" style="margin:0">
-          </label>
-          <label style="flex:1; display:block">
-            <span class="hint" style="display:block; margin:0 0 2px">Riprova la rete ogni (s)</span>
-            <input class="lp-input" id="apRetry" type="number" style="margin:0">
-          </label>
+      <!-- ═══════════ IMPIANTO ═══════════ -->
+      <section class="section" id="sec-impianto">
+        <div class="section-head"><h1>Impianto</h1><p>Automazioni HABApp, porte seriali dei dispositivi, telefono di emergenza.</p></div>
+        <div class="grid">
+          <div class="card">
+            <h2>HABApp (automazioni)</h2>
+            <div id="habappStatus" class="status-bar status-idle">Caricamento...</div>
+            <button class="btn btn-blue btn-block" id="btnHabappFix" onclick="fixHabappToken()" style="display:none">Rigenera token e ricrea HABApp</button>
+            <p class="hint">Scegli quali funzioni attivare: il controller installa le regole solo per queste. Le altre non vengono nemmeno caricate.</p>
+            <div id="habappFunctions"></div>
+            <div id="habappProgress"></div>
+            <button class="btn btn-green btn-block" id="btnSaveHabapp" onclick="saveHabappFunctions()">Salva e applica</button>
+          </div>
+          <div class="card">
+            <h2>Dispositivi (porte seriali)</h2>
+            <p class="card-sub">Assegna le porte seriali dell'host (Modbus, Z-Wave, Zigbee, Thread) ai servizi.</p>
+            <label class="field-label" for="devService">Servizio</label>
+            <select id="devService" class="sel" onchange="loadDevices()"></select>
+            <div id="devCurrent"></div>
+            <div class="dev-add">
+              <select id="devPort" class="sel"></select>
+              <input id="devTarget" class="sel" placeholder="target nel container">
+              <button class="btn btn-blue" onclick="addDevice()" title="Aggiungi" aria-label="Aggiungi">+</button>
+            </div>
+            <p class="hint">Sorgente = porta host (i nomi <code>by-id</code> restano uguali ai riavvii). Target = come la vede il servizio (es. <code>/dev/ttyUSB0</code> per Modbus, <code>/dev/zwave</code>, <code>/dev/zigbee</code>).</p>
+            <div id="devProgress"></div>
+            <button class="btn btn-green btn-block" id="btnSaveDevices" onclick="saveDevices()">Salva e applica</button>
+          </div>
+          <div class="card span-2">
+            <h2>Configurazione impianto</h2>
+            <p class="card-sub">Termostati, zone, carichi: la definizione dell'impianto per la funzione HABApp scelta. Al salvataggio HABApp riparte da solo.</p>
+            <select id="habappParamsFn" class="sel" onchange="loadHabappParams()"></select>
+            <textarea id="habappParamsEditor" class="sel editor" spellcheck="false"></textarea>
+            <div id="habappParamsMsg"></div>
+            <button class="btn btn-blue btn-block" id="btnSaveParams" onclick="saveHabappParams()">Salva e riavvia HABApp</button>
+          </div>
+          <div class="card">
+            <h2>Telefono di emergenza</h2>
+            <div id="linphoneStatus" class="status-bar status-idle">Caricamento...</div>
+            <label class="switch-row"><span>Abilitato</span><input type="checkbox" id="lpEnabled"></label>
+            <label class="field-label" for="lpHost">Server SIP</label>
+            <input class="lp-input" id="lpHost" placeholder="es. voip.eutelia.it">
+            <label class="field-label" for="lpUser">Utente SIP</label>
+            <input class="lp-input" id="lpUser" placeholder="username">
+            <label class="field-label" for="lpPass">Password SIP</label>
+            <input class="lp-input" id="lpPass" type="password" placeholder="vuoto = invariata">
+            <label class="field-label" for="lpNumber">Numero di emergenza</label>
+            <input class="lp-input" id="lpNumber" placeholder="es. +3933..." inputmode="tel">
+            <label class="field-label" for="lpMessage">Messaggio (letto dalla voce sintetica)</label>
+            <textarea class="lp-input" id="lpMessage" rows="2"></textarea>
+            <div class="row">
+              <label><span class="field-label">Timeout risposta (s)</span><input class="lp-input" id="lpTimeout" type="number" inputmode="numeric" placeholder="es. 30"></label>
+              <label><span class="field-label">Ripetizioni messaggio</span><input class="lp-input" id="lpRepeat" type="number" inputmode="numeric" placeholder="es. 2"></label>
+            </div>
+            <button class="btn btn-blue btn-block" onclick="saveLinphone()">Salva configurazione</button>
+            <button class="btn btn-ghost btn-block" id="btnTestCall" onclick="testCall()">Chiamata di prova</button>
+          </div>
         </div>
-        <div id="apMsg"></div>
-        <button class="btn btn-blue btn-block" onclick="saveAp()" style="margin-top:8px">Salva configurazione</button>
-        <div style="display:flex; gap:6px">
-          <button class="btn btn-orange" style="flex:1" id="btnApStart" onclick="apAction('start')">Accendi ora</button>
-          <button class="btn btn-red" style="flex:1" id="btnApStop" onclick="apAction('stop')">Spegni ora</button>
+      </section>
+
+      <!-- ═══════════ RETE ═══════════ -->
+      <section class="section" id="sec-rete">
+        <div class="section-head"><h1>Rete</h1><p>Cavo, wifi e access point di emergenza, gestiti da NetworkManager sulla centralina.</p></div>
+        <div class="grid">
+          <div class="card">
+            <h2>LAN (cavo)</h2>
+            <div id="netPending"></div>
+            <div id="netUnavailable" class="status-bar status-failed" style="display:none"></div>
+            <div id="netInstall"></div>
+            <div id="lanBox" style="display:none">
+              <div id="lanState"></div>
+              <div class="radio-group row">
+                <label class="radio-item" id="lanOptDhcp"><input type="radio" name="lanMethod" value="dhcp" onchange="lanMethodChanged()"><span class="radio-label">DHCP (automatico)</span></label>
+                <label class="radio-item" id="lanOptStatic"><input type="radio" name="lanMethod" value="static" onchange="lanMethodChanged()"><span class="radio-label">IP statico</span></label>
+              </div>
+              <div id="lanStaticFields" style="display:none">
+                <div class="row">
+                  <label style="flex:2"><span class="field-label">Indirizzo IP</span><input class="lp-input" id="lanAddr" placeholder="es. 192.168.1.50" inputmode="decimal"></label>
+                  <label><span class="field-label">Subnet</span><input class="lp-input" id="lanMask" placeholder="24" inputmode="decimal"></label>
+                </div>
+                <label class="field-label" for="lanGw">Gateway</label>
+                <input class="lp-input" id="lanGw" placeholder="es. 192.168.1.1" inputmode="decimal">
+                <label class="field-label" for="lanDns">DNS (separati da virgola)</label>
+                <input class="lp-input" id="lanDns" placeholder="vuoto = gateway">
+              </div>
+              <button class="btn btn-green btn-block" id="btnLanApply" onclick="applyLan()">Applica</button>
+              <p class="hint">Dopo aver applicato hai 2 minuti per confermare. Se non confermi (per esempio perch&eacute; con i nuovi valori la centralina non &egrave; pi&ugrave; raggiungibile) torna da sola la configurazione di prima.</p>
+            </div>
+          </div>
+
+          <div class="card" id="wifiCard" style="display:none">
+            <h2>Wifi</h2>
+            <div id="wifiState" class="status-bar status-idle">Caricamento...</div>
+            <div id="wifiOp"></div>
+            <div id="wifiConfigured"></div>
+            <h3>Collegati a una rete</h3>
+            <div id="wifiApWarn" class="status-bar status-running" style="display:none">Sei collegato tramite l'access point della centralina: collegandola a una rete wifi l'access point si spegne e perderai la connessione. Se la rete funziona ritrovi la centralina l&igrave; (indirizzo assegnato dal router, oppure dalla LAN); se non funziona l'access point si riaccende in pochi secondi.</div>
+            <button class="btn btn-ghost btn-block" id="btnWifiScan" onclick="scanWifi(false)">Cerca reti</button>
+            <div id="wifiScanInfo"></div>
+            <div id="wifiList" class="radio-group"></div>
+            <input class="lp-input" id="wifiSsid" placeholder="Nome rete (SSID)">
+            <input class="lp-input" id="wifiPass" type="password" placeholder="Password (vuota per reti aperte)">
+            <label class="chk-row" style="cursor:pointer"><input type="checkbox" id="wifiHidden"><span class="radio-label">Rete nascosta</span></label>
+            <button class="btn btn-green btn-block" id="btnWifiConnect" onclick="connectWifi()">Collega</button>
+            <p class="hint">Se la centralina ha anche il cavo LAN collegato, il traffico passa dalla LAN: il wifi resta di riserva.</p>
+          </div>
+
+          <div class="card" id="apCard" style="display:none">
+            <h2>Access point di emergenza</h2>
+            <div id="apState" class="status-bar status-idle">Caricamento...</div>
+            <p class="hint">Si accende da solo quando la rete wifi configurata non si trova per pi&ugrave; di <b id="apGraceTxt">2 minuti</b> (oppure quando non c'&egrave; n&eacute; wifi configurato n&eacute; LAN). Collegati all'access point e apri l'indirizzo indicato per configurare una rete nuova. Quando la rete torna l'access point si spegne da solo, ma non finch&eacute; qualcuno &egrave; collegato.</p>
+            <label class="switch-row"><span>Abilitato</span><input type="checkbox" id="apEnabled"></label>
+            <label class="field-label" for="apSsid">Nome della rete (SSID)</label>
+            <input class="lp-input" id="apSsid">
+            <label class="field-label" for="apPass">Password (8-63 caratteri)</label>
+            <input class="lp-input" id="apPass" type="text">
+            <label class="field-label" for="apAddr">Indirizzo della centralina sull'AP</label>
+            <input class="lp-input" id="apAddr" placeholder="es. 192.168.200.1/24">
+            <div class="row">
+              <label><span class="field-label">Attesa prima dell'AP (s)</span><input class="lp-input" id="apGrace" type="number" inputmode="numeric"></label>
+              <label><span class="field-label">Riprova la rete ogni (s)</span><input class="lp-input" id="apRetry" type="number" inputmode="numeric"></label>
+            </div>
+            <div id="apMsg"></div>
+            <button class="btn btn-blue btn-block" onclick="saveAp()">Salva configurazione</button>
+            <div class="row">
+              <button class="btn btn-orange" id="btnApStart" onclick="apAction('start')">Accendi ora</button>
+              <button class="btn btn-danger-ghost" id="btnApStop" onclick="apAction('stop')">Spegni ora</button>
+            </div>
+          </div>
         </div>
-      </div>
+      </section>
 
-      <!-- Backup -->
-      <div class="card">
-        <h2>Backup</h2>
-        <div id="backupStatus" class="status-bar status-idle">Nessun backup in corso</div>
-        <button class="btn btn-blue btn-block" id="btnBackup" onclick="runBackup()">Esegui Backup</button>
-      </div>
-
-      <!-- Ripristino -->
-      <div class="card">
-        <h2>Ripristino</h2>
-        <button class="btn btn-blue btn-block" onclick="loadBackups()" style="margin-bottom:8px">Aggiorna lista backup</button>
-        <div id="backupList"></div>
-        <button class="btn btn-orange btn-block" id="btnRestore" onclick="runRestore()" disabled>Ripristina</button>
-      </div>
-
-      <!-- Sistema -->
-      <div class="card">
-        <h2>Sistema</h2>
-        <div id="systemInfo">Caricamento...</div>
-        <div id="updateProgress"></div>
-        <div style="margin-top:12px">
-          <button class="btn btn-orange btn-block" id="btnUpdate" onclick="confirmUpdate()">Aggiorna Controller</button>
-          <button class="btn btn-red btn-block" onclick="confirmReboot()" style="margin-top:4px">Riavvia Sistema Operativo</button>
+      <!-- ═══════════ AGGIORNAMENTI ═══════════ -->
+      <section class="section" id="sec-aggiornamenti">
+        <div class="section-head"><h1>Aggiornamenti</h1><p>Il controller, le versioni dei software (OpenHAB, HABApp, …) e il pacchetto degli addon.</p></div>
+        <div class="grid">
+          <div class="card span-2">
+            <h2>Versioni dei software</h2>
+            <p class="card-sub">Le release certificate: prima di aggiornare viene fatto un backup automatico.</p>
+            <div id="relStatus" class="status-bar status-idle">Premi &laquo;Controlla&raquo; per cercare versioni pi&ugrave; recenti.</div>
+            <div id="relDiff"></div>
+            <div id="relProgress"></div>
+            <div class="row">
+              <button class="btn btn-ghost" id="btnRelCheck" onclick="checkReleases()">Controlla aggiornamenti</button>
+              <button class="btn btn-green" id="btnRelApply" onclick="applyReleases()" style="display:none">Aggiorna selezionati</button>
+            </div>
+            <p class="hint">Puoi aggiornare un solo software: spunta solo quello (es. <b>openhab</b>) e premi &laquo;Aggiorna selezionati&raquo;.</p>
+          </div>
+          <div class="card">
+            <h2>Controller</h2>
+            <div class="info-row"><span class="info-label">Versione in uso</span><span id="ctrlVersion">&hellip;</span></div>
+            <div id="updateProgress"></div>
+            <button class="btn btn-orange btn-block" id="btnUpdate" onclick="confirmUpdate()">Aggiorna Controller</button>
+            <p class="hint">Scarica l'ultima versione pubblicata. Si aggiorna anche da solo a ogni riavvio della centralina.</p>
+          </div>
+          <div class="card">
+            <h2>Addon OpenHAB (offline)</h2>
+            <div id="addonsStatus" class="status-bar status-idle">Caricamento...</div>
+            <div id="addonsProgress"></div>
+            <button class="btn btn-ghost btn-block" id="btnAddons" onclick="downloadAddons()">Scarica pacchetto addon</button>
+            <p class="hint">Il pacchetto (~600 MB) contiene <b>tutti</b> gli addon ufficiali della versione di OpenHAB in uso: con quello a bordo i binding si installano anche senza internet. Segue da solo la versione di OpenHAB; il pulsante serve se l'impianto &egrave; stato installato senza linea.</p>
+          </div>
         </div>
-      </div>
+      </section>
 
-      <!-- Aggiornamento software (immagini certificate) -->
-      <div class="card">
-        <h2>Aggiornamento software</h2>
-        <div id="relStatus" class="status-bar status-idle">Premi &laquo;Controlla&raquo; per cercare versioni pi&ugrave; recenti.</div>
-        <div id="relDiff"></div>
-        <div id="relProgress"></div>
-        <button class="btn btn-blue btn-block" id="btnRelCheck" onclick="checkReleases()">Controlla aggiornamenti</button>
-        <button class="btn btn-green btn-block" id="btnRelApply" onclick="applyReleases()" style="display:none; margin-top:6px">Aggiorna selezionati</button>
-        <p class="hint">Puoi aggiornare un solo software: spunta solo quello (es. <b>openhab</b>) e premi &laquo;Aggiorna selezionati&raquo;. Prima dell'aggiornamento viene fatto un backup automatico.</p>
-      </div>
-
-      <!-- Addon OpenHAB a bordo (installazione senza internet) -->
-      <div class="card">
-        <h2>Addon OpenHAB (offline)</h2>
-        <div id="addonsStatus" class="status-bar status-idle">Caricamento...</div>
-        <div id="addonsProgress"></div>
-        <button class="btn btn-blue btn-block" id="btnAddons" onclick="downloadAddons()">Scarica pacchetto addon</button>
-        <p class="hint">Il pacchetto (~600 MB) contiene <b>tutti</b> gli addon ufficiali della versione di OpenHAB in uso: con quello a bordo i binding si installano anche a centralina senza internet. Lo scarica il controller da s&eacute;; il pulsante serve se l'impianto &egrave; stato installato senza linea e la connessione &egrave; arrivata dopo.</p>
-      </div>
-
-      <!-- Telefono di emergenza (linphone) -->
-      <div class="card">
-        <h2>Telefono di emergenza</h2>
-        <div id="linphoneStatus" class="status-bar status-idle">Caricamento...</div>
-        <label class="info-row" style="cursor:pointer">
-          <span class="info-label">Abilitato</span>
-          <input type="checkbox" id="lpEnabled">
-        </label>
-        <input class="lp-input" id="lpHost" placeholder="SIP host (es. voip.eutelia.it)">
-        <input class="lp-input" id="lpUser" placeholder="SIP username">
-        <input class="lp-input" id="lpPass" type="password" placeholder="SIP password (vuoto = invariata)">
-        <input class="lp-input" id="lpNumber" placeholder="Numero di emergenza (es. +3933...)">
-        <textarea class="lp-input" id="lpMessage" rows="2" placeholder="Messaggio (convertito in voce)"></textarea>
-        <div style="display:flex; gap:8px">
-          <label style="flex:1; display:block">
-            <span class="hint" style="display:block; margin:0 0 2px">Timeout risposta (s)</span>
-            <input class="lp-input" id="lpTimeout" type="number" placeholder="es. 30" style="margin:0">
-          </label>
-          <label style="flex:1; display:block">
-            <span class="hint" style="display:block; margin:0 0 2px">Ripetizioni messaggio</span>
-            <input class="lp-input" id="lpRepeat" type="number" placeholder="es. 2" style="margin:0">
-          </label>
+      <!-- ═══════════ BACKUP ═══════════ -->
+      <section class="section" id="sec-backup">
+        <div class="section-head"><h1>Backup</h1><p>Sulla centralina resta l'ultimo backup; lo storico è su WebDAV.</p></div>
+        <div class="grid">
+          <div class="card">
+            <h2>Backup</h2>
+            <div id="backupStatus" class="status-bar status-idle">Nessun backup in corso</div>
+            <button class="btn btn-blue btn-block" id="btnBackup" onclick="runBackup()">Esegui backup</button>
+            <p class="hint">Ferma i servizi solo il tempo di creare l'archivio; il caricamento su WebDAV avviene a impianto già ripartito.</p>
+          </div>
+          <div class="card">
+            <h2>Ripristino</h2>
+            <div id="backupList"></div>
+            <div class="row">
+              <button class="btn btn-ghost" onclick="loadBackups()">Aggiorna elenco</button>
+              <button class="btn btn-orange" id="btnRestore" onclick="runRestore()" disabled>Ripristina</button>
+            </div>
+          </div>
         </div>
-        <button class="btn btn-blue btn-block" onclick="saveLinphone()" style="margin-top:8px">Salva configurazione</button>
-        <button class="btn btn-orange btn-block" id="btnTestCall" onclick="testCall()" style="margin-top:4px">Chiamata di prova</button>
-      </div>
+      </section>
 
-      <!-- Footer -->
-      <div style="text-align:center; padding:12px 0; font-size:0.85em; color:#888">
-        <a href="/docs" style="color:#2196f3; text-decoration:none">API Docs</a>
-      </div>
-
-    </div>
+    </main>
   </div>
 
 <script>
@@ -289,6 +425,7 @@ function doLogin() {
       localStorage.setItem('arfea_api_key', API_KEY);
       document.getElementById('login').style.display = 'none';
       document.getElementById('app').style.display = 'block';
+      showTab(location.hash.slice(1));
       refreshAll();
     } else {
       document.getElementById('loginError').style.display = 'block';
@@ -305,9 +442,12 @@ function doLogin() {
       if (r.ok) {
         document.getElementById('login').style.display = 'none';
         document.getElementById('app').style.display = 'block';
+        showTab(location.hash.slice(1));
         refreshAll();
+        // Il pallino di «Aggiornamenti» deve comparire anche senza aprire la sezione.
+        checkReleases();
       } else {
-        document.getElementById('login').style.display = 'block';
+        document.getElementById('login').style.display = '';
       }
     });
   }
@@ -316,6 +456,63 @@ function doLogin() {
 document.getElementById('apiKeyInput').addEventListener('keydown', function(e) {
   if (e.key === 'Enter') doLogin();
 });
+
+// ── Sezioni ──────────────────────────────────────────────
+// Una sezione alla volta; l'indirizzo (#rete, #backup, ...) dice quale, cosi' un
+// ricaricamento o un link riportano li'. Aprendo una sezione si aggiorna quello
+// che serve solo li'.
+
+var TABS = ['stato', 'impianto', 'rete', 'aggiornamenti', 'backup'];
+var lastRelCheck = 0;
+
+function showTab(name) {
+  if (TABS.indexOf(name) < 0) name = 'stato';
+  TABS.forEach(function(t) {
+    document.getElementById('sec-' + t).classList.toggle('active', t === name);
+  });
+  document.querySelectorAll('.tab').forEach(function(a) {
+    a.classList.toggle('active', a.dataset.tab === name);
+  });
+  window.scrollTo(0, 0);
+  if (name === 'backup') loadBackups();
+  if (name === 'aggiornamenti' && !relPolling && Date.now() - lastRelCheck > 5 * 60 * 1000) checkReleases();
+}
+
+window.addEventListener('hashchange', function() { showTab(location.hash.slice(1)); });
+
+// ── Avvisi: la card «Da guardare» e il pallino sulle sezioni ──
+// Ogni parte della pagina dichiara i suoi (setAlert(chiave, ...)) e li toglie
+// quando non valgono piu' (setAlert(chiave, null)).
+var alerts = {};
+
+function setAlert(key, level, text, tab) {
+  if (!level) delete alerts[key];
+  else alerts[key] = { level: level, text: text, tab: tab };
+  renderAlerts();
+}
+
+function renderAlerts() {
+  var keys = Object.keys(alerts);
+  keys.sort(function(a, b) { return (alerts[a].level === 'err' ? 0 : 1) - (alerts[b].level === 'err' ? 0 : 1); });
+  document.getElementById('alertsCard').style.display = keys.length ? '' : 'none';
+  document.getElementById('alertsList').innerHTML = keys.map(function(k) {
+    var a = alerts[k];
+    return '<button class="alert-item ' + a.level + '" onclick="location.hash=\'' + a.tab + '\'">' +
+      '<span>' + a.text + '</span><span class="go">&rsaquo;</span></button>';
+  }).join('');
+  TABS.forEach(function(t) {
+    var lvl = '';
+    keys.forEach(function(k) { if (alerts[k].tab === t && lvl !== 'err') lvl = alerts[k].level; });
+    var dot = document.querySelector('.tab[data-tab="' + t + '"] .dot');
+    if (dot) dot.className = 'dot' + (lvl ? ' ' + lvl : '');
+  });
+}
+
+function logout() {
+  if (!confirm('Uscire? Al prossimo accesso servirà di nuovo la API Key.')) return;
+  localStorage.removeItem('arfea_api_key');
+  location.reload();
+}
 
 // ── API helpers ───────────────────────────────────────────
 
@@ -388,20 +585,24 @@ function resumeReleaseStatus() {
 function refreshServices() {
   apiGet('/services').then(function(services) {
     var html = '';
+    var down = [];
     services.forEach(function(s) {
       var badgeClass = s.state === 'running' ? 'badge-running' : s.state === 'stopped' || s.state === 'not_created' ? 'badge-stopped' : 'badge-other';
       var label = s.state === 'not_created' ? 'non attivo' : s.state;
       var show = s.core || s.enabled || s.effectively_enabled || s.state === 'running';
       if (!show) return;
+      if (s.state !== 'running') down.push(s.name);
       html += '<div class="service-row">';
       html += '<span class="service-name">' + s.name + '</span>';
       html += '<span>';
       html += '<span class="badge ' + badgeClass + '">' + label + '</span> ';
-      html += '<button class="btn btn-blue" style="padding:4px 10px; font-size:0.8em" onclick="restartService(\'' + s.name + '\')">&#x21bb;</button>';
+      html += '<button class="btn btn-ghost btn-small" title="Riavvia ' + s.name + '" aria-label="Riavvia ' + s.name + '" onclick="restartService(\'' + s.name + '\')">&#x21bb;</button>';
       html += '</span>';
       html += '</div>';
     });
     document.getElementById('servicesList').innerHTML = html;
+    setAlert('services', down.length ? 'err' : null,
+      'Servizi non in esecuzione: <b>' + esc(down.join(', ')) + '</b>', 'stato');
   });
 }
 
@@ -409,7 +610,7 @@ function refreshNetwork() {
   apiGet('/system/network').then(function(net) {
     var html = '';
     html += '<div class="info-row"><span class="info-label">IP LAN</span><span>' + net.lan_ip + '</span></div>';
-    html += '<div class="info-row"><span class="info-label">IP VPN</span><span>' + net.vpn_ip + '</span></div>';
+    html += '<div class="info-row"><span class="info-label">IP VPN (supporto)</span><span>' + net.vpn_ip + '</span></div>';
     html += '<div class="info-row"><span class="info-label">IP Pubblico</span><span>' + net.external_ip + '</span></div>';
     document.getElementById('networkInfo').innerHTML = html;
   });
@@ -444,6 +645,8 @@ function refreshNetStatus(fillForms) {
     netLast = st;
     var unav = document.getElementById('netUnavailable');
     renderNmInstall(st);
+    setAlert('net', st.available ? null : 'warn', 'Rete: ' + esc(st.message || 'gestione non disponibile'), 'rete');
+    setAlert('lanPending', st.pending_lan_change ? 'warn' : null, 'Nuova configurazione LAN da confermare', 'rete');
     if (!st.available) {
       unav.style.display = 'block';
       unav.textContent = st.message || 'Gestione rete non disponibile';
@@ -654,7 +857,7 @@ function renderWifi(st) {
 
   var conf = w.configured || [];
   document.getElementById('wifiConfigured').innerHTML = conf.length
-    ? infoRow('Rete configurata', '<b>' + esc(conf.join(', ')) + '</b> <button class="btn btn-red" style="padding:4px 10px; font-size:0.8em" onclick="forgetWifi()">Dimentica</button>')
+    ? infoRow('Rete configurata', '<b>' + esc(conf.join(', ')) + '</b> <button class="btn btn-danger-ghost btn-small" onclick="forgetWifi()">Dimentica</button>')
     : infoRow('Rete configurata', 'nessuna');
   document.getElementById('wifiApWarn').style.display = viaAp(st) ? 'block' : 'none';
 }
@@ -771,8 +974,10 @@ function refreshSystem() {
     var html = '';
     html += '<div class="info-row"><span class="info-label">Hostname</span><span>' + info.hostname + '</span></div>';
     html += '<div class="info-row"><span class="info-label">Uptime</span><span>' + info.uptime + '</span></div>';
-    html += '<div class="info-row"><span class="info-label">Versione</span><span>' + info.version + '</span></div>';
+    html += '<div class="info-row"><span class="info-label">Versione controller</span><span>' + info.version + '</span></div>';
     document.getElementById('systemInfo').innerHTML = html;
+    document.getElementById('hdrInfo').textContent = info.hostname + ' · controller ' + info.version;
+    document.getElementById('ctrlVersion').textContent = info.version;
   });
 }
 
@@ -823,6 +1028,7 @@ function refreshBackupStatus() {
     else if (status.state === 'completed') { cls = 'status-completed'; text = status.message; bar = progressHtml(100, 'done'); }
     else if (status.state === 'failed') { cls = 'status-failed'; text = status.message; bar = progressHtml(100, 'err'); }
     else { cls = 'status-running'; text = '<span class="spinner"></span>' + status.message; bar = progressHtml(BACKUP_PCT[status.state] || 30, ''); }
+    setAlert('backup', status.state === 'failed' ? 'err' : null, 'Ultimo backup: ' + esc(status.message || 'non riuscito'), 'backup');
     el.className = 'status-bar ' + cls;
     el.innerHTML = text + bar;
     return status;
@@ -848,6 +1054,7 @@ function refreshAddons() {
     } else if (st.state === 'failed') {
       cls = 'status-failed';
     }
+    setAlert('addons', st.state === 'failed' ? 'warn' : null, 'Pacchetto addon OpenHAB: ' + esc(st.message || 'download non riuscito'), 'aggiornamenti');
     el.className = 'status-bar ' + cls;
     el.innerHTML = text;
     document.getElementById('addonsProgress').innerHTML = bar;
@@ -888,6 +1095,7 @@ function downloadAddons() {
 
 function progressHtml(pct, kind) {
   // kind: '' (blu), 'done' (verde), 'err' (rosso), 'indet' (indeterminata)
+  kind = { running: '', completed: 'done', failed: 'err' }[kind] !== undefined ? { running: '', completed: 'done', failed: 'err' }[kind] : kind;
   if (kind === 'indet') {
     return '<div class="progress progress-track indet"><div class="progress-bar"></div></div>';
   }
@@ -911,7 +1119,7 @@ function loadBackups() {
     selectedBackup = '';
     document.getElementById('btnRestore').disabled = true;
     if (backups.length === 0) {
-      document.getElementById('backupList').innerHTML = '<p style="color:#888; padding:8px">Nessun backup disponibile</p>';
+      document.getElementById('backupList').innerHTML = '<p class="hint">Nessun backup disponibile.</p>';
       return;
     }
     var html = '<div class="radio-group">';
@@ -922,7 +1130,7 @@ function loadBackups() {
       html += '<div><div class="radio-label">' + b.date + ' &mdash; ' + b.size_mb + ' MB</div>';
       html += '<div class="radio-sublabel">' + b.name + '</div></div>';
       html += '</div>';
-      html += '<button class="btn btn-blue" style="padding:6px 12px; font-size:0.85em; margin-left:8px" onclick="downloadBackup(event, \'' + b.name + '\')" title="Scarica">&#x2B07;</button>';
+      html += '<button class="btn btn-ghost btn-small" style="margin-left:8px" onclick="downloadBackup(event, \'' + b.name + '\')" title="Scarica" aria-label="Scarica">&#x2B07;</button>';
       html += '</div>';
     });
     html += '</div>';
@@ -932,7 +1140,7 @@ function loadBackups() {
 
 function selectBackup(el, name) {
   selectedBackup = name;
-  document.querySelectorAll('.radio-item').forEach(function(r) { r.classList.remove('selected'); });
+  document.querySelectorAll('#backupList .radio-item').forEach(function(r) { r.classList.remove('selected'); });
   el.classList.add('selected');
   el.querySelector('input').checked = true;
   document.getElementById('btnRestore').disabled = false;
@@ -1114,6 +1322,8 @@ function refreshHabapp() {
 
 function renderHabappStatus(st) {
   var el = document.getElementById('habappStatus');
+  setAlert('habapp', (st.installed && st.service_enabled && !st.token_ok) ? 'err' : null,
+    'HABApp senza token di accesso a OpenHAB: non può creare item', 'impianto');
   var active = st.functions.filter(function(f) { return f.enabled; });
   // Il pulsante di riparazione compare solo nel caso che ripara: HABApp acceso
   // e senza token.
@@ -1167,9 +1377,8 @@ function fixHabappToken() {
 
 function renderHabappFunctions(st) {
   document.getElementById('habappFunctions').innerHTML = st.functions.map(function(f) {
-    return '<label class="dev-row" style="cursor:pointer; align-items:flex-start">' +
-      '<input type="checkbox" class="habapp-fn" value="' + f.name + '"' + (f.enabled ? ' checked' : '') +
-      ' style="margin:3px 10px 0 0; flex:none">' +
+    return '<label class="fn-row">' +
+      '<input type="checkbox" class="habapp-fn" value="' + f.name + '"' + (f.enabled ? ' checked' : '') + '>' +
       '<span><strong>' + f.label + '</strong><br><span class="hint">' + f.description + '</span></span>' +
       '</label>';
   }).join('');
@@ -1312,7 +1521,7 @@ function renderDevices() {
   }
   el.innerHTML = devList.map(function(d, i) {
     return '<div class="dev-row"><code>' + d + '</code>' +
-      '<button class="btn btn-red" style="padding:3px 10px; font-size:0.8em; margin:0" onclick="removeDevice(' + i + ')">&times;</button></div>';
+      '<button class="btn btn-danger-ghost btn-small" onclick="removeDevice(' + i + ')" title="Togli" aria-label="Togli">&times;</button></div>';
   }).join('');
 }
 
@@ -1363,6 +1572,8 @@ function saveDevices() {
 var relPolling = null;
 
 function checkReleases() {
+  if (relPolling) return;       // c'e' un aggiornamento in corso: lo stato lo mostra gia'
+  lastRelCheck = Date.now();
   var btn = document.getElementById('btnRelCheck');
   btn.disabled = true; btn.textContent = 'Controllo...';
   document.getElementById('relDiff').innerHTML = '';
@@ -1374,6 +1585,8 @@ function checkReleases() {
       st.textContent = 'Errore: ' + res.error;
       return;
     }
+    setAlert('release', res.update_available ? 'warn' : null,
+      'Aggiornamento disponibile: <b>' + esc(res.current_release || 'n/d') + '</b> &rarr; <b>' + esc(res.latest_release || '') + '</b>', 'aggiornamenti');
     if (!res.update_available) {
       st.className = 'status-bar status-completed';
       st.textContent = 'Tutto aggiornato' + (res.current_release ? ' (release ' + res.current_release + ')' : '') + '.';
@@ -1421,7 +1634,7 @@ function applyReleases() {
 
 function pollReleaseStatus() {
   if (relPolling) clearInterval(relPolling);
-  relPolling = setInterval(function() {
+  var tick = function() {
     apiGet('/system/releases/status').then(function(s) {
       var st = document.getElementById('relStatus');
       var terminal = (s.state === 'completed' || s.state === 'failed' || s.state === 'rolled_back' || s.state === 'idle');
@@ -1437,6 +1650,15 @@ function pollReleaseStatus() {
           '<button class="btn btn-blue" style="flex:1" onclick="releaseDecision(\'abort\')">Ferma l\'aggiornamento</button></div>';
       }
       setProgress('relProgress', typeof s.progress === 'number' ? Math.max(s.progress, 3) : 5, kind);
+      if (!terminal) {
+        document.getElementById('relDiff').innerHTML = '';
+        document.getElementById('btnRelApply').style.display = 'none';
+        document.getElementById('btnRelCheck').disabled = true;
+      }
+      if (s.state === 'awaiting_decision') setAlert('release', 'err', 'Aggiornamento fermo: <b>serve una scelta</b> (niente spazio per il backup)', 'aggiornamenti');
+      else if (!terminal) setAlert('release', 'warn', 'Aggiornamento in corso: ' + esc(s.message || s.state), 'aggiornamenti');
+      else if (s.state === 'failed' || s.state === 'rolled_back') setAlert('release', 'err', 'Aggiornamento non riuscito: ' + esc(s.message || ''), 'aggiornamenti');
+      else setAlert('release', null);
       if (terminal) {
         clearInterval(relPolling); relPolling = null;
         document.getElementById('btnRelApply').style.display = 'none';
@@ -1445,7 +1667,9 @@ function pollReleaseStatus() {
         refreshServices();
       }
     });
-  }, 4000);
+  };
+  relPolling = setInterval(tick, 4000);
+  tick();     // subito: l'avviso giusto non aspetta il primo giro
 }
 
 function releaseDecision(choice) {

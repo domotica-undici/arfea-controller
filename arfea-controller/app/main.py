@@ -356,7 +356,16 @@ logger = logging.getLogger(__name__)
 #          sulla .19 un backup da 2,3 GB ne conteneva uno da 2 GB. Con la 1.8.4,
 #          che ne lascia uno a bordo, sarebbe raddoppiato a ogni giro. Ora sono
 #          pattern validi a qualsiasi profondita', nel tar e nella stima.
-VERSION = "1.8.5"
+#   1.8.6  Web UI riorganizzata e pensata per il telefono (Redmine #219): cinque
+#          sezioni (Stato, Impianto, Rete, Aggiornamenti, Backup) con barra in
+#          basso sul telefono e laterale sul desktop, card su due colonne, campi da
+#          44 px e font da 16 px (niente zoom su iOS), etichette sui campi che
+#          restano compilati. In Stato la card «Da guardare» raccoglie gli avvisi e
+#          porta alla sezione; un pallino sulle sezioni dice dove c'e' qualcosa.
+#          Stesse funzioni e stessi ID di prima. FIX: scegliere un backup da
+#          ripristinare deselezionava anche le opzioni di LAN e wifi; le barre di
+#          avanzamento di HABApp restavano senza colore.
+VERSION = "1.8.6"
 
 # -- Globals initialised at startup -----------------------------------------
 

@@ -748,9 +748,24 @@ cerca la rete.
 ## 7. Interfaccia web e API REST
 
 ### Web UI
-`http://<IP_CENTRALINA>:8888` — servizi (stato + restart), rete, backup/ripristino,
-sistema (hostname, uptime, versione, aggiorna controller, reboot), telefono di
-emergenza. Richiede la API key (salvata nel browser, auto-login). Solo LAN/VPN.
+`http://<IP_CENTRALINA>:8888`. Richiede la API key, che resta salvata nel browser
+(«Esci» la dimentica). Raggiungibile solo da LAN o VPN.
+
+Dal controller 1.8.6 è divisa in **cinque sezioni**. Sul telefono si scelgono dalla
+barra in basso, su uno schermo grande dalla barra a sinistra, con le card su due
+colonne. L'indirizzo ricorda la sezione (`…:8888/#rete`), quindi si può aprire
+direttamente.
+
+| Sezione | Cosa c'è |
+|---|---|
+| **Stato** | *Da guardare*: gli avvisi che chiedono attenzione (servizio fermo, aggiornamento disponibile o in corso, scelta in sospeso, backup non riuscito, rete da sistemare, HABApp senza token); un tocco porta alla sezione giusta. Poi servizi con riavvio, dati della centralina e IP, riavvio del sistema operativo. |
+| **Impianto** | HABApp (funzioni attive), configurazione dell'impianto (`params/*.yml`), porte seriali dei dispositivi, telefono di emergenza. |
+| **Rete** | LAN, wifi, access point di emergenza; installazione di NetworkManager se manca. |
+| **Aggiornamenti** | Versioni dei software (release certificate, con avanzamento e scelta *continua senza backup / ferma*), controller, pacchetto addon offline. |
+| **Backup** | Backup manuale e ripristino (elenco aggiornato all'apertura della sezione). |
+
+Un pallino sulla sezione (arancione = da guardare, rosso = problema) segnala dove
+c'è qualcosa in sospeso anche senza aprirla.
 
 ### API REST
 Base: `http://<IP>:8888/api` — documentazione interattiva su `http://<IP>:8888/docs`.
