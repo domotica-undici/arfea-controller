@@ -302,7 +302,11 @@ logger = logging.getLogger(__name__)
 #          FIX: una variabile d'ambiente non stringa in arfea.yml (es.
 #          `ZIGBEE2MQTT_SETTINGS_FRONTEND: true`) mandava il controller in crash
 #          loop al load della config: ora bool/numeri vengono convertiti.
-VERSION = "1.8.0"
+#   1.8.1  OpenHAB 5.2.1 sulle nuove installazioni (template arfea.yml). Gli
+#          impianti gia' installati ci arrivano dal canale delle release
+#          certificate (releases.json 2026.09.01), non da questo tarball: il
+#          loro arfea.yml e' protetto dal self-update.
+VERSION = "1.8.1"
 
 # -- Globals initialised at startup -----------------------------------------
 
