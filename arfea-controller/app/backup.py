@@ -3,6 +3,7 @@ from __future__ import annotations
 import fnmatch
 import logging
 import os
+import shutil
 import tarfile
 import time
 from datetime import datetime
@@ -35,10 +36,28 @@ UPLOAD_MAX_SECONDS = 1800
 # upload su WebDAV — che su una linea domestica si misura in decine di minuti e ha
 # un tetto di mezz'ora, oltre il quale il backup fallisce. Al ripristino ci pensa
 # il controller a riportarlo a bordo (vedi app/addons.py).
+# Stesso discorso per le sue copie: Karaf lo estrae in userdata/kar e in
+# userdata/tmp/kar (~600 MB ciascuna). Con quelle dentro il backup era passato da
+# ~460 MB a 2,15 GB e aveva riempito una eMMC da 16 GB (Redmine #202). cache e tmp
+# di userdata li svuota comunque il container a ogni avvio (cont-init.d).
+# Un pattern che combacia con una cartella la esclude con tutto il contenuto;
+# "…/*" lascia la cartella (vuota) e toglie cio' che c'e' dentro.
 _EXCLUDE_GLOBS = (
-    "openhab/addons/openhab-addons-*.kar",
-    "openhab/addons/.openhab-addons-*.kar.part",
+    "openhab/addons/*.kar",
+    "openhab/addons/.*.kar.part",
+    "openhab/userdata/kar/*",
+    "openhab/userdata/tmp/*",
+    "openhab/userdata/cache/*",
 )
+
+_BACKUP_GLOB = "arfea-backup-*.tar.gz"
+_MB = 1024 * 1024
+# Margine oltre la stima dell'archivio: il resto dell'impianto deve poter scrivere.
+_SPACE_MARGIN = 200 * _MB
+
+
+class NoSpaceError(RuntimeError):
+    """Spazio insufficiente per il backup anche dopo aver tolto quelli vecchi."""
 
 
 class _DeadlineFile:
@@ -79,12 +98,16 @@ class _DeadlineFile:
             yield chunk
 
 
+def _excluded(rel: str) -> bool:
+    return any(fnmatch.fnmatch(rel, pattern) for pattern in _EXCLUDE_GLOBS)
+
+
 def _skip_excluded(info: tarfile.TarInfo) -> tarfile.TarInfo | None:
     """Filtro di tar.add: scarta le voci che combaciano con _EXCLUDE_GLOBS.
 
     ``info.name`` e' il percorso relativo alla radice dell'archivio, es.
     ``openhab/addons/openhab-addons-5.2.0.kar``."""
-    if any(fnmatch.fnmatch(info.name, pattern) for pattern in _EXCLUDE_GLOBS):
+    if _excluded(info.name):
         logger.info("Backup: escluso %s", info.name)
         return None
     return info
@@ -97,6 +120,67 @@ class BackupManager:
         self.status = BackupStatus()
 
     # ------------------------------------------------------------------
+    # Spazio su disco (Redmine #201)
+    # ------------------------------------------------------------------
+
+    def _estimate_size(self, data_path: Path, exclude_set: set[str]) -> int:
+        """Byte che finiscono nell'archivio, NON compressi: per eccesso. Meglio
+        chiedere un po' di spazio in piu' che riempire il disco a meta' archivio."""
+        total = 0
+        for item in data_path.iterdir():
+            if any(str(item).startswith(ex) for ex in exclude_set):
+                continue
+            if item.is_file():
+                total += item.lstat().st_size
+                continue
+            for root, dirs, files in os.walk(item):
+                rel_root = os.path.relpath(root, data_path)
+                dirs[:] = [d for d in dirs if not _excluded(os.path.join(rel_root, d))]
+                for name in files:
+                    if _excluded(os.path.join(rel_root, name)):
+                        continue
+                    try:
+                        total += os.lstat(os.path.join(root, name)).st_size
+                    except OSError:
+                        pass
+        return total
+
+    @staticmethod
+    def _local_backups(backup_dir: Path) -> list[Path]:
+        """Backup locali, dal piu' vecchio al piu' nuovo."""
+        return sorted(backup_dir.glob(_BACKUP_GLOB), key=lambda f: f.stat().st_mtime)
+
+    def _make_room(self, backup_dir: Path, needed: int) -> int:
+        """Toglie i backup locali vecchi finche' c'e' spazio per quello nuovo.
+        Ritorna lo spazio libero; solleva NoSpaceError se non basta comunque."""
+        free = shutil.disk_usage(backup_dir).free
+        for old in self._local_backups(backup_dir):
+            if free >= needed:
+                break
+            size = old.stat().st_size
+            old.unlink()
+            free += size
+            logger.warning("Backup: tolto %s (%.0f MB) per fare spazio al nuovo", old.name, size / _MB)
+        if free < needed:
+            raise NoSpaceError(
+                f"Spazio insufficiente per il backup: servono circa {needed / _MB:.0f} MB, "
+                f"liberi {free / _MB:.0f} MB anche dopo aver tolto i backup vecchi"
+            )
+        return free
+
+    def _keep_only(self, backup_dir: Path, keep: Path) -> None:
+        """Sulla centralina resta solo l'ultimo backup completo: lo storico sta su
+        WebDAV, e su una eMMC da 16 GB ogni archivio in piu' toglie spazio a
+        immagini e aggiornamenti."""
+        for old in self._local_backups(backup_dir):
+            if old != keep:
+                try:
+                    old.unlink()
+                    logger.info("Backup: tolto il backup locale precedente %s", old.name)
+                except OSError as exc:
+                    logger.warning("Backup: non riesco a togliere %s: %s", old.name, exc)
+
+    # ------------------------------------------------------------------
     # Backup
     # ------------------------------------------------------------------
 
@@ -106,13 +190,33 @@ class BackupManager:
 
         self.status = BackupStatus(
             state=BackupState.STOPPING_CONTAINERS,
-            message="Arresto container in corso...",
+            message="Controllo dello spazio su disco...",
             started_at=datetime.now(),
         )
 
         data_path = Path(self.docker.cfg.config.controller.data_path)
         backup_dir = data_path / "arfea-controller" / "backups"
         backup_dir.mkdir(parents=True, exist_ok=True)
+
+        exclude_set = set(self.config.exclude_paths)
+        exclude_set.add(str(backup_dir))
+
+        # Spazio PRIMA di fermare qualunque cosa: senza, l'impianto si spegneva per
+        # riempire il disco a meta' archivio (Redmine #201).
+        try:
+            needed = self._estimate_size(data_path, exclude_set) + _SPACE_MARGIN
+            self._make_room(backup_dir, needed)
+        except NoSpaceError as exc:
+            logger.error("%s", exc)
+            self.status = BackupStatus(
+                state=BackupState.FAILED,
+                message=str(exc),
+                no_space=True,
+                started_at=self.status.started_at,
+                completed_at=datetime.now(),
+            )
+            return self.status
+        self.status.message = "Arresto container in corso..."
 
         # Read UUID for filename
         uuid_file = data_path / "openhab" / "userdata" / "uuid"
@@ -134,9 +238,6 @@ class BackupManager:
             self.status.message = "Creazione archivio backup..."
             logger.info("Creating backup archive: %s", archive_path)
 
-            exclude_set = set(self.config.exclude_paths)
-            exclude_set.add(str(backup_dir))
-
             with tarfile.open(str(archive_path), "w:gz") as tar:
                 for item in data_path.iterdir():
                     item_path = str(item)
@@ -157,22 +258,50 @@ class BackupManager:
             self._restart_services(previously_running)
             restarted = True
 
-            # Upload to WebDAV
+            # L'archivio c'e' ed e' completo: da qui e' un punto di ripristino, e sulla
+            # centralina resta solo lui.
+            self._keep_only(backup_dir, archive_path)
+
+            # Upload to WebDAV. Un caricamento fallito non annulla l'archivio locale
+            # (Redmine #204): il backup lo dice, ma resta utilizzabile.
+            upload_error = ""
             if self.config.webdav_url:
                 self.status.state = BackupState.UPLOADING
                 self.status.message = f"Upload in corso ({size_mb:.0f} MB)..."
-                self._upload_webdav(archive_path, filename)
+                try:
+                    self._upload_webdav(archive_path, filename)
+                except Exception as exc:
+                    upload_error = str(exc).splitlines()[0]
+                    logger.error("Upload WebDAV fallito: %s", exc)
 
-            self.status = BackupStatus(
-                state=BackupState.COMPLETED,
-                message=f"Backup completato: {filename}",
-                started_at=self.status.started_at,
-                completed_at=datetime.now(),
-            )
-            logger.info("Backup completed successfully")
+            if upload_error:
+                self.status = BackupStatus(
+                    state=BackupState.FAILED,
+                    message=(f"Backup salvato sulla centralina ({filename}, {size_mb:.0f} MB), "
+                             f"ma il caricamento su WebDAV non è riuscito: {upload_error}"),
+                    archive=str(archive_path),
+                    started_at=self.status.started_at,
+                    completed_at=datetime.now(),
+                )
+            else:
+                self.status = BackupStatus(
+                    state=BackupState.COMPLETED,
+                    message=f"Backup completato: {filename}",
+                    archive=str(archive_path),
+                    started_at=self.status.started_at,
+                    completed_at=datetime.now(),
+                )
+                logger.info("Backup completed successfully")
 
         except Exception as exc:
             logger.error("Backup failed: %s", exc)
+            # Un archivio a meta' (disco pieno, errore di lettura) e' solo spazio perso.
+            if archive_path.exists() and self.status.state == BackupState.CREATING_ARCHIVE:
+                try:
+                    archive_path.unlink()
+                    logger.info("Backup: tolto l'archivio incompleto %s", filename)
+                except OSError:
+                    pass
             self.status = BackupStatus(
                 state=BackupState.FAILED,
                 message=f"Backup fallito: {exc}",

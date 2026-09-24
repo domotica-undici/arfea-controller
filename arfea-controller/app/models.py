@@ -3,7 +3,7 @@ from __future__ import annotations
 import ipaddress
 from datetime import datetime
 from enum import Enum
-from typing import Optional
+from typing import Literal, Optional
 
 from pydantic import BaseModel, Field, computed_field, field_validator
 
@@ -241,6 +241,17 @@ class WifiConnectRequest(BaseModel):
     hidden: bool = False
 
 
+class ReleaseDecisionRequest(BaseModel):
+    """Risposta alla domanda «continuare senza backup?» di un aggiornamento."""
+    choice: Literal["continue", "abort"]
+
+
+class NmInstallRequest(BaseModel):
+    """Passaggio a NetworkManager dalla Web UI: subito (con rollback automatico
+    se il gateway non risponde) o al prossimo riavvio."""
+    mode: Literal["now", "boot"] = "now"
+
+
 class HABAppFunctionInfo(BaseModel):
     """Una funzione HABApp attivabile, come la mostra la Web UI."""
     name: str                    # chiave tecnica (thermo/irrigation/loads)
@@ -331,6 +342,12 @@ class BackupStatus(BaseModel):
     message: str = ""
     started_at: Optional[datetime] = None
     completed_at: Optional[datetime] = None
+    # Archivio locale creato, anche se poi il caricamento su WebDAV non e' riuscito:
+    # e' il punto di ripristino che serve a un aggiornamento di versione (Redmine #204).
+    archive: str = ""
+    # Non e' partito per mancanza di spazio, anche dopo aver tolto i backup locali
+    # vecchi: l'aggiornamento di versione chiede all'utente che fare (Redmine #201).
+    no_space: bool = False
 
 
 class NetworkInfo(BaseModel):
@@ -349,6 +366,9 @@ class ReleaseUpdateState(str, Enum):
     # gia' in corso invece di avviarne un altro in parallelo.
     STARTING = "starting"
     BACKUP = "backup"
+    # Niente spazio per il backup: si aspetta che l'utente scelga se continuare
+    # senza backup o fermarsi (Redmine #201).
+    AWAITING_DECISION = "awaiting_decision"
     MIGRATING_PRE = "migrating_pre"
     PULLING = "pulling"
     RECREATING = "recreating"
@@ -362,7 +382,7 @@ class ReleaseUpdateState(str, Enum):
 # Avanzamento percentuale per fase. Una tabella sola: la usano la Web UI del
 # controller e il widget di OpenHAB (Redmine #197).
 _RELEASE_PROGRESS = {
-    "idle": 0, "starting": 3, "backup": 10, "migrating_pre": 25, "pulling": 45,
+    "idle": 0, "starting": 3, "backup": 10, "awaiting_decision": 10, "migrating_pre": 25, "pulling": 45,
     "recreating": 70, "waiting_healthy": 80, "migrating_post": 90,
     "completed": 100, "failed": 100, "rolled_back": 100,
 }

@@ -3,6 +3,7 @@ from __future__ import annotations
 import fcntl
 import logging
 import os
+import re
 from pathlib import Path
 
 import yaml
@@ -13,6 +14,18 @@ from .models import (
 )
 
 logger = logging.getLogger(__name__)
+
+# Link di condivisione Nextcloud (https://host[/sub]/[index.php/]s/<token>): e' la
+# pagina web della condivisione, non l'indirizzo WebDAV, e un PUT li' risponde 401.
+# L'indirizzo per caricare in una condivisione pubblica e'
+# https://host[/sub]/public.php/dav/files/<token> (Redmine #203).
+_NC_SHARE_LINK = re.compile(r"^(https?://[^?#]+?)/(?:index\.php/)?s/([A-Za-z0-9]+)/?$")
+
+
+def webdav_upload_url(url: str) -> str:
+    """URL WebDAV da usare per un link di condivisione Nextcloud; gli altri restano."""
+    m = _NC_SHARE_LINK.match(url.strip())
+    return f"{m.group(1)}/public.php/dav/files/{m.group(2)}" if m else url
 
 
 class ConfigManager:
@@ -161,7 +174,8 @@ class ConfigManager:
         1.8.1, svuotava update_url di proposito.
         - update_url vuoto → DEFAULT_UPDATE_URL (Redmine #192): senza, la
           centralina non riceve più l'OTA e nessuno se ne accorge;
-        - releases_url vuoto → dalla stessa cartella di update_url (stesso host).
+        - releases_url vuoto → dalla stessa cartella di update_url (stesso host);
+        - webdav_url link di condivisione Nextcloud → indirizzo WebDAV (#203).
         Ritorna True se ha modificato e salvato la config."""
         ctrl = self.config.controller
         changed = False
@@ -173,6 +187,15 @@ class ConfigManager:
             base = ctrl.update_url.rsplit("/", 1)[0]
             ctrl.releases_url = f"{base}/releases.json"
             logger.info("Auto-migrazione arfea.yml: releases_url impostato a %s", ctrl.releases_url)
+            changed = True
+        # WebDAV: il default degli installer era il link di condivisione, su cui il
+        # caricamento risponde 401: nessun backup arrivava su WebDAV (Redmine #203).
+        backup = self.config.backup
+        fixed = webdav_upload_url(backup.webdav_url or "")
+        if fixed != (backup.webdav_url or ""):
+            logger.warning("Auto-migrazione arfea.yml: webdav_url era un link di condivisione, "
+                           "ora %s", fixed)
+            backup.webdav_url = fixed
             changed = True
         if changed:
             self._save()

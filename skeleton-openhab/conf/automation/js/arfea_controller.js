@@ -18,6 +18,9 @@ function httpGet(path) {
 function httpPost(path) {
   return HTTP.sendHttpPostRequest(BASE_URL + path, 'application/json', '', TIMEOUT);
 }
+function httpPostJson(path, obj) {
+  return HTTP.sendHttpPostRequest(BASE_URL + path, 'application/json', JSON.stringify(obj), TIMEOUT);
+}
 function httpPut(path) {
   return HTTP.sendHttpPutRequest(BASE_URL + path, 'application/json', '', TIMEOUT);
 }
@@ -138,6 +141,9 @@ rules.JSRule({
           break;
         case 'apply_update':
           doApplyUpdate();
+          break;
+        case 'update_decision':
+          doUpdateDecision(target);
           break;
         case 'refresh':
           refreshAll();
@@ -491,8 +497,20 @@ function doApplyUpdate() {
 }
 
 // Fasi in cui l'aggiornamento e' in corso, e fasi in cui e' finito.
-var UPDATE_ACTIVE = ['starting', 'backup', 'migrating_pre', 'pulling', 'recreating',
-                     'waiting_healthy', 'migrating_post'];
+var UPDATE_ACTIVE = ['starting', 'backup', 'awaiting_decision', 'migrating_pre', 'pulling',
+                     'recreating', 'waiting_healthy', 'migrating_post'];
+
+// Niente spazio per il backup: il controller aspetta una scelta (Redmine #201).
+// target = 'continue' (aggiorna senza backup) o 'abort' (fermati).
+function doUpdateDecision(choice) {
+  if (choice !== 'continue' && choice !== 'abort') {
+    logger.warn('ARFEA update_decision: scelta non valida "{}"', choice);
+    return;
+  }
+  var response = httpPostJson('/system/releases/decision', { choice: choice });
+  logger.warn('ARFEA update_decision ({}): {}', choice, response);
+  refreshReleaseStatus();
+}
 var UPDATE_DONE = ['completed', 'failed', 'rolled_back'];
 
 function updateActive() {

@@ -3,6 +3,7 @@ from __future__ import annotations
 import logging
 import os
 import subprocess
+import threading
 from datetime import datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, Optional
@@ -60,6 +61,39 @@ class ReleaseManager:
         self.backup = backup_manager
         self.habapp = habapp_manager
         self.status = ReleaseUpdateStatus()
+        # Risposta alla domanda «continuare senza backup?» (Redmine #201)
+        self._decision: Optional[str] = None
+        self._decision_event = threading.Event()
+
+    # ------------------------------------------------------------------
+    # Decisione dell'utente quando manca lo spazio per il backup
+    # ------------------------------------------------------------------
+
+    DECISION_TIMEOUT = 1800     # senza risposta entro mezz'ora ci si ferma
+
+    def _ask_continue_without_backup(self, reason: str) -> bool:
+        """Mette l'aggiornamento in attesa di una scelta (widget o Web UI).
+        True = continuare senza backup, a rischio dell'utente."""
+        self._decision = None
+        self._decision_event.clear()
+        self.status.state = ReleaseUpdateState.AWAITING_DECISION
+        self.status.message = (f"{reason}. Continuare l'aggiornamento senza backup, "
+                               f"a tuo rischio, o fermarlo?")
+        logger.warning("Aggiornamento in attesa di una scelta: %s", reason)
+        if not self._decision_event.wait(self.DECISION_TIMEOUT):
+            logger.warning("Nessuna scelta entro %ss: aggiornamento fermato", self.DECISION_TIMEOUT)
+            return False
+        return self._decision == "continue"
+
+    def decide(self, choice: str) -> tuple[bool, str]:
+        """Risposta dell'utente: 'continue' (senza backup) o 'abort'."""
+        if self.status.state != ReleaseUpdateState.AWAITING_DECISION:
+            return False, "Nessuna scelta in attesa"
+        self._decision = choice
+        self._decision_event.set()
+        if choice == "continue":
+            return True, "L'aggiornamento continua senza backup"
+        return True, "Aggiornamento fermato"
 
     # ------------------------------------------------------------------
     # Manifest
@@ -276,7 +310,7 @@ class ReleaseManager:
 
     def mark_starting(self) -> bool:
         """Prenota l'aggiornamento prima di rispondere alla richiesta. False se ce
-        n'e' gia' uno in corso (anche solo prenotato)."""
+        n'e' gia' uno in corso (anche solo prenotato o in attesa di una scelta)."""
         if self.status.state not in (
             ReleaseUpdateState.IDLE,
             ReleaseUpdateState.COMPLETED,
@@ -366,9 +400,28 @@ class ReleaseManager:
         self.status.state = ReleaseUpdateState.BACKUP
         self.status.message = "Backup pre-aggiornamento in corso..."
         backup_status = self.backup.run_backup()
+        backup_note = ""
         if backup_status.state.value == "failed":
-            self._fail(f"Backup pre-aggiornamento fallito: {backup_status.message}")
-            return self.status
+            if backup_status.no_space:
+                # Niente spazio nemmeno togliendo i backup vecchi: decide l'utente
+                # (Redmine #201).
+                if not self._ask_continue_without_backup(backup_status.message):
+                    self._fail(
+                        "Aggiornamento fermato: non c'era spazio per il backup. Libera "
+                        "spazio sulla centralina e riprova."
+                    )
+                    return self.status
+                backup_note = " (senza backup: scelto per mancanza di spazio)"
+                logger.warning("Aggiornamento senza backup, su scelta dell'utente")
+            elif backup_status.archive:
+                # Archivio locale integro, fallito solo il caricamento su WebDAV: il
+                # punto di ripristino c'e', l'aggiornamento non si ferma (#204).
+                backup_note = " (backup salvato sulla centralina, non caricato su WebDAV)"
+                logger.warning("Backup solo locale: %s", backup_status.message)
+            else:
+                self._fail(f"Backup pre-aggiornamento fallito: {backup_status.message}")
+                return self.status
+        self.status.state = ReleaseUpdateState.BACKUP
 
         prev_images = {svc: self.cfg.config.services[svc].image for svc in pending}
         prev_code = installed_code       # versione codice pre-apply (per rollback)
@@ -462,7 +515,7 @@ class ReleaseManager:
         if images_ok and code_ok:
             self.cfg.set_release(latest)
             self.status.current_release = latest
-            done_msg = f"Aggiornamento completato: sistema alla versione {latest}"
+            done_msg = f"Aggiornamento completato: sistema alla versione {latest}{backup_note}"
         else:
             done_msg = (
                 "Aggiornamento parziale completato. Alcuni software non sono stati "

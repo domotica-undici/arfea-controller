@@ -254,12 +254,12 @@ slots:
           - component: oh-list-item
             config:
               header: "=(items.arfea_update_detail.state != 'NULL' && items.arfea_update_detail.state != 'UNDEF') ? items.arfea_update_detail.state : ''"
-              title: "=items.arfea_update_state.state == 'completed' ? 'Aggiornamento completato' : (items.arfea_update_state.state == 'failed' || items.arfea_update_state.state == 'rolled_back') ? 'Aggiornamento non riuscito' : 'Aggiornamento in corso'"
+              title: "=items.arfea_update_state.state == 'awaiting_decision' ? 'Serve una scelta' : items.arfea_update_state.state == 'completed' ? 'Aggiornamento completato' : (items.arfea_update_state.state == 'failed' || items.arfea_update_state.state == 'rolled_back') ? 'Aggiornamento non riuscito' : 'Aggiornamento in corso'"
               footer: "=items.arfea_update_progress.state"
               badge: "=((items.arfea_update_percent.state != 'NULL' && items.arfea_update_percent.state != 'UNDEF') ? items.arfea_update_percent.state : '0') + ' %'"
-              badgeColor: "=items.arfea_update_state.state == 'completed' ? 'green' : (items.arfea_update_state.state == 'failed' || items.arfea_update_state.state == 'rolled_back') ? 'red' : 'blue'"
-              icon: "=items.arfea_update_state.state == 'completed' ? 'f7:checkmark_circle_fill' : (items.arfea_update_state.state == 'failed' || items.arfea_update_state.state == 'rolled_back') ? 'f7:xmark_circle_fill' : 'f7:arrow_2_circlepath'"
-              iconColor: "=items.arfea_update_state.state == 'completed' ? 'green' : (items.arfea_update_state.state == 'failed' || items.arfea_update_state.state == 'rolled_back') ? 'red' : 'blue'"
+              badgeColor: "=items.arfea_update_state.state == 'awaiting_decision' ? 'orange' : items.arfea_update_state.state == 'completed' ? 'green' : (items.arfea_update_state.state == 'failed' || items.arfea_update_state.state == 'rolled_back') ? 'red' : 'blue'"
+              icon: "=items.arfea_update_state.state == 'awaiting_decision' ? 'f7:exclamationmark_triangle_fill' : items.arfea_update_state.state == 'completed' ? 'f7:checkmark_circle_fill' : (items.arfea_update_state.state == 'failed' || items.arfea_update_state.state == 'rolled_back') ? 'f7:xmark_circle_fill' : 'f7:arrow_2_circlepath'"
+              iconColor: "=items.arfea_update_state.state == 'awaiting_decision' ? 'orange' : items.arfea_update_state.state == 'completed' ? 'green' : (items.arfea_update_state.state == 'failed' || items.arfea_update_state.state == 'rolled_back') ? 'red' : 'blue'"
               visible: "=items.arfea_update_state.state != 'idle' && items.arfea_update_state.state != 'NULL' && items.arfea_update_state.state != 'UNDEF' && items.arfea_update_state.state != ''"
           - component: f7-list-item
             config:
@@ -270,10 +270,47 @@ slots:
                   config:
                     # * 1: allo stato dell'item arriva una stringa, la barra vuole un numero
                     progress: "=(items.arfea_update_percent.state != 'NULL' && items.arfea_update_percent.state != 'UNDEF') ? items.arfea_update_percent.state * 1 : 0"
-                    color: "=items.arfea_update_state.state == 'completed' ? 'green' : (items.arfea_update_state.state == 'failed' || items.arfea_update_state.state == 'rolled_back') ? 'red' : 'blue'"
+                    color: "=items.arfea_update_state.state == 'awaiting_decision' ? 'orange' : items.arfea_update_state.state == 'completed' ? 'green' : (items.arfea_update_state.state == 'failed' || items.arfea_update_state.state == 'rolled_back') ? 'red' : 'blue'"
                     style:
                       width: 100%
                       height: 6px
+          # Niente spazio per il backup (Redmine #201): il controller aspetta una
+          # scelta. Visibili solo in quello stato; senza risposta entro 30 minuti
+          # l'aggiornamento si ferma da solo.
+          - component: oh-button
+            config:
+              action: rule
+              actionRule: arfea_controller
+              actionRuleContext:
+                action: update_decision
+                target: continue
+              actionConfirmation: "Continuare l'aggiornamento SENZA backup? Se qualcosa va storto non ci sarà un punto di ripristino recente. A tuo rischio."
+              large: true
+              fill: true
+              color: red
+              style:
+                height: auto
+                margin-top: 8px
+              text: Continua senza backup
+              iconF7: exclamationmark_triangle
+              iconSize: 20
+              visible: "=items.arfea_update_state.state == 'awaiting_decision'"
+          - component: oh-button
+            config:
+              action: rule
+              actionRule: arfea_controller
+              actionRuleContext:
+                action: update_decision
+                target: abort
+              large: true
+              outline: true
+              style:
+                height: auto
+                margin-top: 8px
+              text: Ferma l'aggiornamento
+              iconF7: stop_circle
+              iconSize: 20
+              visible: "=items.arfea_update_state.state == 'awaiting_decision'"
           - component: oh-button
             config:
               action: rule

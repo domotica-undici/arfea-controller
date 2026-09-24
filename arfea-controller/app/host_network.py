@@ -46,6 +46,13 @@ CONFIRM_SECONDS = 120        # tempo per confermare una modifica alla LAN
 TICK_SECONDS = 10            # passo del watchdog
 MANUAL_AP_HOLD = 600         # un AP acceso a mano resta su almeno 10 minuti
 
+# Passaggio a NetworkManager lanciato dalla Web UI (Redmine #199): lo stesso
+# script che si lancerebbe da SSH, in un'unita' systemd transitoria dell'host.
+NM_SCRIPT_REL = "arfea-controller/script/arfea-network-nm.sh"   # sotto data_path
+NM_INSTALL_UNIT = "arfea-network-install"
+NM_INSTALL_RC = "/run/arfea-network-install.rc"                  # codice d'uscita
+NM_LOG = "/var/log/arfea-network.log"                           # lo scrive lo script
+
 _NM = "org.freedesktop.NetworkManager"
 _NM_PATH = "/org/freedesktop/NetworkManager"
 
@@ -131,8 +138,9 @@ def nm_available() -> tuple[bool, str]:
     if res.returncode == 0 and res.stdout.strip() == "running":
         return True, ""
     if res.returncode in (126, 127) or "No such file" in (res.stderr or ""):
-        return False, ("NetworkManager non installato sull'host: eseguire "
-                       "sudo /opt/docker_store/arfea-controller/script/arfea-network-nm.sh")
+        return False, ("NetworkManager non è installato su questa centralina: si installa "
+                       "da qui sotto, oppure con sudo "
+                       "/opt/docker_store/arfea-controller/script/arfea-network-nm.sh")
     return False, f"NetworkManager non attivo sull'host ({_err(res)})"
 
 
@@ -326,6 +334,9 @@ class HostNetworkManager:
         self._scan: list[dict] = []
         self._scan_at = 0.0
         self.op = {"state": "idle", "message": ""}   # ultima operazione wifi/LAN
+        # Passaggio a NetworkManager avviato dalla Web UI: modo e punto del log
+        # da cui leggere (le righe prima sono di passaggi precedenti).
+        self._nm_install: Optional[dict] = None
 
     # -- configurazione AP ---------------------------------------------------
 
@@ -408,10 +419,82 @@ class HostNetworkManager:
 
     # -- stato ----------------------------------------------------------------
 
+    # -- passaggio a NetworkManager dalla Web UI (Redmine #199) ----------------
+
+    def _nm_script(self) -> str:
+        return os.path.join(self._cfgm.config.controller.data_path, NM_SCRIPT_REL)
+
+    def _nm_install_running(self) -> bool:
+        res = _host(["systemctl", "is-active", NM_INSTALL_UNIT], timeout=10)
+        return res.stdout.strip() in ("active", "activating", "reloading")
+
+    def nm_install(self, boot: bool) -> tuple[bool, str]:
+        """Lancia arfea-network-nm.sh sull'host, come farebbe chi entra in SSH.
+
+        Gira in un'unita' systemd transitoria, fuori dal container: la rete si
+        riconfigura sotto i piedi della pagina che l'ha chiesto, e il lavoro (col
+        suo rollback automatico se il gateway non risponde) deve andare avanti
+        comunque. Lo script scrive in NM_LOG; il codice d'uscita finisce in
+        NM_INSTALL_RC. ``boot``: prepara tutto e attiva al prossimo riavvio."""
+        with self._lock:
+            if self._nm_install_running():
+                return False, "Il passaggio a NetworkManager è già in corso"
+            script = self._nm_script()
+            if _host(["test", "-f", script], timeout=10).returncode != 0:
+                return False, f"Script non trovato sulla centralina: {script}"
+            size = _host(["stat", "-c", "%s", NM_LOG], timeout=10)
+            offset = int(size.stdout.strip()) if size.returncode == 0 and size.stdout.strip().isdigit() else 0
+            _host(["systemctl", "reset-failed", NM_INSTALL_UNIT], timeout=10)
+            _host(["rm", "-f", NM_INSTALL_RC], timeout=10)   # l'esito di un passaggio precedente
+            args = f"{script} --boot" if boot else script
+            res = _host([
+                "systemd-run", f"--unit={NM_INSTALL_UNIT}", "--collect", "--quiet",
+                "/bin/bash", "-c",
+                f"/bin/bash {args}; echo $? > {NM_INSTALL_RC}",
+            ], timeout=20)
+            if res.returncode != 0:
+                return False, f"Avvio non riuscito: {_err(res)}"
+            self._nm_install = {"boot": boot, "offset": offset, "started_at": time.time()}
+            logger.warning("Passaggio a NetworkManager avviato dalla Web UI (%s)",
+                           "al prossimo riavvio" if boot else "subito, con rollback automatico")
+            return True, ("Installazione avviata: la pagina segue i passi qui sotto. "
+                          "Durante il passaggio può non rispondere per qualche secondo.")
+
+    def nm_install_status(self) -> dict:
+        """Avanzamento del passaggio avviato dalla Web UI: idle, running, ok o failed,
+        con i passi dello script e, mentre gira, l'ultima riga di apt."""
+        info = self._nm_install
+        if info is None:
+            return {"state": "idle"}
+        running = self._nm_install_running()
+        rc_res = _host(["cat", NM_INSTALL_RC], timeout=10)
+        rc = rc_res.stdout.strip() if rc_res.returncode == 0 else ""
+        log = _host(["tail", "-c", f"+{info['offset'] + 1}", NM_LOG], timeout=10)
+        lines = [ln for ln in (log.stdout or "").splitlines() if ln.strip()]
+        steps = [ln.split("[arfea-network] ", 1)[1] for ln in lines if "[arfea-network] " in ln][-15:]
+        activity = lines[-1] if lines and "[arfea-network] " not in lines[-1] else ""
+        if running:
+            state = "running"
+        elif rc:
+            state = "ok" if rc == "0" else "failed"
+        else:
+            # Unita' finita senza esito (uccisa, o /run svuotato): non resta "in corso".
+            state = "failed"
+            steps.append("Il passaggio si è interrotto senza esito: controlla la rete e "
+                         f"'journalctl -u {NM_INSTALL_UNIT}' sulla centralina")
+        return {
+            "state": state,
+            "boot": info["boot"],
+            "steps": steps,
+            "activity": activity[-160:],
+            "reboot_needed": state == "ok" and info["boot"],
+            "elapsed": int(time.time() - info["started_at"]),
+        }
+
     def status(self) -> dict:
         ok, msg = nm_available()
         if not ok:
-            return {"available": False, "message": msg}
+            return {"available": False, "message": msg, "install": self.nm_install_status()}
         lan = self.lan_status()
         wifi = self.wifi_status()
         cps = _checkpoints()
@@ -433,6 +516,7 @@ class HostNetworkManager:
             "watchdog": {"mode": self.mode, "note": self.note},
             "pending_lan_change": cps[0] if cps else None,
             "operation": self.op,
+            "install": self.nm_install_status(),
         }
 
     def lan_status(self) -> dict:

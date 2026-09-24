@@ -48,6 +48,8 @@ from .models import (
     ServiceStatus,
     SystemInfo,
     WifiConnectRequest,
+    NmInstallRequest,
+    ReleaseDecisionRequest,
 )
 
 logger = logging.getLogger(__name__)
@@ -328,7 +330,27 @@ logger = logging.getLogger(__name__)
 #          resta piu' ferma fino a 40 minuti in un ciclo di sleep (bloccava le
 #          altre regole del file), e gli interruttori dei software spenti
 #          dall'utente non tornano ON da soli dopo un minuto.
-VERSION = "1.8.3"
+#   1.8.4  Backup e spazio su disco (Redmine #201-#204), dopo i blocchi della .12 e
+#          della .19 (eMMC da 16 GB piena al 100%):
+#          - il backup controlla lo spazio PRIMA di fermare l'impianto: se non
+#            basta toglie i backup locali vecchi; sulla centralina ne resta solo
+#            l'ultimo (lo storico sta su WebDAV);
+#          - fuori dal backup anche le copie del pacchetto addon che Karaf estrae
+#            (userdata/kar, userdata/tmp/kar) e la cache di OpenHAB: 2,15 GB -> meno
+#            di un terzo;
+#          - un caricamento WebDAV fallito non annulla l'archivio locale e non
+#            blocca l'aggiornamento di versione; un archivio a meta' si cancella;
+#          - senza spazio per il backup l'aggiornamento chiede (widget e Web UI):
+#            continuare senza backup o fermarsi (stato awaiting_decision);
+#          - webdav_url: un link di condivisione Nextcloud (/s/<token>, il default
+#            degli installer, su cui il caricamento dava 401 ovunque) diventa da
+#            solo l'indirizzo WebDAV public.php/dav/files/<token>;
+#          - dopo ogni rebuild del self-update si tolgono immagini e cache orfane.
+#          NetworkManager si installa dalla Web UI (#199): la scheda Rete lancia
+#          arfea-network-nm.sh sull'host (subito o al prossimo riavvio) e ne
+#          mostra i passi. Addon offline (#205): oltre a seguire la versione di
+#          OpenHAB, ogni ora si riscarica il pacchetto se il download era fallito.
+VERSION = "1.8.4"
 
 # -- Globals initialised at startup -----------------------------------------
 
@@ -428,6 +450,8 @@ async def lifespan(app: FastAPI):
     # linea — puo' accorgersi che il pacchetto manca e riprovare.
     ok, msg = addons_kar_manager(config_manager).ensure()
     logger.info("Addon OpenHAB: %s", msg)
+    # ...e poi ogni ora, se il kar della versione in uso manca (download fallito).
+    addons_kar_manager(config_manager).start_watch()
 
     # Lavori di avvio che parlano con OpenHAB: in un thread per non ritardare lo
     # startup, ma in sequenza fra loro — aprono entrambi la console Karaf, che
@@ -875,6 +899,15 @@ def network_status():
     return host_network.status()
 
 
+@app.post("/api/network/nm/install", response_model=OperationResponse, dependencies=[Depends(verify_api_key)])
+def network_nm_install(body: NmInstallRequest):
+    """Installa NetworkManager e ci passa la LAN, come arfea-network-nm.sh da SSH
+    (Redmine #199). Gira sull'host in un'unità transitoria; l'avanzamento sta in
+    /api/network/status → install."""
+    ok, msg = host_network.nm_install(boot=body.mode == "boot")
+    return OperationResponse(success=ok, message=msg)
+
+
 @app.get("/api/network/wifi/scan", dependencies=[Depends(verify_api_key)])
 def network_wifi_scan(force: bool = False):
     """Reti wifi visibili. Con l'AP acceso restituisce l'ultima scansione; con
@@ -1319,7 +1352,12 @@ def _trigger_rebuild() -> None:
         "bash", "-c",
         "sleep 2 && cd /opt/docker_store/arfea-controller "
         "&& docker compose up -d --build --force-recreate 2>&1 "
-        "| logger -t arfea-update",
+        "| logger -t arfea-update; "
+        # Ogni rebuild lascia l'immagine vecchia e la cache di build: sulla .19
+        # erano ~2,4 GB su una eMMC da 16 GB piena al 100%. Solo roba orfana
+        # (dangling): le immagini in uso e la cache ancora valida restano.
+        "docker image prune -f 2>&1 | logger -t arfea-update; "
+        "docker builder prune -f 2>&1 | logger -t arfea-update",
     ])
 
 
@@ -1538,6 +1576,14 @@ async def releases_apply(background_tasks: BackgroundTasks, services: str = ""):
     if selected:
         msg += f" (servizi: {', '.join(selected)})"
     return OperationResponse(success=True, message=msg)
+
+
+@app.post("/api/system/releases/decision", response_model=OperationResponse, dependencies=[Depends(verify_api_key)])
+def releases_decision(body: ReleaseDecisionRequest):
+    """Risposta a un aggiornamento in attesa (stato awaiting_decision): non c'è
+    spazio per il backup, «continue» prosegue senza, «abort» si ferma (Redmine #201)."""
+    ok, msg = release_manager.decide(body.choice)
+    return OperationResponse(success=ok, message=msg)
 
 
 @app.post("/api/system/import-ui", response_model=OperationResponse, dependencies=[Depends(verify_api_key)])

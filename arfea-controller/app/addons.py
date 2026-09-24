@@ -18,6 +18,7 @@ import os
 import re
 import shutil
 import threading
+import time
 from pathlib import Path
 from typing import Optional
 
@@ -46,6 +47,9 @@ _DISK_MARGIN = 500 * 1024 * 1024
 
 _MB = 1024 * 1024
 
+# Ogni quanto si ricontrolla che il kar a bordo sia quello della versione in uso.
+_WATCH_SECONDS = 3600
+
 
 class AddonsKarManager:
     """Tiene in openhab/addons il kar con tutti gli addon della versione in uso.
@@ -64,6 +68,34 @@ class AddonsKarManager:
         self._downloaded = 0
         self._total = 0
         self._error = ""
+        self._watch: Optional[threading.Thread] = None
+
+    def start_watch(self, interval: int = _WATCH_SECONDS) -> None:
+        """Ricontrolla periodicamente che a bordo ci sia il kar della versione in uso.
+
+        All'avvio del controller e alla (ri)creazione del container openhab ci
+        pensa gia' ensure(): e' cosi' che il kar segue un aggiornamento di
+        OpenHAB. Qui si copre il download fallito — linea giu' proprio mentre si
+        aggiornava, disco pieno poi liberato — che prima si ritentava solo al
+        riavvio successivo del controller, e intanto la centralina restava col kar
+        della versione vecchia, inutilizzabile col runtime nuovo. Con il kar
+        giusto a bordo il giro costa uno stat."""
+        if self._watch is not None:
+            return
+
+        def loop() -> None:
+            while True:
+                time.sleep(interval)
+                try:
+                    version = self.wanted_version()
+                    if version and not self.kar_path(version).is_file():
+                        ok, msg = self.ensure()
+                        logger.info("Addon OpenHAB, controllo periodico: %s", msg)
+                except Exception as exc:
+                    logger.warning("Addon OpenHAB, controllo periodico fallito: %s", exc)
+
+        self._watch = threading.Thread(target=loop, name="addons-kar-watch", daemon=True)
+        self._watch.start()
 
     # ------------------------------------------------------------------
     # Cosa serve e dove sta

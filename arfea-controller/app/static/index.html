@@ -126,6 +126,7 @@
         <div id="networkInfo">Caricamento...</div>
         <div id="netPending"></div>
         <div id="netUnavailable" class="status-bar status-failed" style="display:none"></div>
+        <div id="netInstall"></div>
 
         <div id="lanBox" style="display:none">
           <h2 style="margin-top:20px">LAN (cavo)</h2>
@@ -372,6 +373,16 @@ function refreshAll() {
   refreshBackupStatus();
   refreshAddons();
   loadLinphone();
+  resumeReleaseStatus();
+}
+
+// Un aggiornamento avviato da un'altra parte (widget di OpenHAB, altra scheda) si
+// vede anche qui, compresa la scelta «continuare senza backup?».
+function resumeReleaseStatus() {
+  if (relPolling) return;
+  apiGet('/system/releases/status').then(function(s) {
+    if (s && s.state && ['idle', 'completed', 'failed', 'rolled_back'].indexOf(s.state) < 0) pollReleaseStatus();
+  }).catch(function() {});
 }
 
 function refreshServices() {
@@ -432,6 +443,7 @@ function refreshNetStatus(fillForms) {
   return apiGet('/network/status').then(function(st) {
     netLast = st;
     var unav = document.getElementById('netUnavailable');
+    renderNmInstall(st);
     if (!st.available) {
       unav.style.display = 'block';
       unav.textContent = st.message || 'Gestione rete non disponibile';
@@ -450,6 +462,64 @@ function refreshNetStatus(fillForms) {
     if (!busy && netPolling) { clearInterval(netPolling); netPolling = null; }
     return st;
   }).catch(function() { /* durante un cambio di IP la risposta puo' non arrivare */ });
+}
+
+// ── Passaggio a NetworkManager dalla Web UI (Redmine #199) ──
+// Senza NetworkManager la sezione Rete propone di installarlo; durante il
+// passaggio mostra i passi dello script, alla fine l'esito.
+var nmPolling = null;
+
+function renderNmInstall(st) {
+  var el = document.getElementById('netInstall');
+  var inst = st.install || { state: 'idle' };
+  var running = inst.state === 'running';
+  if (running && !nmPolling) nmPolling = setInterval(function() { refreshNetStatus(true); }, 3000);
+  if (!running && nmPolling) { clearInterval(nmPolling); nmPolling = null; }
+
+  if (inst.state === 'idle') {
+    if (st.available) { el.innerHTML = ''; return; }
+    el.innerHTML =
+      '<div class="info-row" style="display:block; line-height:1.5">' +
+      'Per gestire da qui LAN, wifi e access point di emergenza serve NetworkManager. ' +
+      'L\'installazione scarica i pacchetti (serve internet), passa la LAN a NetworkManager ' +
+      '<b>tenendo lo stesso indirizzo IP</b> e, se entro 90 secondi il router non risponde, ' +
+      'rimette tutto com\'era da sola. Durante il passaggio questa pagina può non rispondere per qualche secondo.</div>' +
+      '<div style="display:flex; gap:6px; flex-wrap:wrap">' +
+      '<button class="btn btn-blue" style="flex:1" onclick="nmInstall(\'now\')">Installa e attiva ora</button>' +
+      '<button class="btn" style="flex:1; background:#eee" onclick="nmInstall(\'boot\')">Installa, attiva al prossimo riavvio</button>' +
+      '</div>';
+    return;
+  }
+  var steps = (inst.steps || []).map(function(l) { return '<div>' + esc(l) + '</div>'; }).join('');
+  var head;
+  if (running) {
+    head = '<div class="status-bar status-running"><span class="spinner"></span><b>Passaggio a NetworkManager in corso</b> (' +
+      inst.elapsed + ' s)' + (inst.activity ? '<div style="font-size:.85em; opacity:.8; margin-top:4px">' + esc(inst.activity) + '</div>' : '') + '</div>';
+  } else if (inst.state === 'ok' && inst.reboot_needed) {
+    head = '<div class="status-bar status-completed"><b>Pronto.</b> NetworkManager è installato: la LAN passa a NetworkManager al prossimo riavvio.' +
+      '<div style="margin-top:8px"><button class="btn btn-blue" onclick="confirmReboot()">Riavvia ora</button></div></div>';
+  } else if (inst.state === 'ok') {
+    head = '<div class="status-bar status-completed"><b>Fatto.</b> La rete è gestita da NetworkManager: qui sotto LAN, wifi e access point.</div>';
+  } else {
+    head = '<div class="status-bar status-failed"><b>Passaggio non riuscito.</b> La rete è rimasta com\'era: i dettagli sono qui sotto e in /var/log/arfea-network.log.</div>' +
+      (st.available ? '' : '<div style="display:flex; gap:6px"><button class="btn btn-blue" style="flex:1" onclick="nmInstall(\'now\')">Riprova</button></div>');
+  }
+  el.innerHTML = head + (steps ? '<div style="font-family:monospace; font-size:.8em; background:#f5f5f5; padding:8px; border-radius:6px; margin:6px 0; max-height:220px; overflow:auto">' + steps + '</div>' : '');
+}
+
+function nmInstall(mode) {
+  var msg = mode === 'now'
+    ? 'Installare NetworkManager e passarci subito la LAN?\n\nL\'indirizzo IP resta lo stesso. Se entro 90 secondi il router non risponde, la rete torna da sola com\'era. La pagina può non rispondere per qualche secondo.'
+    : 'Installare NetworkManager adesso e passarci la LAN al prossimo riavvio?';
+  if (!confirm(msg)) return;
+  document.getElementById('netInstall').innerHTML = '<div class="status-bar status-running"><span class="spinner"></span>Avvio...</div>';
+  apiSend('/network/nm/install', { method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({ mode: mode }) }).then(function(r) {
+    if (r.success === false) {
+      document.getElementById('netInstall').innerHTML = '<div class="status-bar status-failed">' + esc(r.message) + '</div>';
+      return;
+    }
+    refreshNetStatus(true);
+  });
 }
 
 function renderPending(st) {
@@ -1357,7 +1427,15 @@ function pollReleaseStatus() {
       var terminal = (s.state === 'completed' || s.state === 'failed' || s.state === 'rolled_back' || s.state === 'idle');
       var kind = s.state === 'completed' ? 'done' : (s.state === 'failed' || s.state === 'rolled_back') ? 'err' : '';
       st.className = 'status-bar ' + (s.state === 'completed' ? 'status-completed' : (s.state === 'failed' || s.state === 'rolled_back') ? 'status-failed' : 'status-running');
-      st.innerHTML = (terminal ? '' : '<span class="spinner"></span>') + (s.message || s.state) + (s.step ? ' [' + s.step + ']' : '');
+      st.innerHTML = (terminal ? '' : '<span class="spinner"></span>') + esc(s.message || s.state) + (s.step ? ' [' + esc(s.step) + ']' : '');
+      // Niente spazio per il backup: decide l'utente (Redmine #201)
+      if (s.state === 'awaiting_decision') {
+        st.className = 'status-bar status-failed';
+        st.innerHTML = '<b>Serve una scelta.</b> ' + esc(s.message) +
+          '<div style="display:flex; gap:6px; margin-top:8px">' +
+          '<button class="btn btn-red" style="flex:1" onclick="releaseDecision(\'continue\')">Continua senza backup</button>' +
+          '<button class="btn btn-blue" style="flex:1" onclick="releaseDecision(\'abort\')">Ferma l\'aggiornamento</button></div>';
+      }
       setProgress('relProgress', typeof s.progress === 'number' ? Math.max(s.progress, 3) : 5, kind);
       if (terminal) {
         clearInterval(relPolling); relPolling = null;
@@ -1368,6 +1446,14 @@ function pollReleaseStatus() {
       }
     });
   }, 4000);
+}
+
+function releaseDecision(choice) {
+  if (choice === 'continue' && !confirm('Continuare l\'aggiornamento SENZA backup?\n\nSe qualcosa va storto non ci sarà un punto di ripristino recente. A tuo rischio.')) return;
+  apiSend('/system/releases/decision', { method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({ choice: choice }) }).then(function(r) {
+    if (r.success === false) alert(r.message);
+    if (!relPolling) pollReleaseStatus();
+  });
 }
 
 // Auto-refresh every 60s

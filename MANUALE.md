@@ -167,9 +167,10 @@ network:
 **backup** — WebDAV per l'upload degli archivi
 ```yaml
 backup:
-  webdav_url: "https://cloud.example.com/dav/..."
-  webdav_user: "user"
-  webdav_password: "password"
+  # Condivisione pubblica Nextcloud: l'indirizzo WebDAV, non il link /s/<token>
+  webdav_url: "https://cloud.example.com/public.php/dav/files/<token>"
+  webdav_user: "<token>"
+  webdav_password: "password della condivisione"
   exclude_paths:
     - "/opt/docker_store/arfea-controller/backups"
 ```
@@ -531,9 +532,12 @@ UI di OpenHAB come sempre.
 
 - **Quando lo scarica**: all'avvio del controller, alla creazione/recreate del
   container openhab e quando un aggiornamento cambia la versione di OpenHAB (il
-  kar deve combaciare col runtime, altrimenti le feature non si risolvono). Il
-  download e' in background: OpenHAB parte subito e Karaf carica il pacchetto a
-  caldo appena compare nella cartella.
+  kar deve combaciare col runtime, altrimenti le feature non si risolvono): il
+  pacchetto **segue da solo la versione di OpenHAB**. Scarica il nuovo e solo dopo
+  toglie il vecchio. Il download e' in background: OpenHAB parte subito e Karaf
+  carica il pacchetto a caldo appena compare nella cartella. Dal controller 1.8.4
+  lo ricontrolla anche **ogni ora**: se il download era fallito (linea giù proprio
+  durante l'aggiornamento), riprova senza aspettare il riavvio del controller.
 - **Quanto pesa**: ~600 MB scaricati, ~1,2 GB a bordo (Karaf lo estrae in
   `openhab/userdata/tmp/kar`). Se il disco libero non basta il download non parte
   e il motivo finisce nei log: riempire l'eMMC fermerebbe tutto, OpenHAB compreso.
@@ -666,7 +670,17 @@ configurazione resta valida anche a controller spento.
 
 **Prerequisito: rete gestita da NetworkManager.** Armbian e Ubuntu Server
 nascono con netplan + systemd-networkd, che non sanno cercare reti wifi né fare
-da access point. Il passaggio si fa una volta per centralina:
+da access point. Il passaggio si fa una volta per centralina.
+
+**Dalla Web UI** (controller 1.8.4): se NetworkManager manca, la scheda **Rete**
+lo dice e propone *"Installa e attiva ora"* o *"Installa, attiva al prossimo
+riavvio"*. Il controller lancia sull'host lo stesso script di sotto, in un'unità
+systemd transitoria (`arfea-network-install`), e la pagina mostra i passi fino
+all'esito. Con *"al prossimo riavvio"* alla fine propone *"Riavvia ora"*. Serve
+internet, per scaricare i pacchetti. Durante il passaggio la pagina può non
+rispondere per qualche secondo: l'IP resta lo stesso.
+
+**Da riga di comando**, se la Web UI non è raggiungibile:
 
 ```bash
 # sulla board (le centraline preparate con lo script di setup ARFEA lo fanno già in fase 2)
@@ -782,10 +796,35 @@ Base: `http://<IP>:8888/api` — documentazione interattiva su `http://<IP>:8888
 ## 8. Backup e ripristino
 
 **Backup** (UI "Esegui Backup" o `POST /api/backup/run`):
+0. **Controlla lo spazio su disco** prima di fermare qualunque cosa (dal controller
+   1.8.4): stima l'archivio per eccesso e, se non c'è posto, **toglie i backup
+   locali vecchi**, dal più vecchio. Se non basta nemmeno così si ferma lì, con
+   l'impianto acceso, e lo dice.
 1. Ferma tutti i container (tranne il controller)
 2. Crea un `tar.gz` di `/opt/docker_store`
 3. Riavvia i container che erano attivi
 4. Carica su WebDAV (se configurato)
+
+Sulla centralina resta **solo l'ultimo backup completo**: lo storico sta su WebDAV,
+e su una eMMC da 16 GB ogni archivio in più toglie spazio a immagini e
+aggiornamenti. Se il caricamento su WebDAV non riesce, il backup lo segnala ma
+**l'archivio locale resta valido**. Un archivio rimasto a metà, per esempio col
+disco pieno, viene cancellato.
+
+**Prima di un aggiornamento di versione** il backup è il punto di ripristino:
+- caricamento su WebDAV fallito, archivio locale integro → l'aggiornamento
+  **continua** e alla fine lo dice;
+- spazio insufficiente anche togliendo i backup vecchi → l'aggiornamento si
+  **ferma e chiede** (widget di OpenHAB o Web UI): *"Continua senza backup"*, a
+  proprio rischio, oppure *"Ferma l'aggiornamento"*. Senza risposta entro 30
+  minuti si ferma da solo.
+
+**WebDAV di Nextcloud:** `webdav_url` è l'indirizzo WebDAV della condivisione,
+`https://<host>/public.php/dav/files/<token>`, con utente `<token>` e la password
+della condivisione. Il link `https://<host>/s/<token>` è la pagina web: un
+caricamento lì risponde **401**. Fino al controller 1.8.3 era il default degli
+installer, e con quello nessun backup arrivava su WebDAV. Dalla 1.8.4 il
+controller converte da solo il link nell'indirizzo WebDAV all'avvio e lo salva.
 
 L'impianto resta fermo solo per l'archiviazione (passi 1-2): l'upload avviene a
 container riavviati, perche' l'archivio su disco e' gia' completo e coerente e
@@ -804,8 +843,12 @@ Se il file non è locale ma il WebDAV è configurato, viene scaricato prima del
 ripristino. Assicurati che `exclude_paths` includa la cartella `backups` per non
 gonfiare l'archivio.
 
-Fuori dall'archivio sta anche il pacchetto addon di OpenHAB
-(`openhab/addons/openhab-addons-*.kar`, vedi [6.1](#61-openhab-core-porta-8080-network_mode-host)):
+Fuori dall'archivio stanno il pacchetto addon di OpenHAB
+(`openhab/addons/*.kar`, vedi [6.1](#61-openhab-core-porta-8080-network_mode-host)), le
+sue copie estratte da Karaf (`openhab/userdata/kar`, `openhab/userdata/tmp/kar`) e
+la cache di OpenHAB (`userdata/cache`, `userdata/tmp`, che il container svuota
+comunque a ogni avvio). Con le copie dentro, un backup era passato da ~460 MB a
+2,15 GB e aveva riempito il disco. Il pacchetto addon è fatto di
 ~600 MB ri-scaricabili in qualsiasi momento, non dati dell'impianto. Tenerli
 dentro raddoppierebbe l'archivio e il tempo di trasmissione, mandando l'upload
 oltre il tetto dei 30 minuti — cioe' facendo fallire i backup su linea lenta. Al
