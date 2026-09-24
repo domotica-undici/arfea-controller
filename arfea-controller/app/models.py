@@ -75,12 +75,19 @@ class BackupConfig(BaseModel):
     exclude_paths: list[str] = Field(default_factory=list)
 
 
+# URL dell'OTA del controller. Non resta mai vuoto (Redmine #192): una centralina
+# senza non riceve piu' aggiornamenti, e nessuno se ne accorge. Il default sta QUI,
+# come quello di addons_kar_url, e all'avvio ConfigManager.ensure_release_schema lo
+# rimette in arfea.yml se lo trova vuoto.
+DEFAULT_UPDATE_URL = "https://cloud.domoticaundici.it/ota/arfea-controller.tar.xz"
+
+
 class ControllerSettings(BaseModel):
     port: int = 8888
     data_path: str = "/opt/docker_store"
     log_level: str = "info"
     api_key: str = ""
-    update_url: str = ""
+    update_url: str = DEFAULT_UPDATE_URL
     # URL del manifest delle versioni certificate (releases.json). Separato da
     # update_url, che riguarda solo l'OTA del codice del controller.
     releases_url: str = ""

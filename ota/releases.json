@@ -68,7 +68,7 @@
     {
       "version": "2026.09.01",
       "date": "2026-09-24",
-      "notes": "OpenHAB 5.2.1 (patch della 5.2: solo correzioni, nessuna migrazione). HABApp, Z-Wave JS UI e codice HABApp 25.12.4 invariati. Al primo avvio sulla 5.2.1 il controller ri-scarica in background il pacchetto addon della nuova versione (~600 MB).",
+      "notes": "OpenHAB 5.2.1 (patch della 5.2: solo correzioni, nessun breaking change nelle note di rilascio, nessuna migrazione). HABApp, Z-Wave JS UI e codice HABApp 25.12.4 invariati. Da sapere: JS Scripting passa a openhab-js 5.21.0; il binding Shelly separa i misuratori dai rele' (openhab-addons#20805), quindi sugli impianti con Shelly ricontrollare i canali di consumo dopo l'aggiornamento. Al primo avvio sulla 5.2.1 il controller ri-scarica in background il pacchetto addon della nuova versione (~600 MB).",
       "controller_min": "1.7.2",
       "images": {
         "openhab": "openhab/openhab:5.2.1",

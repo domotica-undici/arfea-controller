@@ -24,10 +24,18 @@
 #   2) Migra all'ultima versione Docker con arfea-controller.
 #
 # Cosa fa (comune):
+#   - Controlla che ci sia spazio su disco PRIMA di fermare qualunque cosa.
 #   - Backup dei dati esistenti (le cartelle native NON vengono eliminate:
 #     restano come backup).
-#   - Estrae il tarball arfea-controller e configura arfea.yml.
+#   - Estrae il tarball arfea-controller e configura arfea.yml, con update_url
+#     e releases_url SEMPRE valorizzati (la centralina resta sotto OTA).
 #   - Avvia il nuovo stack (controller + servizi rilevati).
+#
+# Cosa fa in più per il caso DOCKER:
+#   - Conserva la versione di OpenHAB che girava (immagine del container, del
+#     vecchio compose o, se il tag è mobile, quella scritta nell'userdata): la
+#     migrazione cambia la struttura, non la versione. L'upgrade si fa dopo, con
+#     la release certificata dalla Web UI, che prima fa il backup.
 #
 # Cosa fa in più per il caso NATIVE:
 #   - Installa Docker se assente (può richiedere un reboot + ri-esecuzione).
@@ -46,6 +54,11 @@
 #   sudo bash migrate-to-controller.sh
 #   sudo bash migrate-to-controller.sh /path/old-compose.yml /path/tarball.tar.xz
 #   sudo MIGRATE_MODE=native bash migrate-to-controller.sh   # forza la modalità
+#
+# Variabili:
+#   MIGRATE_MODE=native|docker     forza il flusso
+#   MIGRATE_SKIP_SPACE_CHECK=1     prosegue anche se la stima dello spazio non basta
+#   ARFEA_UPDATE_URL=…             URL OTA del controller (default: cloud domoticaundici)
 ###############################################################################
 
 set -e
@@ -55,6 +68,10 @@ OLD_COMPOSE_PATH="${1:-}"
 SCRIPT_DIR="$(cd "$(dirname "$(readlink -f "$0")")" && pwd)"
 TARBALL_PATH="${2:-$SCRIPT_DIR/arfea-controller.tar.xz}"
 FORCE_MODE="${MIGRATE_MODE:-}"        # "native" | "docker" per forzare
+SKIP_SPACE_CHECK="${MIGRATE_SKIP_SPACE_CHECK:-}"
+# update_url non resta mai vuoto: senza, la centralina non riceve più l'OTA e
+# nessuno se ne accorge (Redmine #192).
+ARFEA_UPDATE_URL="${ARFEA_UPDATE_URL:-https://cloud.domoticaundici.it/ota/arfea-controller.tar.xz}"
 
 OH_UID=9001
 OH_GID=9001
@@ -130,15 +147,93 @@ set_dialout_gid() {
   sed -i -E "s#^(      - \")20(\")#\1${gid}\2#" "$f"
 }
 
-# API key + disattivazione OTA al primo boot (comune ai due flussi).
+# API key + canali OTA (comune ai due flussi).
 configure_yml_base() {
   local YML="$1"
   ARFEA_API_KEY=$(openssl rand -hex 16)
   sed -i "s|CAMBIARE-CON-CHIAVE-UNICA|${ARFEA_API_KEY}|" "$YML"
-  # Disabilita self-update automatico al boot: evita che il controller scarichi
-  # un tarball remoto e applichi un update non desiderato subito dopo la
-  # migrazione. Riabilitabile a mano in arfea.yml.
-  sed -i 's|^  update_url:.*|  update_url: ""|' "$YML"
+  # update_url SEMPRE valorizzato (Redmine #192). Prima qui si svuotava, per non
+  # auto-aggiornare il controller al primo avvio: la centralina migrata restava
+  # fuori dall'OTA per sempre. Se il controller pubblicato è più nuovo del
+  # tarball usato qui, al primo avvio si aggiorna da solo: è voluto.
+  sed -i "s|^  update_url:.*|  update_url: \"${ARFEA_UPDATE_URL}\"|" "$YML"
+  sed -i "s|^  releases_url:.*|  releases_url: \"${ARFEA_UPDATE_URL%/*}/releases.json\"|" "$YML"
+  grep -qE '^  update_url: "https?://' "$YML" || die "update_url non impostato in $YML"
+}
+
+# Scrive l'immagine del SOLO servizio openhab (la prima riga image: del blocco).
+# Non dipende dal tag del template, che cambia a ogni release. Ritorna 0 solo se
+# la riga risulta scritta.
+set_openhab_image() {
+  local f="$1" img="$2"
+  awk -v img="$img" '
+    /^  openhab:[[:space:]]*$/ { inoh = 1 }
+    inoh && /^  [A-Za-z0-9_-]+:[[:space:]]*$/ && $0 !~ /^  openhab:/ { inoh = 0 }
+    inoh && !done && /^    image:/ { print "    image: \"" img "\""; done = 1; next }
+    { print }
+  ' "$f" > "$f.t" && mv "$f.t" "$f"
+  grep -qF "    image: \"$img\"" "$f"
+}
+
+# Versione di OpenHAB scritta nell'userdata (quella con cui i dati sono allineati).
+openhab_userdata_version() {
+  local vp="$DEST/userdata/etc/version.properties"
+  [[ -f "$vp" ]] || return 0
+  awk -F: '/openhab-distro/ { gsub(/[[:space:]]/, "", $2); print $2; exit }' "$vp"
+}
+
+# ── Spazio libero, prima di toccare qualunque cosa (Redmine #191) ───────────
+# Stima per eccesso di cosa scrive la migrazione: il backup di /opt/docker_store
+# (tar.gz in /opt: nel caso peggiore non comprime), nel caso nativo la copia di
+# conf/userdata/addons, il pacchetto addon di OpenHAB (~600 MB scaricati che
+# Karaf estrae in ~1,2 GB) e le immagini Docker. Su una eMMC da 16 GB quasi
+# piena la migrazione si fermerebbe a metà, coi servizi vecchi già fermi.
+KAR_MB=1800
+MARGIN_MB=500
+mb_of()           { du -sm "$@" 2>/dev/null | awk '{ s += $1 } END { print s + 0 }'; }
+existing_parent() { local d="$1"; while [[ ! -e "$d" ]]; do d=$(dirname "$d"); done; echo "$d"; }
+free_mb_of()      { df -Pm "$1" | awk 'NR == 2 { print $4 }'; }
+mount_of()        { df -P "$1" | awk 'NR == 2 { print $6 }'; }
+
+check_disk_space() {
+  local mode="$1" backup_mb=0 native_mb=0 images_mb=1024
+  [[ -d "$DATA_PATH" ]] && backup_mb=$(mb_of "$DATA_PATH")
+  if [[ "$mode" == native ]]; then
+    native_mb=$(du -sm --exclude=cache --exclude=tmp --exclude=logs "$CONF" "$USERDATA" "$ADDONS" 2>/dev/null \
+                | awk '{ s += $1 } END { print s + 0 }')
+    images_mb=2048        # anche OpenHAB e i servizi, non solo il controller
+  fi
+  local opt_dir docker_dir
+  opt_dir=$(existing_parent "$DATA_PATH")
+  docker_dir=$(docker info -f '{{.DockerRootDir}}' 2>/dev/null || echo /var/lib/docker)
+  docker_dir=$(existing_parent "$docker_dir")
+  local opt_need=$((backup_mb + native_mb + KAR_MB + MARGIN_MB)) ok=true
+
+  echo "Spazio su disco (stima per eccesso):"
+  echo "  backup di $DATA_PATH:    ${backup_mb} MB"
+  [[ "$mode" == native ]] && echo "  dati OpenHAB nativi:      ${native_mb} MB"
+  echo "  pacchetto addon OpenHAB:  ${KAR_MB} MB"
+  echo "  immagini Docker:          ${images_mb} MB"
+  echo "  margine:                  ${MARGIN_MB} MB"
+  if [[ "$(mount_of "$opt_dir")" == "$(mount_of "$docker_dir")" ]]; then
+    local need=$((opt_need + images_mb)) free
+    free=$(free_mb_of "$opt_dir")
+    echo "  servono ${need} MB su $(mount_of "$opt_dir"), liberi ${free} MB"
+    (( free >= need )) || ok=false
+  else
+    local f1 f2
+    f1=$(free_mb_of "$opt_dir"); f2=$(free_mb_of "$docker_dir")
+    echo "  servono ${opt_need} MB su $(mount_of "$opt_dir") (liberi ${f1}) e ${images_mb} MB su $(mount_of "$docker_dir") (liberi ${f2})"
+    (( f1 >= opt_need && f2 >= images_mb )) || ok=false
+  fi
+  echo ""
+  if ! $ok; then
+    if [[ -n "$SKIP_SPACE_CHECK" ]]; then
+      warn "spazio insufficiente secondo la stima: proseguo perché MIGRATE_SKIP_SPACE_CHECK è impostato."
+    else
+      die "spazio insufficiente, nessun servizio è stato toccato. Libera spazio (docker image prune -a, log e backup vecchi in /opt) oppure, se la stima è troppo prudente, rilancia con MIGRATE_SKIP_SPACE_CHECK=1"
+    fi
+  fi
 }
 
 # Attende che il container openhab sia in esecuzione (max ~2 min).
@@ -452,6 +547,21 @@ except Exception as e:
 "
   }
 
+  parse_compose_openhab_image() {
+    python3 -c "
+import yaml, sys
+try:
+    with open('$1') as f:
+        cfg = yaml.safe_load(f)
+    for name, svc in (cfg.get('services') or {}).items():
+        if (svc.get('container_name') or name) == 'openhab' and svc.get('image'):
+            print(svc['image'])
+            break
+except Exception as e:
+    sys.stderr.write(str(e))
+"
+  }
+
   if [[ -z "$ACTIVE" && -n "$OLD_COMPOSE_PATH" ]]; then
     echo "Nessun container attivo. Analizzo il vecchio compose..."
     for cn in $(parse_compose_services "$OLD_COMPOSE_PATH"); do
@@ -496,10 +606,32 @@ except Exception as e:
   echo "  OpenHAB:  ${OPENHAB_DEVICES[*]:-(nessuno)}"
   echo ""
 
+  # Immagine OpenHAB da conservare (Redmine #190): container, poi vecchio compose.
+  # Un tag mobile (latest, milestone, snapshot) o assente non dice che versione
+  # giri, e al primo pull porterebbe una versione diversa da quella dell'userdata:
+  # in quel caso vale la versione scritta nell'userdata.
   local OPENHAB_IMAGE_DETECTED
   OPENHAB_IMAGE_DETECTED=$(docker inspect openhab --format '{{.Config.Image}}' 2>/dev/null || echo "")
-  [[ -n "$OPENHAB_IMAGE_DETECTED" ]] && echo "Immagine OpenHAB corrente: $OPENHAB_IMAGE_DETECTED"
+  if [[ -z "$OPENHAB_IMAGE_DETECTED" && -n "$OLD_COMPOSE_PATH" ]]; then
+    OPENHAB_IMAGE_DETECTED=$(parse_compose_openhab_image "$OLD_COMPOSE_PATH")
+  fi
+  local oh_tag=""
+  [[ "$OPENHAB_IMAGE_DETECTED" == *:* ]] && oh_tag="${OPENHAB_IMAGE_DETECTED##*:}"
+  if [[ ! "$oh_tag" =~ ^[0-9]+\.[0-9]+ ]]; then
+    local oh_ver; oh_ver=$(openhab_userdata_version)
+    if [[ -n "$oh_ver" ]]; then
+      [[ -n "$OPENHAB_IMAGE_DETECTED" ]] && echo "Tag mobile ($OPENHAB_IMAGE_DETECTED): uso la versione dell'userdata, $oh_ver"
+      OPENHAB_IMAGE_DETECTED="openhab/openhab:$oh_ver"
+    fi
+  fi
+  if [[ -n "$OPENHAB_IMAGE_DETECTED" ]]; then
+    echo "Immagine OpenHAB conservata: $OPENHAB_IMAGE_DETECTED"
+  else
+    warn "versione di OpenHAB non rilevata: resterà l'immagine del template e OpenHAB aggiornerà l'userdata al primo avvio."
+  fi
   echo ""
+
+  check_disk_space docker
 
   echo "OPERAZIONI CHE VERRANNO ESEGUITE:"
   echo "  1) Backup completo di /opt/docker_store/"
@@ -564,9 +696,12 @@ except Exception as e:
     ' "$YML" > "${YML}.tmp" && mv "${YML}.tmp" "$YML"
   fi
 
-  if [[ -n "$OPENHAB_IMAGE_DETECTED" && "$OPENHAB_IMAGE_DETECTED" != "openhab/openhab:5.1.4" ]]; then
-    log "Aggiorno image openhab in arfea.yml: $OPENHAB_IMAGE_DETECTED"
-    sed -i "s|image: \"openhab/openhab:5.1.4\"|image: \"${OPENHAB_IMAGE_DETECTED}\"|" "$YML"
+  if [[ -n "$OPENHAB_IMAGE_DETECTED" ]]; then
+    if set_openhab_image "$YML" "$OPENHAB_IMAGE_DETECTED"; then
+      log "Immagine openhab conservata in arfea.yml: $OPENHAB_IMAGE_DETECTED (l'upgrade si fa dopo, dalla Web UI)"
+    else
+      warn "non sono riuscito a scrivere l'immagine openhab in arfea.yml: controlla il blocco openhab."
+    fi
   fi
   log "arfea.yml configurato (API key: $ARFEA_API_KEY)"
 
@@ -881,6 +1016,8 @@ run_native_migration() {
     echo "         richiedere una revisione manuale di things/binding (soprattutto da 2.x)."
     echo "         I dati vengono comunque copiati; verifica il funzionamento dopo l'avvio."
   fi
+
+  check_disk_space native
 
   echo "OPERAZIONI:"
   echo "  1) (se assente) installazione Docker"

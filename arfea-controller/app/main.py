@@ -306,7 +306,14 @@ logger = logging.getLogger(__name__)
 #          impianti gia' installati ci arrivano dal canale delle release
 #          certificate (releases.json 2026.09.01), non da questo tarball: il
 #          loro arfea.yml e' protetto dal self-update.
-VERSION = "1.8.1"
+#   1.8.2  update_url non resta mai vuoto (Redmine #192): se in arfea.yml e'
+#          vuoto il controller lo rimette al default all'avvio e lo salva, come
+#          gia' faceva con releases_url. Una centralina senza update_url non
+#          riceveva piu' l'OTA, e nessuno se ne accorgeva. Nel tarball:
+#          migrate-to-controller.sh non lo svuota piu', conserva la versione di
+#          OpenHAB che girava (#190) e controlla lo spazio su disco prima di
+#          fermare qualunque cosa (#191).
+VERSION = "1.8.2"
 
 # -- Globals initialised at startup -----------------------------------------
 
@@ -371,7 +378,8 @@ async def lifespan(app: FastAPI):
     config_manager.load()
 
     # Auto-migrazione schema: centraline aggiornate da versioni precedenti non
-    # hanno releases_url (arfea.yml è protetto dall'OTA). Lo deriviamo da update_url.
+    # hanno releases_url (arfea.yml è protetto dall'OTA), e update_url non deve
+    # mai restare vuoto (Redmine #192). Vedi ConfigManager.ensure_release_schema.
     config_manager.ensure_release_schema()
 
     # Aggiorna il backup off-config dopo un load riuscito

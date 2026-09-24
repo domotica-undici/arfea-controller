@@ -250,11 +250,17 @@ Il sistema ha **due canali di aggiornamento distinti**, da non confondere:
 | Endpoint | `POST /api/system/update` | `POST /api/system/releases/apply` |
 
 > ⚠️ **"Aggiorna controller" NON aggiorna OpenHAB.** Per portare OpenHAB da
-> 5.1.x a 5.2.0 si usa il secondo canale (release certificate).
+> 5.2.0 a 5.2.1 si usa il secondo canale (release certificate).
 
 ### 4.2 Aggiornare il controller
 
-**Prerequisito:** `update_url` valorizzato in `arfea.yml`.
+**Prerequisito:** `update_url` valorizzato in `arfea.yml`. Non deve **mai** restare
+vuoto, perché una centralina senza non riceve più l'OTA e nessuno se ne accorge: dal
+controller **1.8.2**, se lo trova vuoto all'avvio lo rimette al default
+(`https://cloud.domoticaundici.it/ota/arfea-controller.tar.xz`) e lo salva. Su un
+controller più vecchio col campo vuoto va scritto a mano in `arfea.yml`, seguito da
+`docker compose restart arfea-controller`: senza URL non può scaricare la versione
+che si ripara da sola.
 
 - **Automatico all'avvio:** il controller scarica il tarball, confronta l'hash
   SHA256 con l'ultimo applicato (`.update_hash`) e, se diverso, lo applica e si
@@ -342,6 +348,9 @@ elenca i tag certificati e opzionalmente `controller_min` e `migrations`.
 ### 4.6 Adozione su centraline già in produzione
 - **`releases_url` mancante:** dal controller **1.3.0** viene iniettato da solo
   all'avvio (derivato da `update_url`). Basta aggiornare il controller e riavviarlo.
+- **`update_url` vuoto:** dal controller **1.8.2** viene rimesso al default all'avvio.
+  Le centraline migrate con `migrate-to-controller.sh` fino alla 1.8.1 lo avevano
+  vuoto di proposito: vanno sistemate a mano (vedi §4.2).
 - **Widget "Aggiornamenti" mancante:** dalla 1.3.0 viene reimportato da solo dopo
   un OTA. Per forzare: `curl -s -X POST localhost:8888/api/system/import-ui`.
 
@@ -363,11 +372,28 @@ da solo il punto di partenza e agisce di conseguenza:
 sudo bash migrate-to-controller.sh                    # rileva da solo la sorgente
 sudo bash migrate-to-controller.sh /path/old-compose.yml /path/tarball.tar.xz
 sudo MIGRATE_MODE=native bash migrate-to-controller.sh   # forza la modalità
+sudo MIGRATE_SKIP_SPACE_CHECK=1 bash migrate-to-controller.sh   # salta il controllo dello spazio
 ```
 
-**Sequenza (comune):** rileva la sorgente → backup dei dati → estrae il tarball
-`arfea-controller` → configura `arfea.yml` (API key generata, `update_url`
-disattivato al primo boot) → build + avvio dello stack.
+**Sequenza (comune):** rileva la sorgente → **controlla lo spazio su disco** →
+backup dei dati → estrae il tarball `arfea-controller` → configura `arfea.yml` (API
+key generata, `update_url` e `releases_url` **sempre** valorizzati) → build + avvio
+dello stack.
+
+- **Spazio su disco:** prima di fermare qualunque servizio lo script stima per
+  eccesso cosa scriverà (backup di `/opt/docker_store`, nel caso nativo la copia
+  dei dati, il pacchetto addon di OpenHAB da ~1,8 GB fra download ed estrazione, le
+  immagini Docker, un margine) e si ferma se non basta. Se la stima è troppo
+  prudente: `MIGRATE_SKIP_SPACE_CHECK=1`.
+- **OTA:** la centralina migrata resta sotto OTA. Se il controller pubblicato è più
+  nuovo del tarball usato per la migrazione, al primo avvio si aggiorna da solo.
+- **WebDAV:** la migrazione **non** imposta le credenziali WebDAV: finché non si
+  compilano in `arfea.yml` il backup resta solo locale.
+
+**In più per la sorgente DOCKER:** la versione di OpenHAB **resta quella che girava**
+(immagine del container, del vecchio compose o, se il tag è mobile come `latest`,
+quella scritta nell'userdata). La migrazione cambia la struttura, non la versione:
+l'upgrade si fa dopo, dalla card *"Aggiornamento software"*, che prima fa il backup.
 
 **In più per la sorgente NATIVA:**
 1. **Installa Docker** se assente (repo apt Ubuntu/Debian). Se il daemon non parte
@@ -782,8 +808,8 @@ bridge trusted; reboot da remoto via OpenHAB Cloud → regola JS → localhost.
 - [ ] Credenziali WebDAV configurate (o vuote per disabilitare l'upload)
 - [ ] Porta 8888 **non** esposta su internet (no port forwarding)
 - [ ] OpenVPN/WireGuard configurato per l'accesso remoto
-- [ ] Se usi il self-update, `update_url` punta a un server **fidato** (il tarball
-      viene estratto ed eseguito)
+- [ ] `update_url` punta a un server **fidato** (il tarball viene estratto ed
+      eseguito) e non è vuoto: senza, la centralina non riceve più l'OTA
 - [ ] Access point di emergenza: password annotata (o cambiata) e rete in
       `192.168.0.0/16`, così dall'AP la API key resta obbligatoria (10.x e
       172.16.x sono reti fidate, senza key: il validatore le rifiuta)

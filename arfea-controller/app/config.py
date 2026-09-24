@@ -7,7 +7,10 @@ from pathlib import Path
 
 import yaml
 
-from .models import AccessPointConfig, ArfeaConfig, DependencyRule, LinphoneConfig, ServiceDefinition
+from .models import (
+    DEFAULT_UPDATE_URL, AccessPointConfig, ArfeaConfig, DependencyRule, LinphoneConfig,
+    ServiceDefinition,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -151,20 +154,29 @@ class ConfigManager:
         return cleaned
 
     def ensure_release_schema(self) -> bool:
-        """Auto-migrazione: inietta releases_url in un arfea.yml che ne è sprovvisto.
+        """Auto-migrazione dei canali OTA in un arfea.yml che ne è sprovvisto.
 
         arfea.yml è protetto dall'OTA, quindi le centraline aggiornate da versioni
-        precedenti non hanno i campi nuovi. Se releases_url è vuoto ma update_url è
-        impostato, deriva releases_url dalla stessa cartella dell'OTA (stesso host).
+        precedenti non hanno i campi nuovi; e migrate-to-controller.sh, fino alla
+        1.8.1, svuotava update_url di proposito.
+        - update_url vuoto → DEFAULT_UPDATE_URL (Redmine #192): senza, la
+          centralina non riceve più l'OTA e nessuno se ne accorge;
+        - releases_url vuoto → dalla stessa cartella di update_url (stesso host).
         Ritorna True se ha modificato e salvato la config."""
         ctrl = self.config.controller
-        if ctrl.releases_url or not ctrl.update_url:
-            return False
-        base = ctrl.update_url.rsplit("/", 1)[0]
-        ctrl.releases_url = f"{base}/releases.json"
-        self._save()
-        logger.info("Auto-migrazione arfea.yml: releases_url impostato a %s", ctrl.releases_url)
-        return True
+        changed = False
+        if not ctrl.update_url.strip():
+            ctrl.update_url = DEFAULT_UPDATE_URL
+            logger.warning("Auto-migrazione arfea.yml: update_url era vuoto, impostato a %s", ctrl.update_url)
+            changed = True
+        if not ctrl.releases_url.strip():
+            base = ctrl.update_url.rsplit("/", 1)[0]
+            ctrl.releases_url = f"{base}/releases.json"
+            logger.info("Auto-migrazione arfea.yml: releases_url impostato a %s", ctrl.releases_url)
+            changed = True
+        if changed:
+            self._save()
+        return changed
 
     def set_habapp_functions(self, functions: list[str]) -> None:
         """Persiste le funzioni HABApp attive. La validazione dei nomi sta in
