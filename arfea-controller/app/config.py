@@ -28,6 +28,18 @@ def webdav_upload_url(url: str) -> str:
     return f"{m.group(1)}/public.php/dav/files/{m.group(2)}" if m else url
 
 
+# Fino al 17/07/2026 (87bef72) export-public.sh sostituiva l'host OTA con questo
+# segnaposto, e chi installava dal clone pubblico se lo ritrovava in arfea.yml:
+# un host che non esiste, quindi OTA e controllo delle release fallivano per
+# sempre senza che nessuno se ne accorgesse (Redmine #240).
+_PLACEHOLDER_HOST = "your-server.example.com"
+
+
+def is_placeholder_url(url: str) -> bool:
+    """True per un URL col segnaposto dell'export pubblico: vale come vuoto."""
+    return _PLACEHOLDER_HOST in url.lower()
+
+
 class ConfigManager:
     def __init__(self, config_path: str):
         self.config_path = Path(config_path)
@@ -175,18 +187,24 @@ class ConfigManager:
         - update_url vuoto → DEFAULT_UPDATE_URL (Redmine #192): senza, la
           centralina non riceve più l'OTA e nessuno se ne accorge;
         - releases_url vuoto → dalla stessa cartella di update_url (stesso host);
+        - un URL col segnaposto YOUR-SERVER.example.com dell'export pubblico
+          vale come vuoto (#240);
         - webdav_url link di condivisione Nextcloud → indirizzo WebDAV (#203).
         Ritorna True se ha modificato e salvato la config."""
         ctrl = self.config.controller
         changed = False
-        if not ctrl.update_url.strip():
+        if not ctrl.update_url.strip() or is_placeholder_url(ctrl.update_url):
+            logger.warning("Auto-migrazione arfea.yml: update_url era %s, impostato a %s",
+                           repr(ctrl.update_url) if ctrl.update_url.strip() else "vuoto",
+                           DEFAULT_UPDATE_URL)
             ctrl.update_url = DEFAULT_UPDATE_URL
-            logger.warning("Auto-migrazione arfea.yml: update_url era vuoto, impostato a %s", ctrl.update_url)
             changed = True
-        if not ctrl.releases_url.strip():
+        if not ctrl.releases_url.strip() or is_placeholder_url(ctrl.releases_url):
+            was = ctrl.releases_url
             base = ctrl.update_url.rsplit("/", 1)[0]
             ctrl.releases_url = f"{base}/releases.json"
-            logger.info("Auto-migrazione arfea.yml: releases_url impostato a %s", ctrl.releases_url)
+            logger.warning("Auto-migrazione arfea.yml: releases_url era %s, impostato a %s",
+                           repr(was) if was.strip() else "vuoto", ctrl.releases_url)
             changed = True
         # WebDAV: il default degli installer era il link di condivisione, su cui il
         # caricamento risponde 401: nessun backup arrivava su WebDAV (Redmine #203).

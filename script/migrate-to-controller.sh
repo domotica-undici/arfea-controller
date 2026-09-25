@@ -920,7 +920,7 @@ copy_native_data() {
   fi
   # ...e gli script: il 5.x li carica SOLO da automation/jython. In
   # automation/jsr223/python restavano lì senza un errore nel log, e con loro le
-  # regole di allagamento, allarmi e gas di paolaCamisani (Redmine #237).
+  # regole di allagamento, allarmi e gas di un impianto (Redmine #237).
   if [[ -d "$DEST/conf/automation/jsr223/python" ]]; then
     local py rel
     while IFS= read -r py; do
@@ -1021,7 +1021,7 @@ deploy_arfea_skeleton() {
 }
 
 # ── Ritocchi alla COPIA dei dati nativi, prima del primo avvio (Redmine #237) ──
-# Emersi migrando paolaCamisani da OpenHAB 3.3: senza, l'impianto parte ma con
+# Emersi migrando un impianto da OpenHAB 3.3: senza, l'impianto parte ma con
 # pezzi fermi. Toccano solo /opt/docker_store/openhab: l'originale nativo resta.
 
 # Item che il vecchio HABApp ARFEA creava via REST (users_list, send_message,

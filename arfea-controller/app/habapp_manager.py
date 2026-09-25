@@ -12,7 +12,8 @@ container):
 
 Il controller tocca SOLO le cartelle che spedisce lui: le regole specifiche
 cliente gia' presenti su un impianto (accessControl/, infraRed/, aasystem/...)
-non vengono ne' aggiornate ne' rimosse.
+non vengono ne' aggiornate ne' rimosse. Unica eccezione le regole superate da
+altro (_OBSOLETE_RULE_FILES), che si tolgono quando chi le sostituisce e' a bordo.
 """
 
 from __future__ import annotations
@@ -88,6 +89,17 @@ _BASE_LIBS = ["system"]
 # l'impianto con i soli item globali. Deve restare allineato a HABAPP_RULE_FILES
 # in script/habapp-subset.sh, che decide cosa entra nei tarball.
 _BASE_RULE_FILES = ["aasystem/tools.py"]
+# Regole lasciate sugli impianti dai controller precedenti (e dalle installazioni
+# HABApp native) il cui lavoro oggi lo fa altro: file sotto rules/ -> file sotto
+# openhab/conf che lo sostituisce. Si tolgono solo se il sostituto e' a bordo.
+# aasystem/time.py: le fasce giornaliere (timeSlots, timeSlot, isHoliday,
+# holidayName, adesso) le gestisce arfea_system.js dello skeleton dalla 1.6.0, ma
+# il file restava e girava insieme al JS; su un impianto andava in errore due
+# volte al minuto (Redmine #241).
+_OBSOLETE_RULE_FILES = {
+    "aasystem/time.py": "automation/js/arfea_system.js",
+}
+_OBSOLETE_SUFFIX = ".obsoleto"
 _ROOT_FILES = ["config.yml", "logging.yml"]
 
 # Marker con la versione del codice effettivamente deployata in
@@ -334,6 +346,34 @@ class HABAppManager:
             target = dest / "rules" / rel
             target.parent.mkdir(parents=True, exist_ok=True)
             shutil.copy2(source, target)
+
+        self.remove_obsolete_rules()
+
+    def remove_obsolete_rules(self) -> list[str]:
+        """Toglie le regole superate (_OBSOLETE_RULE_FILES) se chi le sostituisce
+        e' a bordo. Non le cancella: le rinomina in <file>.obsoleto, che HABApp
+        non carica (legge solo i *.py) e chi guarda trova. HABApp si accorge da
+        solo del file sparito e ne scarica le regole, senza ricreare il container.
+
+        Gira anche a ogni avvio del controller e non solo nel provisioning: sugli
+        impianti con il codice gia' allineato il provisioning non riparte, e il
+        file restava li'. Ritorna i file tolti."""
+        removed: list[str] = []
+        conf = self._data_path / "openhab" / "conf"
+        for rel, replacement in _OBSOLETE_RULE_FILES.items():
+            path = self.config_dir() / "rules" / rel
+            if not path.is_file():
+                continue
+            if not (conf / replacement).is_file():
+                logger.info("HABApp: rules/%s e' superato da %s, che pero' non e' a bordo: resta",
+                            rel, replacement)
+                continue
+            target = path.with_name(path.name + _OBSOLETE_SUFFIX)
+            path.replace(target)
+            logger.warning("HABApp: tolto rules/%s, il suo lavoro lo fa %s (copia in %s)",
+                           rel, replacement, target.name)
+            removed.append(rel)
+        return removed
 
     def _ensure_params(self, selected: list[str]) -> None:
         """Crea i params mancanti vuoti. Mai sovrascritti: sono la

@@ -452,17 +452,21 @@ var UPDATE_ITEM_MAP = {
 };
 
 // Aggiornamento di versione (release certificate). Rispetta la conferma
-// software-per-software: aggiorna solo i componenti con toggle arfea_upd_<x>_ok
-// su ON e con un aggiornamento effettivamente disponibile.
+// software-per-software: esclude i componenti con toggle arfea_upd_<x>_ok spento
+// e il controller aggiorna tutto il resto, compreso quello che nel widget non ha
+// un interruttore (codice HABApp, mosquitto, otbr, tag dei servizi spenti:
+// Redmine #248).
 function doApplyUpdate() {
-  var selected = [];
+  var shown = 0;
+  var excluded = [];
   for (var frag in UPDATE_ITEM_MAP) {
     try {
       var avail = items.getItem('arfea_upd_' + frag).state;
       var ok = items.getItem('arfea_upd_' + frag + '_ok').state;
       if (avail && avail.toString() !== '' && avail.toString() !== 'NULL'
-          && avail.toString() !== 'UNDEF' && ok && ok.toString() === 'ON') {
-        selected.push(UPDATE_ITEM_MAP[frag]);
+          && avail.toString() !== 'UNDEF') {
+        shown++;
+        if (!ok || ok.toString() !== 'ON') excluded.push(UPDATE_ITEM_MAP[frag]);
       }
     } catch (e) { /* item assente */ }
   }
@@ -470,7 +474,7 @@ function doApplyUpdate() {
     logger.warn('ARFEA apply update: un aggiornamento e\' gia\' in corso');
     return;   // la riga di stato del widget lo sta gia' mostrando
   }
-  if (selected.length === 0) {
+  if (shown > 0 && excluded.length === shown) {
     setUpdateStatus('failed', 'Nessun software selezionato: accendi almeno un interruttore', 100, '');
     logger.warn('ARFEA apply update: nessun software selezionato');
     return;
@@ -478,9 +482,11 @@ function doApplyUpdate() {
   // Riscontro immediato: fino a qui l'utente non vedeva niente per decine di
   // secondi, e non sapeva se il clic era arrivato.
   cache.private.put('arfea_update_requested_at', Date.now());
-  setUpdateStatus('starting', 'Richiesta inviata al controller...', 3, 'software: ' + selected.join(', '));
-  var response = httpPost('/system/releases/apply?services=' + encodeURIComponent(selected.join(',')));
-  logger.warn('ARFEA apply update ({}): {}', selected.join(','), response);
+  var detail = excluded.length ? 'esclusi: ' + excluded.join(', ') : 'tutti i software';
+  setUpdateStatus('starting', 'Richiesta inviata al controller...', 3, detail);
+  var response = httpPost('/system/releases/apply' +
+    (excluded.length ? '?exclude=' + encodeURIComponent(excluded.join(',')) : ''));
+  logger.warn('ARFEA apply update ({}): {}', detail, response);
   if (!response) {
     setUpdateStatus('failed', 'Il controller non ha accettato la richiesta o non risponde: riprova fra poco, ' +
       'o apri la sua pagina da «Funzioni di sistema»', 100, '');
@@ -616,10 +622,12 @@ function refreshReleaseCheck() {
       items.getItem('arfea_update_changelog').postUpdate(res.error ? ('errore: ' + res.error) : 'sistema aggiornato');
     }
 
-    // Diff per-software: mappa nome servizio -> versione target
+    // Diff per-software: mappa nome servizio -> versione target. I servizi spenti
+    // prendono solo il tag, senza interruttore (Redmine #247).
     var byService = {};
     var svcList = res.services || [];
     for (var i = 0; i < svcList.length; i++) {
+      if (svcList[i].enabled === false) continue;
       byService[svcList[i].name] = svcList[i].target_image;
     }
     for (var frag in UPDATE_ITEM_MAP) {

@@ -373,7 +373,41 @@ logger = logging.getLogger(__name__)
 #          Location, Equipment e Property (semantic_cards.py). Un tag senza
 #          immagine prende quella del padre; le card con un'immagine o un colore
 #          scelti dall'utente non si toccano.
-VERSION = "1.8.7"
+#   1.8.8  Correzioni emerse portando alla 1.8.7 tre centraline con controller
+#          vecchi (Redmine #239):
+#          - update_url e releases_url col segnaposto YOUR-SERVER.example.com,
+#            che l'export pubblico scriveva fino al 17/07, valgono come vuoti e
+#            tornano al default all'avvio: con quell'host OTA e controllo delle
+#            release fallivano per sempre, in silenzio (#240);
+#          - HABApp: rules/aasystem/time.py, superato da arfea_system.js dalla
+#            1.6.0 ma mai tolto dagli impianti, diventa time.py.obsoleto (all'avvio
+#            e nel provisioning) se il JS e' a bordo. Girava insieme al JS, e su
+#            un impianto andava in errore due volte al minuto (#241);
+#          - le cartelle nuove dello skeleton nascono 9001:9001 (con la 1.8.7
+#            conf/html/semantic era di root) e all'avvio si riporta a 9001 cio'
+#            che in openhab/conf e' di root (#242);
+#          - avviso nella Web UI (card «Da guardare» e Dispositivi) per le porte
+#            mappate col nome del kernel (/dev/ttyUSB0) quando c'e' il by-id: dice
+#            quale dispositivo c'e' oggi dietro quel nome e propone il nome
+#            stabile. Su un impianto un riavvio aveva scambiato le porte di Modbus
+#            e Z-Wave, fermi per un mese senza un avviso (#243, #244);
+#          - pagina Dispositivi: i by-id non si risolvevano (realpath attraverso
+#            /proc/1/root esce dalla rootfs dell'host), quindi non si vedeva quale
+#            tty fosse ogni dispositivo ne' chi la usava (#249).
+#          Release certificate con tag esatti per tutte le immagini (#247,
+#          releases.json 2026.09.02): zwave-js-ui a :11 e i servizi a :latest
+#          restavano per sempre all'immagine del giorno dell'installazione, perche'
+#          l'apply scarica solo quando il tag cambia. Ai servizi spenti l'apply
+#          scrive solo il tag, senza pull ne' riavvio (l'immagine arriva quando li
+#          si accende); se cambiano solo loro, niente backup. Nel diff del check
+#          ogni servizio ha il campo enabled. Template: mosquitto 2.1.2-alpine,
+#          zigbee2mqtt 2.14.1, node-red 5.0.7-24-minimal, otbr sha-9802eb8,
+#          zwave-js-ui 11.24.1; samba resta a :latest, spento e non core.
+#          FIX (#248): dal widget il codice HABApp non si aggiornava mai (nessun
+#          interruttore: «Nessun software selezionato», o upgrade parziale), e con
+#          i tag esatti lo stesso sarebbe capitato a mosquitto e otbr. Ora il
+#          widget manda gli esclusi (apply?exclude=) e si aggiorna tutto il resto.
+VERSION = "1.8.8"
 
 # -- Globals initialised at startup -----------------------------------------
 
@@ -495,6 +529,10 @@ async def lifespan(app: FastAPI):
 
 
 def _startup_background() -> None:
+    try:
+        _fix_openhab_conf_owner()
+    except Exception as exc:
+        logger.warning("Controllo owner di openhab/conf fallito: %s", exc)
     _maybe_import_ui()
     _heal_habapp()
     _semantic_cards_loop()
@@ -515,6 +553,13 @@ def _heal_habapp() -> None:
     svc = config_manager.config.services.get("habapp")
     if svc is None or not svc.enabled:
         return
+
+    # Regole superate rimaste a bordo (aasystem/time.py, Redmine #241): vanno
+    # tolte anche quando il codice e' gia' allineato e il provisioning non riparte.
+    try:
+        habapp_manager.remove_obsolete_rules()
+    except OSError as exc:
+        logger.warning("HABApp: regole superate non rimosse: %s", exc)
 
     # Due guasti diversi, stessa cura (provision + recreate):
     #  - manca il token: HABApp e' vivo ma non parla con OpenHAB;
@@ -721,6 +766,15 @@ def set_service_devices(name: str, body: ServiceDevicesUpdate):
 def list_serial_devices():
     """Elenca le porte seriali rilevate sull'host (sorgenti per un mapping device)."""
     return docker_manager.list_host_serial_devices()
+
+
+@app.get("/api/system/serial-devices/warnings", dependencies=[Depends(verify_api_key)])
+def serial_device_warnings():
+    """Mapping dei servizi accesi con un nome di porta che puo' cambiare al
+    riavvio (/dev/ttyUSB0) quando c'e' il nome stabile in /dev/serial/by-id
+    (Redmine #244). Per ognuno: service, mapping, host_path, stable_path (il
+    dispositivo che c'e' oggi dietro quel nome) e suggested (il mapping stabile)."""
+    return docker_manager.unstable_device_mappings()
 
 
 @app.put("/api/services/{name}/enable", response_model=OperationResponse, dependencies=[Depends(verify_api_key)])
@@ -1209,7 +1263,7 @@ def _deploy_openhab_files(skeleton_dir: Path) -> None:
                 continue
             relative = src_file.relative_to(skeleton_conf)
             dst_file = openhab_conf / relative
-            dst_file.parent.mkdir(parents=True, exist_ok=True)
+            _mkdirs_owned(dst_file.parent, OH_UID, OH_GID)
             shutil.copy2(src_file, dst_file)
             os.chown(dst_file, OH_UID, OH_GID)
             logger.info("OpenHAB updated: conf/%s", relative)
@@ -1218,7 +1272,7 @@ def _deploy_openhab_files(skeleton_dir: Path) -> None:
     skeleton_init = skeleton_dir / "cont-init.d"
     if skeleton_init.is_dir():
         openhab_init = openhab_base / "cont-init.d"
-        openhab_init.mkdir(parents=True, exist_ok=True)
+        _mkdirs_owned(openhab_init, OH_UID, OH_GID)
         for src_file in skeleton_init.iterdir():
             if src_file.is_file():
                 dst_file = openhab_init / src_file.name
@@ -1226,6 +1280,48 @@ def _deploy_openhab_files(skeleton_dir: Path) -> None:
                 dst_file.chmod(0o755)
                 os.chown(dst_file, OH_UID, OH_GID)
                 logger.info("OpenHAB updated: cont-init.d/%s", src_file.name)
+
+
+def _mkdirs_owned(path: Path, uid: int, gid: int) -> None:
+    """mkdir -p che assegna uid:gid anche alle cartelle che crea.
+
+    mkdir(parents=True) le lasciava al processo, cioe' a root: con la 1.8.7
+    conf/html/semantic e' nata root:root su ogni impianto (Redmine #242)."""
+    missing = []
+    p = path
+    while not p.exists():
+        missing.append(p)
+        p = p.parent
+    for d in reversed(missing):
+        d.mkdir(exist_ok=True)
+        os.chown(d, uid, gid)
+
+
+def _fix_openhab_conf_owner() -> None:
+    """All'avvio: riporta a 9001:9001 cio' che in openhab/conf e' di root.
+
+    Serve agli impianti gia' passati da un OTA che creava le cartelle nuove come
+    root (1.8.7, conf/html/semantic, Redmine #242). L'OTA verso questa versione
+    lo esegue ancora il codice di quella precedente, quindi la correzione in
+    _deploy_openhab_files conta solo dal giro dopo: senza questo passaggio la
+    cartella restava di root. Si toccano solo le voci di root, l'unico
+    proprietario sbagliato che puo' lasciare il controller: il resto no."""
+    conf = Path(config_manager.config.controller.data_path) / "openhab" / "conf"
+    if not conf.is_dir():
+        return
+    fixed = 0
+    for root, dirs, files in os.walk(conf):
+        for name in dirs + files:
+            path = os.path.join(root, name)
+            try:
+                st = os.lstat(path)
+                if st.st_uid == 0 or st.st_gid == 0:
+                    os.lchown(path, 9001, 9001)
+                    fixed += 1
+            except OSError as exc:
+                logger.warning("openhab/conf: owner di %s non corretto: %s", path, exc)
+    if fixed:
+        logger.warning("openhab/conf: %d file e cartelle di root riportati a 9001:9001", fixed)
 
 
 # ---------------------------------------------------------------------------
@@ -1676,12 +1772,14 @@ def releases_status():
 
 
 @app.post("/api/system/releases/apply", response_model=OperationResponse, dependencies=[Depends(verify_api_key)])
-async def releases_apply(background_tasks: BackgroundTasks, services: str = ""):
+async def releases_apply(background_tasks: BackgroundTasks, services: str = "", exclude: str = ""):
     """Avvia l'aggiornamento verso l'ultima release certificata.
 
     ``services`` (opzionale, CSV): limita l'upgrade ai soli software indicati
     (conferma software-per-software). Se assente, aggiorna tutti quelli con una
-    versione più recente disponibile. Operazione su conferma utente: backup,
+    versione più recente disponibile. ``exclude`` (opzionale, CSV): li aggiorna
+    tutti tranne questi (il widget, Redmine #248). I servizi spenti ricevono solo
+    il tag, senza download (#247). Operazione su conferma utente: backup,
     migrazioni (solo upgrade completo), recreate con health-gate, rollback se fallisce."""
     if not config_manager.config.controller.releases_url:
         raise HTTPException(400, "releases_url non configurato in arfea.yml")
@@ -1692,10 +1790,13 @@ async def releases_apply(background_tasks: BackgroundTasks, services: str = ""):
         return OperationResponse(success=False, message="Aggiornamento già in corso")
 
     selected = [s.strip() for s in services.split(",") if s.strip()] or None
-    background_tasks.add_task(release_manager.run_apply, selected)
+    excluded = [s.strip() for s in exclude.split(",") if s.strip()] or None
+    background_tasks.add_task(release_manager.run_apply, selected, excluded)
     msg = "Aggiornamento di versione avviato"
     if selected:
         msg += f" (servizi: {', '.join(selected)})"
+    if excluded:
+        msg += f" (esclusi: {', '.join(excluded)})"
     return OperationResponse(success=True, message=msg)
 
 

@@ -662,18 +662,69 @@ class DockerManager:
 
         return list(found.values())
 
+    def unstable_device_mappings(self) -> list[dict]:
+        """Mapping dei servizi accesi che usano per una porta il nome del kernel
+        (/dev/ttyUSB0, /dev/ttyACM0), che puo' cambiare a ogni riavvio, quando la
+        stessa porta ha anche un nome stabile in /dev/serial/by-id.
+
+        Su un impianto un riavvio ha scambiato ttyUSB0 e ttyUSB1: per un mese
+        OpenHAB ha parlato Modbus con la chiavetta Z-Wave e zwave-js-ui con il
+        cavo RS485, senza un avviso da nessuna parte (Redmine #243, #244). Qui si
+        dice anche quale dispositivo c'e' OGGI dietro quel nome: il by-id e'
+        descrittivo (usb-SONOFF_..._ZWave_Dongle, usb-FTDI_USB-RS485_Cable), e un
+        servizio abbinato al dispositivo sbagliato si vede subito. Per questo il
+        mapping suggerito va confermato da chi guarda e non si applica da solo:
+        e' giusto solo se oggi dietro quel nome c'e' il dispositivo giusto."""
+        host_root = _host_root()
+        by_id = host_root / "dev" / "serial" / "by-id"
+        stable_for: dict[str, str] = {}
+        if _dir_ok(by_id):
+            try:
+                links = sorted(by_id.iterdir())
+            except OSError:
+                links = []
+            for link in links:
+                path = f"/dev/serial/by-id/{link.name}"
+                real = self._realpath(host_root, path)
+                if real and real != path:
+                    stable_for.setdefault(real, path)
+
+        effective = self.cfg.resolve_effective_enabled()
+        out: list[dict] = []
+        for sname, svc in self.cfg.config.services.items():
+            if not effective.get(sname):
+                continue
+            for mapping in svc.devices:
+                parts = mapping.split(":")
+                stable = stable_for.get(parts[0]) if _UNSTABLE_TTY.match(parts[0]) else None
+                if stable:
+                    out.append({
+                        "service": sname,
+                        "mapping": mapping,
+                        "host_path": parts[0],
+                        "stable_path": stable,
+                        "suggested": ":".join([stable] + parts[1:]),
+                    })
+        return out
+
     @staticmethod
     def _realpath(host_root: Path, dev_path: str) -> str:
-        """Risolve un symlink di /dev sull'host restituendo un path /dev/... assoluto."""
-        try:
-            target = os.path.realpath(str(host_root / dev_path.lstrip("/")))
-        except OSError:
-            return ""
-        # target è nello spazio di host_root: riportalo a /dev/...
-        hr = str(host_root)
-        if hr != "/" and target.startswith(hr):
-            target = target[len(hr):] or "/"
-        return target if target.startswith("/dev/") else ""
+        """Risolve un symlink di /dev sull'host restituendo un path /dev/... assoluto.
+
+        I link si seguono a mano, un readlink alla volta dentro host_root, e non
+        con os.path.realpath: /proc/1/root e' un link "magico" del kernel che per
+        readlink vale "/", quindi realpath lo sostituiva con "/" e usciva dalla
+        rootfs dell'host, finendo nella /dev del controller, che non ha seriali.
+        Un by-id non si risolveva mai e tornava uguale a se stesso (Redmine #249).
+        Il kernel invece lo attraversa bene, per questo os.readlink funziona."""
+        path = os.path.normpath(dev_path)
+        for _ in range(16):  # udev fa un salto solo; il limite ferma i cicli
+            try:
+                target = os.readlink(str(host_root / path.lstrip("/")))
+            except OSError:
+                break  # non e' un link (o non esiste): e' il nodo finale
+            path = os.path.normpath(os.path.join(os.path.dirname(path), target))
+        return path if path.startswith("/dev/") else ""
 
     def _build_run_kwargs(self, name: str, svc: ServiceDefinition) -> dict:
         kwargs: dict = {
@@ -774,6 +825,11 @@ def _parse_volumes(volume_list: list[str]) -> dict[str, dict]:
             continue
         result[host] = {"bind": container, "mode": mode}
     return result
+
+
+# Nomi delle porte seriali USB assegnati dal kernel in ordine di enumerazione: al
+# riavvio due adattatori possono scambiarseli (unstable_device_mappings).
+_UNSTABLE_TTY = re.compile(r"^/dev/tty(USB|ACM)\d+$")
 
 
 def _dir_ok(p: Path) -> bool:

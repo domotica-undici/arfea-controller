@@ -124,6 +124,9 @@
     .switch-row { display: flex; align-items: center; justify-content: space-between; min-height: 48px; font-weight: 600; cursor: pointer; }
     .switch-row input { width: 22px; height: 22px; }
     .dev-row { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 8px 10px; margin: 6px 0; border: 1px solid var(--line); border-radius: 10px; font-size: .88em; }
+    .dev-row code { overflow-wrap: anywhere; }
+    .dev-warn { margin: -2px 0 10px; padding: 8px 10px; border-left: 4px solid #f59e0b; border-radius: 8px; font-size: .82em; overflow-wrap: anywhere; }
+    .dev-warn .btn { margin-top: 6px; }
     .dev-add { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; margin-top: 8px; }
     .dev-add .sel { margin: 0; }
     .dev-add #devPort { flex: 1 1 100%; }
@@ -564,6 +567,7 @@ function apiPutJson(path, body) {
 function refreshAll() {
   refreshServices();
   refreshDeviceServices();
+  refreshSerialWarnings();
   refreshHabapp();
   refreshNetwork();
   refreshSystem();
@@ -1306,6 +1310,38 @@ var DEV_CAPABLE = ['openhab', 'zwave-js-ui', 'zigbee2mqtt', 'otbr'];
 var DEV_DEFAULT_TARGET = { 'openhab': '/dev/ttyUSB0', 'zwave-js-ui': '/dev/zwave', 'zigbee2mqtt': '/dev/zigbee', 'otbr': '/dev/ttyACM0' };
 var devList = [];          // mapping "src:tgt" del servizio corrente
 var serialPorts = [];      // porte host rilevate
+var serialWarnings = [];   // mapping con un nome che puo' cambiare al riavvio
+
+// Un /dev/ttyUSB0 puo' diventare un altro dispositivo al riavvio: su un impianto
+// Modbus e Z-Wave si sono scambiati le porte e nessuno l'ha visto per un mese
+// (Redmine #243, #244). L'avviso dice quale dispositivo c'e' OGGI dietro quel
+// nome: se non e' quello giusto si vede subito.
+function byIdName(path) { return String(path).replace('/dev/serial/by-id/', ''); }
+
+function refreshSerialWarnings() {
+  apiGet('/system/serial-devices/warnings').then(function(ws) {
+    serialWarnings = Array.isArray(ws) ? ws : [];
+    var text = '';
+    if (serialWarnings.length === 1) {
+      var w = serialWarnings[0];
+      text = 'Porta seriale che pu&ograve; cambiare al riavvio: <b>' + esc(w.service) + '</b> usa ' +
+        esc(w.host_path) + ', oggi &egrave; ' + esc(byIdName(w.stable_path));
+    } else if (serialWarnings.length > 1) {
+      text = serialWarnings.length + ' porte seriali possono cambiare al riavvio (' +
+        serialWarnings.map(function(w) { return '<b>' + esc(w.service) + '</b> ' + esc(w.host_path); }).join(', ') + ')';
+    }
+    setAlert('serial', serialWarnings.length ? 'warn' : null, text, 'impianto');
+    renderDevices();
+  }).catch(function() { /* controller senza l'endpoint: nessun avviso */ });
+}
+
+function useStableDevice(i) {
+  var svc = document.getElementById('devService').value;
+  var w = serialWarnings.filter(function(x) { return x.service === svc && x.mapping === devList[i]; })[0];
+  if (!w) return;
+  devList[i] = w.suggested;
+  renderDevices();
+}
 
 // ── HABApp ────────────────────────────────────────────────
 
@@ -1519,9 +1555,15 @@ function renderDevices() {
     el.innerHTML = '<p class="hint">Nessuna porta assegnata.</p>';
     return;
   }
+  var svc = document.getElementById('devService').value;
   el.innerHTML = devList.map(function(d, i) {
-    return '<div class="dev-row"><code>' + d + '</code>' +
-      '<button class="btn btn-danger-ghost btn-small" onclick="removeDevice(' + i + ')" title="Togli" aria-label="Togli">&times;</button></div>';
+    var w = serialWarnings.filter(function(x) { return x.service === svc && x.mapping === d; })[0];
+    var warn = w ? '<div class="dev-warn">' + esc(w.host_path) + ' pu&ograve; cambiare dispositivo al riavvio. ' +
+      'Oggi &egrave; <code>' + esc(byIdName(w.stable_path)) + '</code>: se &egrave; quello giusto per <b>' + esc(svc) + '</b>, ' +
+      'passa al nome stabile e poi &laquo;Salva e applica&raquo;.<br>' +
+      '<button class="btn btn-blue btn-small" onclick="useStableDevice(' + i + ')">Usa il nome stabile</button></div>' : '';
+    return '<div class="dev-row"><code>' + esc(d) + '</code>' +
+      '<button class="btn btn-danger-ghost btn-small" onclick="removeDevice(' + i + ')" title="Togli" aria-label="Togli">&times;</button></div>' + warn;
   }).join('');
 }
 
@@ -1556,7 +1598,7 @@ function saveDevices() {
   apiPutJson('/services/' + svc + '/devices', { devices: devList }).then(function(r) {
     setProgress('devProgress', 100, r.success ? 'done' : 'err');
     alert(r.message || (r.success ? 'Salvato' : 'Errore'));
-    setTimeout(function() { clearProgress('devProgress'); refreshServices(); }, 1500);
+    setTimeout(function() { clearProgress('devProgress'); refreshServices(); refreshSerialWarnings(); }, 1500);
   }).catch(function() {
     setProgress('devProgress', 100, 'err');
     alert('Errore nel salvataggio device');
@@ -1598,8 +1640,15 @@ function checkReleases() {
     res.services.forEach(function(s) {
       // value = nome tecnico (quello che l'apply seleziona via CSV); label leggibile.
       var label = s.name === 'habapp-code' ? 'Regole HABApp (codice)' : s.name;
+      var versions = '<code>' + s.current_image + '</code> → <code>' + s.target_image + '</code>';
+      if (s.enabled === false) {
+        // Servizio spento: prende solo il tag, non c'e' niente da scegliere (#247)
+        html += '<div class="chk-row"><span><b>' + label + '</b> (spento)<br>' + versions +
+          '<br><span class="hint">Si aggiorna solo la versione: la scarica quando lo accendi.</span></span></div>';
+        return;
+      }
       html += '<label class="chk-row"><input type="checkbox" class="relchk" value="' + s.name + '" checked>' +
-        '<span><b>' + label + '</b><br><code>' + s.current_image + '</code> → <code>' + s.target_image + '</code></span></label>';
+        '<span><b>' + label + '</b><br>' + versions + '</span></label>';
     });
     if (res.notes) html += '<p class="hint">' + res.notes.replace(/</g, '&lt;') + '</p>';
     document.getElementById('relDiff').innerHTML = html;
@@ -1616,8 +1665,11 @@ function checkReleases() {
 function applyReleases() {
   var checks = Array.prototype.slice.call(document.querySelectorAll('.relchk:checked'));
   var services = checks.map(function(c) { return c.value; });
-  if (services.length === 0) { alert('Seleziona almeno un software da aggiornare'); return; }
-  if (!confirm('Aggiornare: ' + services.join(', ') + '?\n\nVerrà eseguito un backup e poi il riavvio dei servizi aggiornati.')) return;
+  var onlyIdle = document.querySelectorAll('.relchk').length === 0;   // solo servizi spenti
+  if (services.length === 0 && !onlyIdle) { alert('Seleziona almeno un software da aggiornare'); return; }
+  if (!confirm(onlyIdle
+      ? 'Aggiornare la versione dei servizi spenti?\n\nNessun download e nessun riavvio.'
+      : 'Aggiornare: ' + services.join(', ') + '?\n\nVerrà eseguito un backup e poi il riavvio dei servizi aggiornati.')) return;
   var btn = document.getElementById('btnRelApply');
   btn.disabled = true; btn.textContent = 'Aggiornamento avviato...';
   document.getElementById('btnRelCheck').disabled = true;

@@ -140,6 +140,9 @@ services:
       start_period: 120
     log_max_size: "10m"
 
+  # Samba non e' piu' core: spento, resta per gli impianti migrati che lo
+  # usavano (probabilmente si toglie). Unico servizio a :latest, fuori da
+  # releases.json.
   samba:
     enabled: false
     core: false
@@ -169,7 +172,7 @@ services:
   mosquitto:
     enabled: false
     core: false
-    image: "eclipse-mosquitto:latest"
+    image: "eclipse-mosquitto:2.1.2-alpine"
     container_name: mosquitto
     restart_policy: unless-stopped
     ports:
@@ -205,7 +208,7 @@ services:
   zwave-js-ui:
     enabled: false
     core: false
-    image: "zwavejs/zwave-js-ui:11"
+    image: "zwavejs/zwave-js-ui:11.24.1"
     container_name: zwave-js-ui
     restart_policy: unless-stopped
     ports:
@@ -220,7 +223,7 @@ services:
   zigbee2mqtt:
     enabled: false
     core: false
-    image: "koenkk/zigbee2mqtt:latest"
+    image: "koenkk/zigbee2mqtt:2.14.1"
     container_name: zigbee2mqtt
     restart_policy: unless-stopped
     ports:
@@ -237,7 +240,7 @@ services:
   node-red:
     enabled: false
     core: false
-    image: "nodered/node-red:latest"
+    image: "nodered/node-red:5.0.7-24-minimal"
     container_name: node-red
     restart_policy: unless-stopped
     ports:
@@ -254,7 +257,7 @@ services:
   otbr:
     enabled: false
     core: false
-    image: "openthread/border-router:latest"
+    image: "openthread/border-router:sha-9802eb8"
     container_name: otbr
     restart_policy: unless-stopped
     network_mode: host          # obbligatorio per IPv6, mDNS e TREL

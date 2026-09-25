@@ -124,15 +124,14 @@ class ReleaseManager:
         immagine combaciano con arfea.yml E (se dichiara habapp_code) la versione
         del codice HABApp installata su disco combacia. Il vincolo sul codice e'
         cio' che rende visibile un bump di SOLO codice (immagini identiche): senza,
-        _infer_current scambierebbe la release nuova per gia' installata."""
+        _infer_current scambierebbe la release nuova per gia' installata.
+        I servizi che l'arfea.yml dell'impianto non ha (un template vecchio, senza
+        otbr) non contano, come in _target_images."""
         services = self.cfg.config.services
-        images = rel.get("images", {})
+        images = {svc: img for svc, img in rel.get("images", {}).items() if svc in services}
         if not images:
             return False
-        if not all(
-            svc in services and services[svc].image == img
-            for svc, img in images.items()
-        ):
+        if not all(services[svc].image == img for svc, img in images.items()):
             return False
         code_ver = self._release_code_version(rel)
         if code_ver and code_ver != self._installed_code_version():
@@ -211,6 +210,25 @@ class ReleaseManager:
             if services[svc].image != img
         }
 
+    def _split_by_enabled(self, pending: dict[str, str]) -> tuple[dict[str, str], dict[str, str]]:
+        """Divide i tag da aggiornare fra servizi accesi e spenti (Redmine #247).
+        Acceso = come all'avvio, dipendenze comprese (mosquitto con zwave-js-ui).
+        Di uno spento si scrive solo il tag in arfea.yml: niente pull, niente
+        riavvio. L'immagine arriva quando il servizio viene acceso, gia' al tag
+        certificato."""
+        effective = self.cfg.resolve_effective_enabled()
+        active = {svc: img for svc, img in pending.items() if effective.get(svc)}
+        idle = {svc: img for svc, img in pending.items() if not effective.get(svc)}
+        return active, idle
+
+    def _has_migrations(self, path: list[str]) -> bool:
+        """True se almeno una release del percorso ha uno script di migrazione."""
+        base = self._migrations_dir()
+        return any(
+            (base / v / f"{phase}.sh").is_file()
+            for v in path for phase in ("pre", "post")
+        )
+
     # ------------------------------------------------------------------
     # Check (non distruttivo)
     # ------------------------------------------------------------------
@@ -226,12 +244,14 @@ class ReleaseManager:
         path, latest = self._build_path(manifest, current)
         target_images = self._target_images(manifest, latest)
         pending = self._pending(target_images)
+        effective = self.cfg.resolve_effective_enabled()
 
         services_diff = [
             ServiceUpdateInfo(
                 name=svc,
                 current_image=self.cfg.config.services[svc].image,
                 target_image=img,
+                enabled=bool(effective.get(svc)),
             )
             for svc, img in pending.items()
         ]
@@ -325,10 +345,17 @@ class ReleaseManager:
         )
         return True
 
-    def run_apply(self, selected: Optional[list[str]] = None) -> ReleaseUpdateStatus:
+    def run_apply(
+        self,
+        selected: Optional[list[str]] = None,
+        excluded: Optional[list[str]] = None,
+    ) -> ReleaseUpdateStatus:
         """Applica l'aggiornamento verso ``latest``. Se ``selected`` è dato, aggiorna
-        solo quei servizi (conferma software-per-software). Bloccante: usare come
-        background task."""
+        solo quei servizi (conferma software-per-software); ``excluded`` toglie
+        quelli che l'utente ha spento e aggiorna tutto il resto (il widget, che
+        non ha un interruttore per ogni componente, Redmine #248). I servizi
+        spenti ricevono sempre e solo il tag. Bloccante: usare come background
+        task."""
         if self.status.state not in (
             ReleaseUpdateState.IDLE,
             ReleaseUpdateState.STARTING,     # impostato da mark_starting()
@@ -351,7 +378,9 @@ class ReleaseManager:
         current = self.cfg.config.controller.release or self._infer_current(manifest["releases"])
         path, latest = self._build_path(manifest, current)
         target_images = self._target_images(manifest, latest)
-        all_pending = self._pending(target_images)
+        # Solo i servizi accesi sono da scegliere, scaricare e riavviare; gli
+        # spenti (idle) prendono il tag in ogni caso.
+        all_pending, idle = self._split_by_enabled(self._pending(target_images))
 
         # Codice HABApp: pseudo-componente selezionabile accanto ai servizi.
         target_code = self._target_habapp_code(manifest, latest)
@@ -363,6 +392,9 @@ class ReleaseManager:
         if selected is not None:
             pending = {svc: img for svc, img in all_pending.items() if svc in selected}
             apply_code = code_pending and HABAPP_CODE in selected
+        if excluded:
+            pending = {svc: img for svc, img in pending.items() if svc not in excluded}
+            apply_code = apply_code and HABAPP_CODE not in excluded
 
         self.status = ReleaseUpdateStatus(
             state=ReleaseUpdateState.STARTING,
@@ -372,15 +404,15 @@ class ReleaseManager:
             started_at=self.status.started_at or datetime.now(),
         )
 
-        if not pending and not apply_code:
+        if not pending and not apply_code and not idle:
             self.status.state = ReleaseUpdateState.COMPLETED
             self.status.message = "Nessun aggiornamento da applicare"
             self.status.completed_at = datetime.now()
             return self.status
 
-        # Upgrade completo = si stanno aggiornando TUTTI i componenti con diff
-        # pendente (immagini + codice). Solo allora girano le migrazioni (pensate
-        # per l'intero set release).
+        # Upgrade completo = si stanno aggiornando TUTTI i componenti accesi con
+        # diff pendente (immagini + codice). Solo allora girano le migrazioni
+        # (pensate per l'intero set release).
         all_keys = set(all_pending) | ({HABAPP_CODE} if code_pending else set())
         sel_keys = set(pending) | ({HABAPP_CODE} if apply_code else set())
         full_upgrade = sel_keys == all_keys
@@ -395,6 +427,15 @@ class ReleaseManager:
                 f"(attuale {VERSION}). Aggiorna prima il controller."
             )
             return self.status
+
+        migrate = full_upgrade and bool(path)
+        if not pending and not apply_code and not (migrate and self._has_migrations(path)):
+            # Cambiano solo i tag dei servizi spenti: si scrivono e basta. Il
+            # backup fermerebbe l'impianto per niente, e non c'e' nulla da
+            # scaricare ne' da riavviare.
+            self.cfg.set_service_images(idle)
+            logger.info("Tag dei servizi spenti aggiornati: %s", idle)
+            return self._complete(latest, target_images, target_code, list(idle))
 
         # Backup come punto di ripristino
         self.status.state = ReleaseUpdateState.BACKUP
@@ -423,10 +464,9 @@ class ReleaseManager:
                 return self.status
         self.status.state = ReleaseUpdateState.BACKUP
 
-        prev_images = {svc: self.cfg.config.services[svc].image for svc in pending}
+        prev_images = {svc: self.cfg.config.services[svc].image for svc in {**pending, **idle}}
         prev_code = installed_code       # versione codice pre-apply (per rollback)
         code_installed = False
-        migrate = full_upgrade and bool(path)
 
         try:
             # 1) migrazioni pre (una per release attraversata), solo upgrade completo
@@ -438,7 +478,8 @@ class ReleaseManager:
                     self._run_migration(v, "pre", prev)
                     prev = v
 
-            # 2) pull (fail-fast prima di toccare i container)
+            # 2) pull (fail-fast prima di toccare i container), solo dei servizi
+            # accesi: gli spenti scaricheranno la loro quando vengono accesi
             self.status.state = ReleaseUpdateState.PULLING
             for svc, img in pending.items():
                 self.status.step = svc
@@ -462,9 +503,9 @@ class ReleaseManager:
                     raise RuntimeError(msg)
                 code_installed = True
 
-            # 3) scrittura chirurgica dei soli tag in arfea.yml
-            if pending:
-                self.cfg.set_service_images(pending)
+            # 3) scrittura chirurgica dei soli tag in arfea.yml (spenti compresi)
+            if pending or idle:
+                self.cfg.set_service_images({**pending, **idle})
 
             # 4) recreate + health-gate. Se ho installato codice ma habapp non e' tra
             # i servizi con tag nuovo (bump di solo codice), va comunque ricreato per
@@ -505,8 +546,20 @@ class ReleaseManager:
             )
             return self.status
 
-        # Marker avanza solo se TUTTE le immagini della release ora combaciano E la
-        # versione del codice HABApp bersaglio (se dichiarata) e' quella installata.
+        applied = list(pending) + list(idle) + ([HABAPP_CODE] if code_installed else [])
+        return self._complete(latest, target_images, target_code, applied, backup_note)
+
+    def _complete(
+        self,
+        latest: str,
+        target_images: dict[str, str],
+        target_code: Optional[dict],
+        applied: list[str],
+        backup_note: str = "",
+    ) -> ReleaseUpdateStatus:
+        """Chiude un apply riuscito. Il marker avanza solo se TUTTE le immagini
+        della release ora combaciano E la versione del codice HABApp bersaglio
+        (se dichiarata) e' quella installata."""
         images_ok = all(
             self.cfg.config.services[svc].image == img
             for svc, img in target_images.items()
@@ -527,7 +580,6 @@ class ReleaseManager:
         self.status.message = done_msg
         self.status.step = ""
         self.status.completed_at = datetime.now()
-        applied = list(pending.keys()) + ([HABAPP_CODE] if code_installed else [])
         logger.info("Apply completato (componenti: %s)", applied)
         return self.status
 

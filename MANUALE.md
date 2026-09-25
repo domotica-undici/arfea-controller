@@ -205,9 +205,9 @@ loop).
 
 | Tipo | Comportamento |
 |---|---|
-| **core** (`core: true`) | Sempre attivo, non disattivabile (openhab, samba) |
+| **core** (`core: true`) | Sempre attivo, non disattivabile (openhab) |
 | **auto-dipendenza** | Attivato dalle regole `dependencies` (mosquitto) |
-| **opzionale** | Attivabile/disattivabile dall'utente (habapp, zwave, zigbee, node-red, otbr) |
+| **opzionale** | Attivabile/disattivabile dall'utente (habapp, zwave, zigbee, node-red, otbr, samba) |
 
 ### Device seriali (importante)
 
@@ -221,15 +221,34 @@ I device fisici vanno mappati nel container che li usa, con `devices:`.
 | Thread/Matter (otbr) | `/dev/ttyTHREAD` | regola udev nRF52840 |
 | **Modbus (OpenHAB)** | **`/dev/ttyXXX`** (es. `/dev/ttyUSB0`) | **DEVE** essere un vero `/dev/ttyXXX`: la libreria seriale di OpenHAB (nrjavaserial) non accetta symlink arbitrari |
 
+La colonna qui sopra è il nome **dentro il container**. Dal lato dell'**host** si usa
+sempre il nome stabile in `/dev/serial/by-id/`, mai `/dev/ttyUSB0`/`/dev/ttyACM0`:
+quelli li assegna il kernel nell'ordine in cui trova gli adattatori, e con due
+adattatori USB un riavvio può scambiarli. Su un impianto, dopo un riavvio, OpenHAB ha
+parlato Modbus con la chiavetta Z-Wave e zwave-js-ui con il cavo RS485 per un mese
+(Redmine #243). Il by-id è anche descrittivo
+(`usb-FTDI_USB-RS485_Cable_…`, `usb-SONOFF_…_ZWave_Dongle_…`): si vede a colpo
+d'occhio quale dispositivo va a quale servizio. `ls -l /dev/serial/by-id/` sull'host
+dice a quale tty corrisponde oggi ciascuno.
+
 Esempio (servizio openhab):
 ```yaml
     group_add:
       - "20"                              # gruppo dialout dell'host
     devices:
-      - "/dev/ttyUSB0:/dev/ttyUSB0"       # Modbus RTU
+      # Modbus RTU: nome stabile sull'host, /dev/ttyUSB0 nel container
+      - "/dev/serial/by-id/usb-FTDI_USB-RS485_Cable_ABC12345-if00-port0:/dev/ttyUSB0"
     environment:
       EXTRA_JAVA_OPTS: "-Duser.timezone=Europe/Rome -Djna.nosys=true -Dgnu.io.rxtx.SerialPorts=/dev/ttyUSB0"
 ```
+
+Dal controller **1.8.8** la Web UI avvisa (card *Da guardare* e pagina
+*Dispositivi*) quando un servizio acceso usa il nome del kernel e la porta ha un
+by-id. Dice quale dispositivo c'è **oggi** dietro quel nome e propone *Usa il nome
+stabile*. Prima di premerlo controlla che quel dispositivo sia quello giusto per il
+servizio: se le porte si sono già scambiate, il by-id proposto sarebbe quello
+sbagliato e va scelto l'altro. Lo stesso elenco arriva da
+`GET /api/system/serial-devices/warnings`.
 
 > Modificare `devices`/`environment` richiede un **recreate** del container, non
 > un semplice restart (vedi [§5.4](#54-restart-vs-recreate)).
@@ -263,6 +282,12 @@ controller più vecchio col campo vuoto va scritto a mano in `arfea.yml`, seguit
 `docker compose restart arfea-controller`: senza URL non può scaricare la versione
 che si ripara da sola.
 
+Stesso discorso per il segnaposto `https://YOUR-SERVER.example.com/...`, che la repo
+pubblica metteva al posto dell'host vero fino al 17/07/2026: chi ha installato da
+quel clone se lo ritrova in `update_url` o `releases_url` (su un impianto era in
+`releases_url`, che così non vedeva nessuna release). Dal controller **1.8.8** vale come
+vuoto e all'avvio torna al default; prima va corretto a mano.
+
 - **Automatico all'avvio:** il controller scarica il tarball, confronta l'hash
   SHA256 con l'ultimo applicato (`.update_hash`) e, se diverso, lo applica e si
   riavvia. Se l'hash è invariato non fa nulla.
@@ -282,7 +307,16 @@ riavvio del container stesso) → riavvio col nuovo codice.
 ### 4.3 Aggiornamento manuale via tar sull'host (procedura affidabile)
 
 Da usare se il self-update automatico non è praticabile, o come recovery. È il
-metodo **più affidabile** perché bypassa `nsenter`.
+metodo **più affidabile** perché bypassa `nsenter`. È **obbligatorio** per un
+controller più vecchio della **1.2.1**: il suo self-update ricostruisce l'immagine
+dentro il cgroup del container, che muore con la recreate, e il controller nuovo
+resta in `Created` senza mai partire (quei controller riportano la versione
+«1.0.0», Redmine #239).
+
+Prima controlla `docker buildx version`: il Dockerfile usa `$BUILDPLATFORM`, che
+senza buildx non esiste, e la build fallisce (ora e a ogni OTA). Le centraline
+installate ad aprile 2026 non lo hanno: `apt-get install -y docker-buildx-plugin`,
+solo quel pacchetto.
 
 ```bash
 # sulla board
@@ -297,12 +331,19 @@ tar -xJf /tmp/new.tar.xz --strip-components=1 -C /opt/docker_store/arfea-control
 # 3. RIPRISTINA la tua config (con chiavi/credenziali/servizi reali)
 cp /tmp/arfea.yml.bak config/arfea.yml
 
-# 4. allinea l'hash così l'auto-update non ritenta inutilmente
+# 4. porta lo skeleton nella conf di OpenHAB (regole JS, item, script): il
+#    self-update lo fa da solo, l'estrazione manuale no
+cp -r skeleton-openhab/conf/. /opt/docker_store/openhab/conf/
+cp skeleton-openhab/cont-init.d/* /opt/docker_store/openhab/cont-init.d/
+chown -R 9001:9001 /opt/docker_store/openhab/conf /opt/docker_store/openhab/cont-init.d
+
+# 5. allinea l'hash così l'auto-update non ritenta inutilmente
 sha256sum /tmp/new.tar.xz | awk '{print $1}' > .update_hash
 
-# 5. rebuild e restart
-docker compose up -d --build --force-recreate
-docker logs -f arfea-controller
+# 6. rebuild e restart, in un'unità systemd: sopravvive a una sessione SSH che cade
+systemd-run --unit=arfea-selfupdate --collect bash -c \
+  "cd /opt/docker_store/arfea-controller && docker compose up -d --build --force-recreate 2>&1 | logger -t arfea-update; docker image prune -f"
+journalctl -t arfea-update -f
 ```
 
 > ⚠️ **Differenza cruciale:** l'estrazione manuale sovrascrive **tutto, `config/`
@@ -317,7 +358,11 @@ docker logs -f arfea-controller
 1. La card **"Aggiornamenti"** mostra la versione attuale e, se disponibile,
    *"Nuova versione disponibile"*.
 2. Per ogni software con update appare un **interruttore** (acceso di default):
-   spegni quelli che **non** vuoi aggiornare.
+   spegni quelli che **non** vuoi aggiornare. Quello che non ha un interruttore
+   (codice HABApp, mosquitto, otbr) si aggiorna insieme al resto (controller ≥ 1.8.8).
+   Un servizio **spento** non compare: riceve solo la nuova versione in `arfea.yml`,
+   senza download né riavvio, e la scarica quando lo si accende. Se cambiano solo
+   servizi spenti, l'aggiornamento non fa nemmeno il backup.
 3. Premi **"Applica aggiornamento"**. Sequenza: backup → (migrazioni) → pull nuove
    immagini → riavvio servizi aggiornati → verifica ripartenza. In caso di
    problema fa **rollback** dei tag.
@@ -345,20 +390,31 @@ Da riga di comando (equivalente, da localhost senza API key):
 curl -s localhost:8888/api/system/releases/check          # cosa è disponibile
 curl -s -X POST localhost:8888/api/system/releases/apply  # aggiorna tutto
 curl -s -X POST 'localhost:8888/api/system/releases/apply?services=openhab,habapp'  # solo alcuni
+curl -s -X POST 'localhost:8888/api/system/releases/apply?exclude=zwave-js-ui'      # tutti tranne questi (1.8.8)
 watch -n5 'curl -s localhost:8888/api/system/releases/status'   # fase, messaggio, progress (%)
 cd /opt/docker_store/arfea-controller && docker compose logs -f --tail 50 arfea-controller   # il dettaglio
 ```
 
 ### 4.5 Certificare e pubblicare una nuova release (interno)
 
-1. Scegli le versioni nuove (es. `openhab/openhab:5.2.0`).
+1. Scegli le versioni nuove (es. `openhab/openhab:5.2.0`). **Sempre tag esatti**, mai
+   `:latest` né una major mobile come `:11`: l'apply scarica un'immagine solo quando il
+   tag cambia, quindi un tag mobile resta per sempre all'immagine del giorno
+   dell'installazione, diversa da impianto a impianto. Nel manifest vanno **tutte** le
+   immagini (dalla 2026.09.02 anche mosquitto, zigbee2mqtt, node-red, otbr), non solo
+   quelle dei servizi accesi: fuori resta solo samba. Controlla anche che il tag non sia
+   più vecchio di quello che `:latest` dava già agli impianti (Node-RED: `latest` è la
+   5.x dal 9/6/2026), per non fare un downgrade.
 2. **Leggi i breaking change** dai repo ufficiali (OpenHAB, HABApp, zwave-js-ui,
-   zigbee2mqtt) per il salto.
+   zigbee2mqtt, mosquitto, node-red) per il salto. Se prima il tag era mobile, la
+   versione di partenza è sconosciuta: si legge dalla prima della major.
 3. Se servono fix, scrivi gli script in `migrations/<versione>/pre.sh` (e/o
    `post.sh`) — contratto in [migrations/README.md](migrations/README.md).
    **Rigenera e ripubblica il tarball** del controller (le migrazioni viaggiano lì).
 4. **Collauda su una centralina di test** (apply reale).
-5. Porta `latest` alla nuova versione in `releases.json` e pubblicalo.
+5. Porta `latest` alla nuova versione in `releases.json` e pubblicalo. La release nuova
+   va **prima** di `2026.08-ESEMPIO`: l'ordine della lista è il percorso di upgrade, e
+   dopo l'esempio si attraverserebbero le sue migrazioni.
 
 Il manifest `releases.json` (su `releases_url`): `releases` è la lista ordinata
 dalla più vecchia alla più recente; `latest` è la versione bersaglio; ogni release
@@ -472,11 +528,11 @@ Alla fine stampa cosa resta **da guardare a mano**:
   ricostruisce la mappa. Il canale nuovo si chiama `<objectid>#sensor` (o solo
   `<objectid>` per gli interruttori, es. `switch_1`), dove `objectid` è nella
   configurazione del canale vecchio; il `state_topic` va confrontato con quello della
-  discovery retained. Su paolaCamisani: 29 item ricollegati così, tutti verificati;
+  discovery retained. Su un impianto migrato: 29 item ricollegati così, tutti verificati;
 - se il log dice *Graal JavaScript language not initialized*, riavviare il container
   openhab (JS Scripting installato a caldo).
 
-**Un vecchio zwavejs2mqtt → zwave-js-ui del controller** (fatto su paolaCamisani):
+**Un vecchio zwavejs2mqtt → zwave-js-ui del controller** (fatto su un impianto migrato):
 fermare il vecchio container e togliergli il riavvio automatico
 (`docker update --restart=no zwavejs2mqtt && docker stop zwavejs2mqtt`), copiare il suo
 store (`/home/<utente>/store`) in `/opt/docker_store/zwave-js-ui` e nel `settings.json`
@@ -617,8 +673,11 @@ UI di OpenHAB come sempre.
 - Il kar **non entra nel backup**: sono MB ri-scaricabili, non dati
   dell'impianto. Dopo un ripristino lo riporta a bordo il controller.
 
-### 6.2 Samba (core, porte 139/445)
-Condivisione file per accesso ai `conf/` di OpenHAB da rete. Attivo di default.
+### 6.2 Samba (opzionale, porte 139/445)
+Condivisione file per accesso ai `conf/` di OpenHAB da rete. Non è più core: nel
+template è spento (`enabled: false`), resta acceso sugli impianti migrati che lo
+usavano. Probabilmente si toglie; per questo è l'unico servizio a `:latest`, fuori da
+`releases.json`.
 
 ### 6.3 Mosquitto (auto-dipendenza, porta 1883)
 Broker MQTT. Avviato **automaticamente** quando abiliti zwave-js-ui o zigbee2mqtt;
@@ -663,7 +722,12 @@ riporta a WARN.
 
 > Le **fasce giornaliere** (`timeSlots`/`timeSlot`/`isHoliday`/`holidayName`)
 > **non** sono in HABApp: vivono in `conf/automation/js/arfea_system.js` dello
-> skeleton, quindi funzionano su ogni impianto anche senza HABApp.
+> skeleton, quindi funzionano su ogni impianto anche senza HABApp. Il vecchio
+> `rules/aasystem/time.py` che le gestiva, rimasto sugli impianti installati prima
+> della 1.6.0, girava insieme al JS (su un impianto andava in errore due volte al
+> minuto). Dal controller **1.8.8** lo si toglie da solo, all'avvio e nel
+> provisioning, se `arfea_system.js` è a bordo: diventa `time.py.obsoleto` nella
+> stessa cartella, che HABApp non carica.
 
 ### 6.5 Z-Wave JS UI (opzionale, porta 8091)
 Nella pagina di onboarding:
@@ -737,10 +801,13 @@ così le Location nuove prendono lo sfondo senza fare niente.
 - Se la pagina Home non esiste ancora il controller la crea con le impostazioni
   di default della UI. Dove si vede: Impostazioni → Pagine → Home, oppure
   `GET /rest/ui/components/ui:page/home` (i `backgroundImage` sotto `/static/semantic/`).
-  Provato su paolaCamisani: 26 card (7 Location, 7 Equipment, 12 Property).
+  Provato su un impianto: 26 card (7 Location, 7 Equipment, 12 Property).
 
 > Ownership: ogni file sotto `/opt/docker_store/openhab/` DEVE restare
-> `9001:9001` (UID/GID del container OpenHAB).
+> `9001:9001` (UID/GID del container OpenHAB). Le cartelle che un aggiornamento
+> porta per la prima volta nascevano di root (con la 1.8.7 `conf/html/semantic`):
+> dal controller **1.8.8** nascono 9001, e all'avvio il controller riporta a
+> `9001:9001` tutto ciò che in `openhab/conf` è di root.
 
 ### 6.11 Rete: LAN, wifi e access point
 
@@ -825,8 +892,8 @@ non fa client e AP insieme: per questo l'AP si spegne per qualche secondo quando
 cerca la rete.
 
 **Un AP fatto a mano sull'host (create_ap / linux-wifi-hotspot).** Alcuni
-impianti vecchi hanno un AP permanente per i propri dispositivi (su paolaCamisani
-`domoticaUndici8b0d` su `wlan0`, servizio `create_ap` con `/etc/create_ap.conf`).
+impianti vecchi hanno un AP permanente per i propri dispositivi (per esempio su
+`wlan0`, servizio `create_ap` con `/etc/create_ap.conf`).
 Per non litigare con NetworkManager la scheda è esclusa (`unmanaged-devices=
 interface-name:wlan0` in `NetworkManager.conf`), quindi il controller non la può
 usare: niente wifi client né AP di emergenza, e conviene spegnerlo (*Abilitato*
@@ -852,7 +919,7 @@ direttamente.
 
 | Sezione | Cosa c'è |
 |---|---|
-| **Stato** | *Da guardare*: gli avvisi che chiedono attenzione (servizio fermo, aggiornamento disponibile o in corso, scelta in sospeso, backup non riuscito, rete da sistemare, HABApp senza token); un tocco porta alla sezione giusta. Poi servizi con riavvio, dati della centralina e IP, riavvio del sistema operativo. |
+| **Stato** | *Da guardare*: gli avvisi che chiedono attenzione (servizio fermo, aggiornamento disponibile o in corso, scelta in sospeso, backup non riuscito, rete da sistemare, HABApp senza token, porta seriale mappata con un nome che può cambiare al riavvio); un tocco porta alla sezione giusta. Poi servizi con riavvio, dati della centralina e IP, riavvio del sistema operativo. |
 | **Impianto** | HABApp (funzioni attive), configurazione dell'impianto (`params/*.yml`), porte seriali dei dispositivi, telefono di emergenza. |
 | **Rete** | LAN, wifi, access point di emergenza; installazione di NetworkManager se manca. |
 | **Aggiornamenti** | Versioni dei software (release certificate, con avanzamento e scelta *continua senza backup / ferma*), controller, pacchetto addon offline. |
@@ -1046,6 +1113,16 @@ identifier, maybe insufficient permissions`. Il messaggio "insufficient
 permissions" è **spesso fuorviante**. Diagnostica **in ordine**, dal software
 all'hardware:
 
+0. **È il dispositivo giusto?** Se il mapping usa `/dev/ttyUSB0` sull'host, dopo un
+   riavvio può essere diventato un altro adattatore: timeout su tutte le letture
+   Modbus e, se c'è una chiavetta Z-Wave, zwave-js-ui con `Timeout while waiting
+   for an ACK from the controller`. Confronta:
+   ```bash
+   ls -l /dev/serial/by-id/                                  # quale tty è ogni adattatore, oggi
+   docker inspect openhab zwave-js-ui --format '{{.Name}} {{json .HostConfig.Devices}}'
+   ```
+   Rimedio: mappare per by-id ([§3](#device-seriali-importante)); dal controller 1.8.8
+   la Web UI lo segnala da sola.
 1. **Device mappato nel container?**
    ```bash
    docker exec openhab ls -l /dev/ttyUSB0     # deve esistere DENTRO il container

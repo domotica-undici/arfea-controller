@@ -1,7 +1,7 @@
 {
-  "_commento": "Manifest delle versioni CERTIFICATE per le centraline ARFEA. Va pubblicato su controller.releases_url (es. https://cloud.domoticaundici.it/ota/releases.json). 'releases' è ordinato dalla più vecchia alla più recente: l'ordine definisce il percorso di upgrade attraversato dall'apply. 'latest' indica la versione bersaglio. Ogni release elenca i tag immagine certificati; l'apply scrive SOLO questi tag in arfea.yml. 'controller_min' (opzionale) blocca l'upgrade se il controller è troppo vecchio. 'migrations' (opzionale) elenca le versioni che hanno script migrations/<versione>/pre.sh|post.sh bundlati nel tarball OTA. 'habapp_code' (opzionale) è il CODICE HABApp (regole+librerie) versionato a parte dall'immagine: {version, url, sha256} del tarball prodotto da script/build-habapp-tarball.sh. version = engine+revisione (es. 25.12.0 -> 25.12.1) e può avanzare anche a immagine habapp invariata. L'apply lo scarica, verifica lo sha256, lo spacchetta e ri-provisiona; nel diff/UI compare come pseudo-servizio 'habapp-code'. Assente = nessun aggiornamento di codice per quella release.",
+  "_commento": "Manifest delle versioni CERTIFICATE per le centraline ARFEA. Va pubblicato su controller.releases_url (es. https://cloud.domoticaundici.it/ota/releases.json). 'releases' è ordinato dalla più vecchia alla più recente: l'ordine definisce il percorso di upgrade attraversato dall'apply. 'latest' indica la versione bersaglio. Ogni release elenca i tag immagine certificati, sempre esatti (mai :latest o una major mobile come :11: l'apply scarica solo quando il tag cambia, quindi un tag mobile resta per sempre all'immagine del giorno dell'installazione); l'apply scrive SOLO questi tag in arfea.yml. Dal controller 1.8.8 i servizi spenti ricevono solo il tag, senza download: l'immagine arriva quando vengono accesi. 'controller_min' (opzionale) blocca l'upgrade se il controller è troppo vecchio. 'migrations' (opzionale) elenca le versioni che hanno script migrations/<versione>/pre.sh|post.sh bundlati nel tarball OTA. 'habapp_code' (opzionale) è il CODICE HABApp (regole+librerie) versionato a parte dall'immagine: {version, url, sha256} del tarball prodotto da script/build-habapp-tarball.sh. version = engine+revisione (es. 25.12.0 -> 25.12.1) e può avanzare anche a immagine habapp invariata. L'apply lo scarica, verifica lo sha256, lo spacchetta e ri-provisiona; nel diff/UI compare come pseudo-servizio 'habapp-code'. Assente = nessun aggiornamento di codice per quella release.",
   "channel": "stable",
-  "latest": "2026.09.01",
+  "latest": "2026.09.02",
   "releases": [
     {
       "version": "2026.07.03",
@@ -74,6 +74,26 @@
         "openhab": "openhab/openhab:5.2.1",
         "habapp": "spacemanspiff2007/habapp:25.12.0",
         "zwave-js-ui": "zwavejs/zwave-js-ui:11"
+      },
+      "habapp_code": {
+        "version": "25.12.4",
+        "url": "https://cloud.domoticaundici.it/ota/habapp-25.12.4.tar.xz",
+        "sha256": "e3cf63012d447930f13618d9842c9f60a860b569ecb6a563f36ca1cae139e467"
+      }
+    },
+    {
+      "version": "2026.09.02",
+      "date": "2026-09-25",
+      "notes": "Tag esatti per tutte le immagini: Z-Wave JS UI 11.24.1 (prima :11, cioe' la 11.x del giorno dell'installazione), Mosquitto 2.1.2, Zigbee2MQTT 2.14.1, Node-RED 5.0.7 (variante minimal, Node 24), OpenThread Border Router sha-9802eb8; prima erano a :latest, fermi all'immagine scaricata all'installazione. OpenHAB, HABApp e codice HABApp 25.12.4 invariati. I servizi spenti ricevono solo il tag, senza download: l'immagine arriva quando li si accende (controller 1.8.8). Note di rilascio controllate, nessuna migrazione: Z-Wave JS UI 11.x senza breaking change (dalla 11.23 l'autodiscovery crea anche le tapparelle Window Covering); Mosquitto 2.1 porta max_packet_size a 2 MB e all'avvio sistema i permessi solo di /mosquitto/data, la nostra config non cambia; Zigbee2MQTT fermo a una 1.x passa dalla 2.0, che migra da sola configuration.yaml al primo avvio (e ne tiene una copia), fra le 2.x nessun breaking change; Node-RED fermo a una 4.x passa alla 5 (serve Node 22.9+, l'immagine ha Node 24): i nodi con codice nativo (es. serialport) vanno ricompilati e la variante minimal non ha gli strumenti per farlo.",
+      "controller_min": "1.8.8",
+      "images": {
+        "openhab": "openhab/openhab:5.2.1",
+        "habapp": "spacemanspiff2007/habapp:25.12.0",
+        "zwave-js-ui": "zwavejs/zwave-js-ui:11.24.1",
+        "mosquitto": "eclipse-mosquitto:2.1.2-alpine",
+        "zigbee2mqtt": "koenkk/zigbee2mqtt:2.14.1",
+        "node-red": "nodered/node-red:5.0.7-24-minimal",
+        "otbr": "openthread/border-router:sha-9802eb8"
       },
       "habapp_code": {
         "version": "25.12.4",

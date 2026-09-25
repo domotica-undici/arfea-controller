@@ -432,6 +432,7 @@ class ServiceUpdateInfo(BaseModel):
     name: str                    # nome servizio in arfea.yml (es. "openhab")
     current_image: str
     target_image: str
+    enabled: bool = True         # False = servizio spento: solo il tag, niente pull ne' riavvio
 
 
 class ReleaseCheckResult(BaseModel):
