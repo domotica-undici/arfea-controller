@@ -467,8 +467,12 @@ Alla fine stampa cosa resta **da guardare a mano**:
 - **thing MQTT Home Assistant** creati prima del 4.3 (`mqtt:homeassistant_...`): dal 5.0
   cambiano gli ID dei canali e dal 5.1 il binding è a parte (lo installa l'upgrade).
   Si eliminano, si riapprovano dall'inbox (`homeassistant:device:...`) e si
-  ricollegano gli item. Eliminare un thing cancella anche i suoi collegamenti: prima
-  di farlo salvare l'elenco item → canale;
+  ricollegano gli item. Eliminare un thing **non** cancella i suoi collegamenti:
+  restano nel JSONDB e puntano a canali che non esistono più, ed è da lì che si
+  ricostruisce la mappa. Il canale nuovo si chiama `<objectid>#sensor` (o solo
+  `<objectid>` per gli interruttori, es. `switch_1`), dove `objectid` è nella
+  configurazione del canale vecchio; il `state_topic` va confrontato con quello della
+  discovery retained. Su paolaCamisani: 29 item ricollegati così, tutti verificati;
 - se il log dice *Graal JavaScript language not initialized*, riavviare il container
   openhab (JS Scripting installato a caldo).
 
@@ -481,6 +485,23 @@ sulla rete Docker del controller). Restano le **chiavi di sicurezza S0/S2**, i n
 nodi e il nome del client MQTT, quindi i topic e la discovery Home Assistant non
 cambiano. Mai avviare zwave-js-ui con la config di default su una chiavetta già in
 uso: senza chiavi re-intervista i nodi sicuri senza sicurezza.
+
+Trappole viste sullo stesso impianto, prima di approvare i thing Home Assistant:
+- **`gateway.ignoreLoc` di zwave-js-ui deve restare `false`** se i nomi dei nodi si
+  ripetono (tre «allagamento», quattro «movimento» in stanze diverse). Salvando la
+  pagina impostazioni della UI 11.x può diventare `true`: i topic perdono la stanza
+  e nodi diversi scrivono sugli stessi topic e sulle stesse discovery.
+- **Discovery vecchie nel database di mosquitto**: il broker migrato (o un periodo
+  con `ignoreLoc`) si porta dietro discovery retained di nomi che il gateway non usa
+  più. Il binding le unisce a quelle giuste nello stesso thing e i canali nascono
+  doppi o con suffissi (`water_binary_sensor#sensor`). Prima di approvare:
+  `mosquitto_sub --retained-only -t 'homeassistant/+/+/+/config'`, e ogni nodeid che
+  il gateway non pubblica più si cancella con `mosquitto_pub -r -n -t <topic>`
+  (salvandolo prima su file).
+- Nel binding Home Assistant 5.2.1 modificare la configurazione di un thing, o
+  disattivare il broker, può bloccare lo smontaggio degli handler (*Disposing handler
+  … takes more than 5000ms* ogni 10 s): si sblocca solo riavviando il container
+  openhab.
 
 > ⚠️ **Salto di major (2.x → 5.x):** i dati vengono comunque copiati e l'immagine
 > OpenHAB 5.x prova l'upgrade automatico dell'userdata, ma da OpenHAB 2.x può
@@ -714,7 +735,9 @@ così le Location nuove prendono lo sfondo senza fare niente.
   Home) **non viene toccata**: vale la scelta dell'utente. Per togliere lo
   sfondo a una card basta darle un colore.
 - Se la pagina Home non esiste ancora il controller la crea con le impostazioni
-  di default della UI. Nel log: `Card semantiche: sfondo aggiornato su N card`.
+  di default della UI. Dove si vede: Impostazioni → Pagine → Home, oppure
+  `GET /rest/ui/components/ui:page/home` (i `backgroundImage` sotto `/static/semantic/`).
+  Provato su paolaCamisani: 26 card (7 Location, 7 Equipment, 12 Property).
 
 > Ownership: ogni file sotto `/opt/docker_store/openhab/` DEVE restare
 > `9001:9001` (UID/GID del container OpenHAB).
