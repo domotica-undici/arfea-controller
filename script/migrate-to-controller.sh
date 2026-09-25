@@ -199,7 +199,8 @@ check_disk_space() {
   local mode="$1" backup_mb=0 native_mb=0 images_mb=1024
   [[ -d "$DATA_PATH" ]] && backup_mb=$(mb_of "$DATA_PATH")
   if [[ "$mode" == native ]]; then
-    native_mb=$(du -sm --exclude=cache --exclude=tmp --exclude=logs "$CONF" "$USERDATA" "$ADDONS" 2>/dev/null \
+    native_mb=$(du -sm --exclude=cache --exclude=tmp --exclude=logs --exclude='openhab-addons-*.kar' \
+                  "$CONF" "$USERDATA" "$ADDONS" 2>/dev/null \
                 | awk '{ s += $1 } END { print s + 0 }')
     images_mb=2048        # anche OpenHAB e i servizi, non solo il controller
   fi
@@ -268,14 +269,30 @@ import_arfea_ui() {
   fi
 }
 
-# buildx (necessario per multi-arch su ARM).
-ensure_buildx() {
-  if ! docker buildx version &>/dev/null; then
-    log "Installazione docker-buildx-plugin..."
-    apt-get update -qq || true
-    apt-get install -y -qq docker-buildx-plugin || \
-      warn "buildx non installato, la build potrebbe fallire"
+# docker compose + buildx (la build del controller li vuole entrambi su ARM),
+# garantiti PRIMA di fermare qualunque servizio (Redmine #232). Il docker.io di
+# Ubuntu non porta né l'uno né l'altro, e i pacchetti docker-*-plugin esistono
+# solo nel repo Docker: prima la build falliva all'avvio del nuovo stack, con i
+# servizi vecchi già fermi. Con docker.io si usano i pacchetti Ubuntu
+# (docker-compose-v2, docker-buildx) e si aggiorna docker.io insieme: il daemon
+# riparte e con lui i container già presenti.
+ensure_compose_buildx() {
+  if docker compose version &>/dev/null && docker buildx version &>/dev/null; then
+    return 0
   fi
+  log "Installazione di docker compose e buildx..."
+  apt-get update -qq || true
+  if dpkg -s docker.io &>/dev/null; then
+    apt-get install -y -qq docker.io docker-compose-v2 docker-buildx || true
+  else
+    apt-get install -y -qq docker-compose-plugin docker-buildx-plugin || true
+  fi
+  local tries=0
+  until docker info &>/dev/null || (( ++tries >= 30 )); do sleep 2; done
+  docker compose version &>/dev/null \
+    || die "docker compose non disponibile: nessun servizio è stato toccato. Installalo e rilancia."
+  docker buildx version &>/dev/null \
+    || die "docker buildx non disponibile: nessun servizio è stato toccato. Installalo e rilancia."
 }
 
 # ═════════════════════════════════════════════════════════════════════════════
@@ -349,15 +366,38 @@ detect_native_services() {
 # Union di: EXTRA_JAVA_OPTS (rxtx), riferimenti /dev/tty* e /dev/serial/by-id
 # in conf + jsondb, e device fisicamente presenti (ttyUSB*/ttyACM*).
 SERIAL_DEVICES=()   # path così come referenziati (usati per il mapping 1:1)
+
+# Container già in esecuzione accanto all'OpenHAB nativo (es. un zwavejs2mqtt
+# messo a mano): restano fuori dal controller e si tengono i loro device. Una
+# seriale già aperta da un container non va mappata anche in openhab (Redmine #234).
+FOREIGN_CONTAINERS=()      # "nome (immagine)"
+declare -A FOREIGN_DEVICES=()   # path reale sull'host -> nome del container
+detect_foreign_containers() {
+  command -v docker &>/dev/null && docker info &>/dev/null || return 0
+  local name img dev
+  while IFS=' ' read -r name img; do
+    [[ -z "$name" ]] && continue
+    FOREIGN_CONTAINERS+=("$name ($img)")
+    while IFS= read -r dev; do
+      [[ -z "$dev" ]] && continue
+      FOREIGN_DEVICES[$(readlink -f "$dev" 2>/dev/null || echo "$dev")]="$name"
+    done < <(docker inspect -f '{{range .HostConfig.Devices}}{{println .PathOnHost}}{{end}}' "$name" 2>/dev/null || true)
+  done < <(docker ps --format '{{.Names}} {{.Image}}')
+}
+
 detect_native_serial() {
   local -A seen=(); local d
   local raw=""
 
   # 1) da /etc/default/openhab(2): gnu.io.rxtx.SerialPorts=/dev/a:/dev/b
+  #    Solo righe attive: il file del pacchetto ha un esempio commentato con
+  #    /dev/ttyS0, che su una ODROID-C4 esiste (console seriale, gruppo tty) e
+  #    finiva mappata in openhab al posto del gruppo dialout (Redmine #235).
   for f in /etc/default/openhab /etc/default/openhab2; do
     [[ -f "$f" ]] || continue
     local v
-    v=$(grep -hoE 'gnu\.io\.rxtx\.SerialPorts=[^"[:space:]]*' "$f" 2>/dev/null | head -1 || true)
+    v=$(grep -hvE '^[[:space:]]*#' "$f" 2>/dev/null \
+        | grep -oE 'gnu\.io\.rxtx\.SerialPorts=[^"[:space:]]*' | head -1 || true)
     v="${v#*=}"
     [[ -n "$v" ]] && raw+=$'\n'"${v//:/$'\n'}"
   done
@@ -369,11 +409,18 @@ detect_native_serial() {
   # 3) device fisicamente presenti
   for d in /dev/ttyUSB* /dev/ttyACM*; do [[ -e "$d" ]] && raw+=$'\n'"$d"; done
 
-  # dedup preservando l'ordine
+  # dedup preservando l'ordine, saltando i device di altri container
+  local real
   while IFS= read -r d; do
     [[ -z "$d" ]] && continue
     [[ -n "${seen[$d]:-}" ]] && continue
-    seen[$d]=1; SERIAL_DEVICES+=("$d")
+    seen[$d]=1
+    real=$(readlink -f "$d" 2>/dev/null || echo "$d")
+    if [[ -n "${FOREIGN_DEVICES[$real]:-}" ]]; then
+      log "  $d è usato dal container ${FOREIGN_DEVICES[$real]}: non lo mappo in openhab"
+      continue
+    fi
+    SERIAL_DEVICES+=("$d")
   done <<< "$raw"
 }
 
@@ -643,6 +690,8 @@ except Exception as e:
   read -r -p "Procedere? (s/n): " confirm
   [[ "$confirm" =~ ^[SsYy] ]] || { echo "Annullato."; exit 0; }
 
+  ensure_compose_buildx
+
   # 1. Backup
   echo ""
   log "[1/5] Backup..."
@@ -708,7 +757,6 @@ except Exception as e:
   # 5. Avvia stack
   echo ""
   log "[5/5] Build e avvio arfea-controller..."
-  ensure_buildx
   ( cd "$DATA_PATH/arfea-controller" && docker compose build && docker compose up -d )
   wait_openhab_running
   import_arfea_ui
@@ -861,6 +909,28 @@ copy_native_data() {
     else cp -a "$CONF"/. "$DEST/conf"/; fi
   fi
 
+  # Jython: da OpenHAB 4.2 le librerie si cercano in automation/jython/lib e non
+  # più in automation/lib/python, dove stanno le helper library di OpenHAB 3:
+  # senza spostarle ogni "from core.rules import rule" fallisce. Gli script in
+  # automation/jsr223 invece si caricano ancora (percorso deprecato).
+  if [[ -d "$DEST/conf/automation/lib/python" && ! -e "$DEST/conf/automation/jython/lib" ]]; then
+    log "  jython:   automation/lib/python -> automation/jython/lib (percorso di OpenHAB 4.2+)"
+    mkdir -p "$DEST/conf/automation/jython"
+    cp -a "$DEST/conf/automation/lib/python" "$DEST/conf/automation/jython/lib"
+  fi
+  # ...e gli script: il 5.x li carica SOLO da automation/jython. In
+  # automation/jsr223/python restavano lì senza un errore nel log, e con loro le
+  # regole di allagamento, allarmi e gas di paolaCamisani (Redmine #237).
+  if [[ -d "$DEST/conf/automation/jsr223/python" ]]; then
+    local py rel
+    while IFS= read -r py; do
+      rel="${py#"$DEST/conf/automation/jsr223/python/"}"
+      mkdir -p "$(dirname "$DEST/conf/automation/jython/$rel")"
+      mv "$py" "$DEST/conf/automation/jython/$rel"
+      log "  jython:   script jsr223/python/$rel -> automation/jython/$rel"
+    done < <(find "$DEST/conf/automation/jsr223/python" -type f -name '*.py')
+  fi
+
   # userdata -> /openhab/userdata (escludo cache/tmp/logs: rigenerati e legati
   # alla versione; vanno ripuliti in fase di upgrade)
   if [[ -d "$USERDATA" ]]; then
@@ -885,11 +955,18 @@ copy_native_data() {
   # nel tar di backup che l'upgrade crea in userdata/backup.
   rm -f "$DEST/userdata"/hs_err_pid*.log
 
-  # addons manuali (kar/jar)
+  # addons manuali (kar/jar). NON il pacchetto della distribuzione
+  # (openhab-addons-X.Y.Z.kar del pacchetto deb openhab-addons, ~360 MB): è
+  # della versione nativa, e il container con un OpenHAB più nuovo se lo
+  # troverebbe accanto al suo. Quello giusto lo scarica il controller
+  # (app/addons.py) per la versione in uso (Redmine #233).
   if [[ -d "$ADDONS" ]] && [[ -n "$(ls -A "$ADDONS" 2>/dev/null)" ]]; then
-    log "  addons:   $ADDONS -> $DEST/addons"
-    if $have_rsync; then rsync -a "$ADDONS"/ "$DEST/addons"/
-    else cp -a "$ADDONS"/. "$DEST/addons"/; fi
+    log "  addons:   $ADDONS -> $DEST/addons (escluso il pacchetto openhab-addons-*.kar)"
+    if $have_rsync; then rsync -a --exclude 'openhab-addons-*.kar' "$ADDONS"/ "$DEST/addons"/
+    else
+      cp -a "$ADDONS"/. "$DEST/addons"/
+      rm -f "$DEST/addons"/openhab-addons-*.kar
+    fi
   fi
 
   # HABApp: config nativa -> $DEST/conf/habapp
@@ -900,6 +977,24 @@ copy_native_data() {
       mkdir -p "$DEST/conf/habapp"
       if $have_rsync; then rsync -a "$hcfg"/ "$DEST/conf/habapp"/
       else cp -a "$hcfg"/. "$DEST/conf/habapp"/; fi
+      # Log con percorsi dell'host (/var/log/openhab/HABApp.log): nel container
+      # non esistono e HABApp esce subito, in loop (Redmine #236). Un nome
+      # relativo finisce in conf/habapp/log.
+      if [[ -f "$DEST/conf/habapp/logging.yml" ]] \
+         && grep -qE "^[[:space:]]*filename:[[:space:]]*['\"]?/" "$DEST/conf/habapp/logging.yml"; then
+        sed -i -E "s#^([[:space:]]*filename:[[:space:]]*['\"]?)/[^'\"[:space:]]*/#\1#" "$DEST/conf/habapp/logging.yml"
+        log "  habapp:   logging.yml, file di log relativi (in conf/habapp/log)"
+      fi
+      # Regole di sistema del vecchio HABApp ARFEA: nel mondo controller le fanno
+      # arfea_system.js + arfea.items e aasystem/tools.py, e tenerle vuol dire
+      # averle in doppio (Redmine #237). Messe da parte, non cancellate.
+      local old oldbak="$DATA_PATH/arfea-controller/backups/habapp-regole-native-$(date +%Y%m%d_%H%M%S)"
+      for old in rules/system/arfea.py rules/system/time.py rules/tools/tools.py; do
+        [[ -f "$DEST/conf/habapp/$old" ]] || continue
+        mkdir -p "$(dirname "$oldbak/$old")"
+        mv "$DEST/conf/habapp/$old" "$oldbak/$old"
+        log "  habapp:   $old messa da parte in $oldbak (la sostituisce il controller)"
+      done
     else
       warn "HABApp attivo ma config non trovata: migra a mano le regole in $DEST/conf/habapp"
     fi
@@ -923,6 +1018,113 @@ deploy_arfea_skeleton() {
     chmod +x "$DEST/cont-init.d/"* 2>/dev/null || true
   fi
   chown -R "$OH_UID:$OH_GID" "$DEST/conf" "$DEST/cont-init.d"
+}
+
+# ── Ritocchi alla COPIA dei dati nativi, prima del primo avvio (Redmine #237) ──
+# Emersi migrando paolaCamisani da OpenHAB 3.3: senza, l'impianto parte ma con
+# pezzi fermi. Toccano solo /opt/docker_store/openhab: l'originale nativo resta.
+
+# Item che il vecchio HABApp ARFEA creava via REST (users_list, send_message,
+# send_broadcastmessage, timeSlot, ...) e che ora definisce arfea.items: con
+# entrambi, a ogni avvio OpenHAB scarta quelli managed con un warning.
+dedupe_managed_items() {
+  local items_file="$DEST/conf/items/arfea.items"
+  local db="$DEST/userdata/jsondb/org.openhab.core.items.Item.json"
+  [[ -f "$items_file" && -f "$db" ]] || return 0
+  python3 - "$items_file" "$db" <<'PY' || warn "item doppioni non tolti dal JSONDB: restano, con un warning a ogni avvio"
+import json, re, sys
+items_file, db = sys.argv[1:3]
+names = set(re.findall(r'^[ \t]*[A-Z][A-Za-z]*(?::\S+)?[ \t]+([A-Za-z_][A-Za-z0-9_]*)',
+                       open(items_file).read(), re.M))
+data = json.load(open(db))
+dup = sorted(k for k in data if k in names)
+if dup:
+    for k in dup:
+        del data[k]
+    with open(db, "w") as f:          # stesso inode: owner 9001 conservato
+        json.dump(data, f, indent=2)
+    print("  item:     tolti dal JSONDB i doppioni di arfea.items: " + " ".join(dup))
+PY
+}
+
+# JS Scripting: senza, arfea_controller.js e arfea_system.js (widget, fasce
+# orarie, festivi) non girano, e nemmeno le trasformazioni JS. Un OpenHAB 3.x
+# nativo non ce l'ha: la sua trasformazione "javascript" (Nashorn) sparisce col
+# 4.0 e nessuno installa il sostituto.
+ensure_jsscripting_addon() {
+  local cfg="$DEST/userdata/config/org/openhab/addons.config"
+  local cfgfile="$DEST/conf/services/addons.cfg"
+  # addons.cfg vince sulla config della UI per le chiavi che definisce
+  if [[ -f "$cfgfile" ]] && grep -qE '^[[:space:]]*automation[[:space:]]*=' "$cfgfile"; then
+    if ! grep -qE '^[[:space:]]*automation[[:space:]]*=.*jsscripting' "$cfgfile"; then
+      sed -i -E 's/^([[:space:]]*automation[[:space:]]*=[[:space:]]*)(.*[^[:space:]])[[:space:]]*$/\1\2,jsscripting/' "$cfgfile"
+      log "  addon:    JS Scripting aggiunto in services/addons.cfg"
+    fi
+    return 0
+  fi
+  [[ -f "$cfg" ]] || return 0
+  grep -qE '^automation="[^"]*jsscripting' "$cfg" && return 0
+  if grep -qE '^automation="' "$cfg"; then
+    sed -i -E 's/^automation="([^"]*)"/automation="\1,jsscripting"/; s/^automation=",/automation="/' "$cfg"
+  else
+    echo 'automation="jsscripting"' >> "$cfg"
+  fi
+  log "  addon:    JS Scripting aggiunto agli addon (serve alle regole ARFEA)"
+}
+
+# OpenHAB 5.1 non ha più le strategie di default: "default = ..." in Strategies
+# rende il .persist illeggibile e la persistenza si ferma. Si toglie solo se ogni
+# voce in Items dichiara già le sue strategie; altrimenti lo si segnala.
+PERSIST_TODO=()
+fix_persist_default() {
+  local f
+  for f in "$DEST"/conf/persistence/*.persist; do
+    [[ -f "$f" ]] || continue
+    grep -qE '^[[:space:]]*default[[:space:]]*=' "$f" || continue
+    if python3 - "$f" <<'PY'
+import re, sys
+text = re.sub(r'/\*.*?\*/|//[^\n]*', '', open(sys.argv[1]).read(), flags=re.S)
+m = re.search(r'\bItems\s*\{(.*?)\}', text, re.S)
+entries = [l.strip() for l in (m.group(1) if m else '').splitlines() if l.strip()]
+sys.exit(0 if all('strategy' in e for e in entries) else 1)
+PY
+    then
+      sed -i -E '/^[[:space:]]*default[[:space:]]*=/d' "$f"
+      log "  persist:  tolta la strategia default da $(basename "$f") (OpenHAB 5.1+)"
+    else
+      PERSIST_TODO+=("$(basename "$f")")
+    fi
+  done
+}
+
+# Cosa resta da guardare a mano dopo il salto di versione, da stampare alla fine.
+UPGRADE_NOTES=()
+collect_upgrade_notes() {
+  local n line
+  while IFS= read -r line; do
+    [[ -n "$line" ]] && UPGRADE_NOTES+=("$line")
+  done < <(python3 - "$DEST/userdata/jsondb" <<'PY' 2>/dev/null || true
+import json, os, sys
+jdb = sys.argv[1]
+def load(name):
+    p = os.path.join(jdb, name)
+    return json.load(open(p)) if os.path.isfile(p) else {}
+js = [r["value"].get("name") or uid for uid, r in load("automation_rules.json").items()
+      if any((a.get("configuration") or {}).get("type") == "application/javascript"
+             for a in r["value"].get("actions", []))]
+if js:
+    print(f"regole UI in JavaScript ({', '.join(js)}): dal 4.0 girano su GraalJS e non più "
+          "su Nashorn (enum Java confrontati con stringhe, Java.type, ...): provale")
+ha = [uid for uid in load("org.openhab.core.thing.Thing.json") if uid.startswith("mqtt:homeassistant_")]
+if ha:
+    print(f"{len(ha)} thing MQTT Home Assistant creati prima del 4.3: nel 5.x cambiano gli ID "
+          "dei canali. Ricreali dall'inbox (homeassistant:device:...) e ricollega gli item")
+PY
+)
+  for n in "${PERSIST_TODO[@]}"; do
+    UPGRADE_NOTES+=("$n: togli 'default = ...' da Strategies e dai una strategia a ogni voce (OpenHAB 5.1+)")
+  done
+  UPGRADE_NOTES+=("se nel log di OpenHAB compare 'Graal JavaScript language not initialized', riavvia il container openhab")
 }
 
 # NB: le config di default dei servizi (mosquitto.conf, settings.json di
@@ -981,6 +1183,7 @@ configure_yml_native() {
 
 run_native_migration() {
   detect_native_services
+  detect_foreign_containers
   detect_native_serial
 
   echo ""
@@ -1008,6 +1211,13 @@ run_native_migration() {
     echo "  (nessuna) — se usi zwave/modbus verifica manualmente in arfea.yml"
   fi
   echo ""
+  if [[ ${#FOREIGN_CONTAINERS[@]} -gt 0 ]]; then
+    echo "Container già presenti, che restano FUORI dal controller (non vengono toccati):"
+    for d in "${FOREIGN_CONTAINERS[@]}"; do echo "  - $d"; done
+    echo "  Tengono le loro porte e seriali: prima di abilitare dalla Web UI un servizio"
+    echo "  equivalente (zwave-js-ui, zigbee2mqtt, node-red) vanno migrati o fermati a mano."
+    echo ""
+  fi
 
   # Avviso versione: salto di major (2.x -> 5.x) può richiedere interventi manuali
   local major="${OH_VERSION%%.*}"
@@ -1033,6 +1243,7 @@ run_native_migration() {
 
   echo ""; log "[1/7] Verifica/installazione Docker..."
   ensure_docker
+  ensure_compose_buildx
 
   echo ""; log "[2/7] Backup..."
   backup_docker_store
@@ -1046,10 +1257,13 @@ run_native_migration() {
   echo ""; log "[5/7] Estrazione tarball + configurazione arfea.yml..."
   extract_tarball
   deploy_arfea_skeleton
+  dedupe_managed_items
+  ensure_jsscripting_addon
+  fix_persist_default
+  collect_upgrade_notes
   configure_yml_native
 
   echo ""; log "[6/7] Build e avvio arfea-controller..."
-  ensure_buildx
   # Non hard-fail: i servizi nativi sono già fermi; in caso di errore proseguo
   # fino al controllo di stato che stampa le istruzioni di rollback.
   ( cd "$DATA_PATH/arfea-controller" && docker compose build && docker compose up -d ) \
@@ -1099,6 +1313,11 @@ run_native_migration() {
   if $NAT_HABAPP; then
     echo "  NB HABApp: verifica in $DEST/conf/habapp/config.yml i parametri di"
     echo "     connessione (URL OpenHAB / MQTT) per l'ambiente containerizzato."
+  fi
+  if [[ ${#UPGRADE_NOTES[@]} -gt 0 ]]; then
+    echo ""
+    echo "  DA VERIFICARE A MANO (salto di versione di OpenHAB):"
+    for n in "${UPGRADE_NOTES[@]}"; do echo "    - $n"; done
   fi
   echo ""
 }

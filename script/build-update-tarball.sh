@@ -12,7 +12,8 @@
 #     MANUALE.md
 #     config/                 # arfea.yml template (solo prima installazione)
 #     skeleton-openhab/       # File OpenHAB
-#       conf/                   # items, regole JS, sitemap classica
+#       conf/                   # items, regole JS, sitemap classica,
+#         html/semantic/        #   sfondi delle card per tag (da openhab-semantic-icons/svg)
 #       cont-init.d/
 #       ui/                     # widget + page YAML da importare via REST API
 #     templates/              # Config predefinite per servizi opzionali
@@ -60,6 +61,11 @@ mkdir -p "$STAGING/skeleton-openhab"
 cp -r "$REPO_DIR/skeleton-openhab/conf" "$STAGING/skeleton-openhab/conf"
 cp -r "$REPO_DIR/skeleton-openhab/cont-init.d" "$STAGING/skeleton-openhab/cont-init.d"
 cp -r "$REPO_DIR/skeleton-openhab/ui" "$STAGING/skeleton-openhab/ui"
+# Sfondi delle card della Main UI, uno per tag semantico: OpenHAB li serve da
+# conf/html come /static/semantic/<tag>.svg e il controller li assegna alle card
+# della Home (app/semantic_cards.py). Sorgenti in openhab-semantic-icons/.
+mkdir -p "$STAGING/skeleton-openhab/conf/html/semantic"
+cp "$REPO_DIR/openhab-semantic-icons/svg/"*.svg "$STAGING/skeleton-openhab/conf/html/semantic/"
 
 # ── Template config (zigbee2mqtt, zwave-js-ui) ──
 if [[ -d "$REPO_DIR/templates" ]]; then

@@ -28,6 +28,7 @@ from .docker_manager import DockerManager
 from .habapp_manager import HABAppManager, last_provision as habapp_last_provision
 from .host_network import HostNetworkManager, ap_lan_conflict
 from .release_manager import ReleaseManager
+from . import semantic_cards
 from .models import (
     AccessPointUpdate,
     AddonsKarStatus,
@@ -365,7 +366,14 @@ logger = logging.getLogger(__name__)
 #          Stesse funzioni e stessi ID di prima. FIX: scegliere un backup da
 #          ripristinare deselezionava anche le opzioni di LAN e wifi; le barre di
 #          avanzamento di HABApp restavano senza colore.
-VERSION = "1.8.6"
+#   1.8.7  Sfondo per tag sulle card della Home della Main UI (Redmine #230): lo
+#          skeleton porta un'immagine per ogni tag semantico (conf/html/semantic,
+#          servite come /static/semantic/<tag>.svg) e il controller, all'avvio e
+#          ogni 10 minuti, la assegna nella pagina ui:page/home a ogni card di
+#          Location, Equipment e Property (semantic_cards.py). Un tag senza
+#          immagine prende quella del padre; le card con un'immagine o un colore
+#          scelti dall'utente non si toccano.
+VERSION = "1.8.7"
 
 # -- Globals initialised at startup -----------------------------------------
 
@@ -489,6 +497,7 @@ async def lifespan(app: FastAPI):
 def _startup_background() -> None:
     _maybe_import_ui()
     _heal_habapp()
+    _semantic_cards_loop()
 
 
 def _heal_habapp() -> None:
@@ -1346,6 +1355,103 @@ def _maybe_import_ui() -> None:
         logger.info("Reimport UI: %s", detail)
     except Exception as exc:
         logger.warning("Reimport UI all'avvio fallito: %s", exc)
+
+
+# ---------------------------------------------------------------------------
+# Sfondo delle card del modello semantico nella Home della Main UI (Redmine #230)
+#
+# Le immagini per tag arrivano con lo skeleton in openhab/conf/html/semantic;
+# qui si scrive nella pagina ui:page/home lo sfondo di ogni card (Location,
+# Equipment, Property) che non ne ha uno scelto dall'utente. La logica sta in
+# semantic_cards.py; qui il giro REST, che si ripete perche' le Location e i
+# tag nuovi compaiono quando l'installatore modifica gli item.
+# ---------------------------------------------------------------------------
+
+_SEMANTIC_INTERVAL = 600
+_semantic_token = ""
+
+
+def _oh_rest(method: str, path: str, token: str = "", body: dict | None = None) -> tuple[str, str]:
+    """Chiamata REST a OpenHAB dal network namespace dell'host. Ritorna
+    (codice HTTP, corpo)."""
+    cmd = ["curl", "-s", "-X", method, f"http://localhost:8080{path}",
+           "-w", "\n%{http_code}", "-H", "Accept: application/json"]
+    if token:
+        cmd += ["-H", f"Authorization: Bearer {token}"]
+    tf_path = ""
+    if body is not None:
+        with tempfile.NamedTemporaryFile("w", suffix=".json", delete=False) as tf:
+            json.dump(body, tf)
+            tf_path = tf.name
+        cmd += ["-H", "Content-Type: application/json", "-d", f"@{tf_path}"]
+    try:
+        res = _nsenter_net(cmd, timeout=60)
+    finally:
+        if tf_path:
+            os.unlink(tf_path)
+    text, _, code = res.stdout.rpartition("\n")
+    return code.strip(), text
+
+
+def _oh_rest_auth(method: str, path: str, body: dict | None = None) -> tuple[str, str]:
+    """Come _oh_rest, con il token admin coniato solo alla prima risposta
+    401/403 e poi riusato: un token per avvio del controller, non per giro."""
+    global _semantic_token
+    code, text = _oh_rest(method, path, _semantic_token, body)
+    if code in ("401", "403"):
+        token, err = docker_manager.mint_oh_token("SEMANTIC")
+        if not token:
+            return code, err
+        _semantic_token = token
+        code, text = _oh_rest(method, path, _semantic_token, body)
+    return code, text
+
+
+def _sync_semantic_cards() -> str:
+    """Un giro: legge item e pagina Home, scrive la pagina solo se cambia."""
+    images = Path(config_manager.config.controller.data_path) / "openhab" / "conf" / "html" / "semantic"
+    available = semantic_cards.available_tags(images)
+    if not available:
+        return "immagini dei tag non ancora a bordo (arrivano con lo skeleton)"
+
+    code, text = _oh_rest_auth("GET", "/rest/items?metadata=semantics&fields=name,metadata")
+    if code != "200":
+        return f"item non leggibili (HTTP {code})"
+    wanted = semantic_cards.wanted_backgrounds(json.loads(text), available)
+
+    code, text = _oh_rest_auth("GET", "/rest/ui/components/ui:page/home")
+    if code == "404":
+        page, exists = semantic_cards.new_home_page(), False
+    elif code == "200":
+        page, exists = json.loads(text), True
+    else:
+        return f"pagina Home non leggibile (HTTP {code})"
+    if page.get("component") != "oh-home-page":
+        return f"pagina Home con componente {page.get('component')!r}: non la tocco"
+
+    new_page, changes = semantic_cards.apply_backgrounds(page, wanted)
+    if not changes:
+        return ""
+    if exists:
+        code, text = _oh_rest_auth("PUT", "/rest/ui/components/ui:page/home", new_page)
+    else:
+        code, text = _oh_rest_auth("POST", "/rest/ui/components/ui:page", new_page)
+    if code not in ("200", "201"):
+        return f"pagina Home non scritta (HTTP {code}): {text[:200]}"
+    return f"sfondo aggiornato su {changes} card"
+
+
+def _semantic_cards_loop() -> None:
+    """Gira per sempre nel thread di avvio: un errore non ferma i giri dopo."""
+    while True:
+        try:
+            if _oh_rest_ready():
+                msg = _sync_semantic_cards()
+                if msg:
+                    logger.info("Card semantiche: %s", msg)
+        except Exception as exc:
+            logger.warning("Card semantiche: giro fallito: %s", exc)
+        time.sleep(_SEMANTIC_INTERVAL)
 
 
 def _trigger_rebuild() -> None:

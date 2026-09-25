@@ -417,17 +417,25 @@ l'upgrade si fa dopo, dalla card *"Aggiornamento software"*, che prima fa il bac
 **In più per la sorgente NATIVA:**
 1. **Installa Docker** se assente (repo apt Ubuntu/Debian). Se il daemon non parte
    senza riavvio, lo script esce chiedendo un **reboot + ri-esecuzione** (le cartelle
-   native non vengono toccate, quindi riprende da capo senza danni).
+   native non vengono toccate, quindi riprende da capo senza danni). Se Docker c'è ma
+   è il `docker.io` di Ubuntu, che non ha né `docker compose` né buildx, installa
+   `docker-compose-v2` e `docker-buildx` (e aggiorna `docker.io`: i container già
+   presenti ripartono) **prima** di fermare qualunque servizio.
 2. Copia `conf`/`userdata`/`addons` in `/opt/docker_store/openhab/` con owner
-   **9001:9001** (escludendo `cache`/`tmp`/`logs`). **Le cartelle native NON vengono
-   cancellate: restano come backup.**
+   **9001:9001** (escludendo `cache`/`tmp`/`logs` e il pacchetto
+   `openhab-addons-X.Y.Z.kar` della versione nativa: quello della versione giusta lo
+   scarica il controller). **Le cartelle native NON vengono cancellate: restano come
+   backup.**
 3. **Servizi companion** (verificati sull'OS con `systemctl`/`pgrep`):
    - `habapp`, `mosquitto`, `samba` → **abilitati sul controller** + `stop`+`disable` nativo;
    - `frontail` → **solo `stop`+`disable`** (non più necessario, nessun servizio controller);
    - la config HABApp viene individuata (da `ExecStart --config` o path comuni) e copiata
      in `openhab/conf/habapp`.
-4. **Porte seriali USB** (zwave/modbus): rilevate da `EXTRA_JAVA_OPTS`, dalle
-   `things`/jsondb e dai nodi presenti. Mappate **1:1** nel container openhab (non
+4. **Porte seriali USB** (zwave/modbus): rilevate da `EXTRA_JAVA_OPTS` (solo le righe
+   attive: il file del pacchetto ha un esempio commentato con `/dev/ttyS0`, che sulla
+   C4 è la console seriale), dalle `things`/jsondb e dai nodi presenti. Una seriale già
+   usata da un container che resta fuori dal controller (es. un vecchio
+   `zwavejs2mqtt`) non viene mappata, e il container viene elencato. Mappate **1:1** nel container openhab (non
    rimappate su `/dev/zwave`, così le config dei binding nativi restano valide);
    aggiorna `gnu.io.rxtx.SerialPorts` e il GID di `dialout`. Vengono mappati solo i
    device **fisicamente presenti**; quelli referenziati ma assenti vengono segnalati.
@@ -439,6 +447,40 @@ l'upgrade si fa dopo, dalla card *"Aggiornamento software"*, che prima fa il bac
    da `bashrc`/`profile` — elimina gli errori al login SSH (`FireMotD: command not found`,
    `sed: can't read .../version.properties`, welcome ASCII di openHAB). Tutto
    **reversibile**: i file toccati sono copiati in `arfea-controller/backups/login-banners-*`.
+
+**Salto di versione (OpenHAB 3.x nativo → 5.x):** OpenHAB parte con l'immagine del
+template e aggiorna da solo l'userdata al primo avvio (lo strumento di upgrade passa
+per tutte le versioni intermedie). Prima di avviarlo lo script prepara la copia:
+
+| Cosa | Perché |
+|---|---|
+| script Jython da `automation/jsr223/python` a `automation/jython`, librerie in `automation/jython/lib` | dal 4.2/5.x il Jython legge solo lì, e gli script rimasti in `jsr223` **non si caricano, senza un errore nel log** |
+| JS Scripting aggiunto agli addon | lo vogliono `arfea_controller.js` e `arfea_system.js` e le trasformazioni `JS(...)`; il 3.x non ce l'ha |
+| item doppioni di `arfea.items` tolti dal JSONDB | il vecchio HABApp ARFEA li creava via REST (`users_list`, `send_message`, `timeSlot`, ...) |
+| `default = ...` tolto da Strategies nei `.persist` | dal 5.1 rende il file illeggibile (solo se ogni voce ha già le sue strategie, altrimenti lo segnala) |
+| log di HABApp relativi, vecchie regole `system/arfea.py`, `system/time.py`, `tools/tools.py` messe da parte | percorsi dell'host inesistenti nel container (HABApp in loop); le regole le sostituiscono `arfea_system.js` e `aasystem/tools.py` |
+
+Alla fine stampa cosa resta **da guardare a mano**:
+- **regole UI in JavaScript**: dal 4.0 `application/javascript` è GraalJS, non più
+  Nashorn. Tipico: `getStatus() == 'OFFLINE'` su un enum Java non è più vero, serve
+  `getStatus().toString()`;
+- **thing MQTT Home Assistant** creati prima del 4.3 (`mqtt:homeassistant_...`): dal 5.0
+  cambiano gli ID dei canali e dal 5.1 il binding è a parte (lo installa l'upgrade).
+  Si eliminano, si riapprovano dall'inbox (`homeassistant:device:...`) e si
+  ricollegano gli item. Eliminare un thing cancella anche i suoi collegamenti: prima
+  di farlo salvare l'elenco item → canale;
+- se il log dice *Graal JavaScript language not initialized*, riavviare il container
+  openhab (JS Scripting installato a caldo).
+
+**Un vecchio zwavejs2mqtt → zwave-js-ui del controller** (fatto su paolaCamisani):
+fermare il vecchio container e togliergli il riavvio automatico
+(`docker update --restart=no zwavejs2mqtt && docker stop zwavejs2mqtt`), copiare il suo
+store (`/home/<utente>/store`) in `/opt/docker_store/zwave-js-ui` e nel `settings.json`
+cambiare solo `zwave.port` → `/dev/zwave` e `mqtt.host` → `mosquitto` (il container sta
+sulla rete Docker del controller). Restano le **chiavi di sicurezza S0/S2**, i nomi dei
+nodi e il nome del client MQTT, quindi i topic e la discovery Home Assistant non
+cambiano. Mai avviare zwave-js-ui con la config di default su una chiavetta già in
+uso: senza chiavi re-intervista i nodi sicuri senza sicurezza.
 
 > ⚠️ **Salto di major (2.x → 5.x):** i dati vengono comunque copiati e l'immagine
 > OpenHAB 5.x prova l'upgrade automatico dell'userdata, ma da OpenHAB 2.x può
@@ -657,6 +699,22 @@ Trigger da OpenHAB:
 | `arfea_controller.js` | `conf/automation/js/arfea_controller.js` | Comunicazione col controller |
 | `linphone_call.sh` | `conf/scripts/linphone_call.sh` | Chiamata emergenza (TTS + SIP) |
 | `widget_arfea_controller.yaml` | Widget (import da UI) | Pannello amministrazione |
+| `html/semantic/<tag>.svg` | `conf/html/semantic/` (URL `/static/semantic/<tag>.svg`) | Sfondi delle card della Home, uno per tag semantico |
+
+**Sfondi delle card della Home (dal controller 1.8.7).** La Home della Main UI
+genera da sola una card per ogni Location e per ogni tipo di Equipment e di
+Property. Di suo le colora con un colore fisso; il controller assegna a ognuna
+l'immagine del suo tag semantico (sorgenti in `openhab-semantic-icons/`, 267
+immagini da 1200×400, una per ogni tag di OpenHAB). Lo fa scrivendo
+`backgroundImage` nella pagina `ui:page/home`, all'avvio e poi ogni 10 minuti,
+così le Location nuove prendono lo sfondo senza fare niente.
+- Un tag senza immagine (un tag personalizzato) prende quella del tag padre:
+  una `Location_Indoor_Room_Taverna` avrebbe lo sfondo di `Room`.
+- Una card con un'immagine o un colore scelti a mano (Impostazioni → Pagine →
+  Home) **non viene toccata**: vale la scelta dell'utente. Per togliere lo
+  sfondo a una card basta darle un colore.
+- Se la pagina Home non esiste ancora il controller la crea con le impostazioni
+  di default della UI. Nel log: `Card semantiche: sfondo aggiornato su N card`.
 
 > Ownership: ogni file sotto `/opt/docker_store/openhab/` DEVE restare
 > `9001:9001` (UID/GID del container OpenHAB).
