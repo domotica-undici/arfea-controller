@@ -824,6 +824,19 @@ RTL8821CU (driver `rtw88_8821cu`) su ODROID-C4/Armbian trixie. Una sola radio
 non fa client e AP insieme: per questo l'AP si spegne per qualche secondo quando
 cerca la rete.
 
+**Un AP fatto a mano sull'host (create_ap / linux-wifi-hotspot).** Alcuni
+impianti vecchi hanno un AP permanente per i propri dispositivi (su paolaCamisani
+`domoticaUndici8b0d` su `wlan0`, servizio `create_ap` con `/etc/create_ap.conf`).
+Per non litigare con NetworkManager la scheda è esclusa (`unmanaged-devices=
+interface-name:wlan0` in `NetworkManager.conf`), quindi il controller non la può
+usare: niente wifi client né AP di emergenza, e conviene spegnerlo (*Abilitato*
+off) per non avere tentativi falliti a ogni caduta della LAN. Trappola: se in
+NetworkManager la radio wifi è spenta (`nmcli radio wifi` → `disabled`,
+`WirelessEnabled=false` in `/var/lib/NetworkManager/NetworkManager.state`), a ogni
+avvio NM rimette il blocco rfkill anche sulla scheda esclusa e create_ap esce con
+*Operation not possible due to RF-kill*. Si risolve con `sudo nmcli radio wifi on`
+(resta salvato) e `sudo systemctl enable --now create_ap`.
+
 ---
 
 ## 7. Interfaccia web e API REST
