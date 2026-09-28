@@ -757,8 +757,15 @@ except Exception as e:
     esac
   done
 
+  # La riga d'esempio del template si riconosce per forma, non per seriale: il
+  # tarball puo' venire da una versione col seriale vecchio o col segnaposto.
   [[ -n "$ZWAVE_DEVICE" ]]  && sed -i "s|\"/dev/ttyACM0:/dev/zwave\"|\"${ZWAVE_DEVICE}\"|" "$YML"
-  [[ -n "$ZIGBEE_DEVICE" ]] && sed -i "s|\"/dev/serial/by-id/usb-ITEAD_SONOFF_Zigbee_3.0_USB_Dongle_Plus_V2_XXXXXXXXXXXXXX-if00:/dev/zigbee\"|\"${ZIGBEE_DEVICE}\"|" "$YML"
+  [[ -n "$ZIGBEE_DEVICE" ]] && sed -i -E "s|\"/dev/serial/by-id/usb-ITEAD_SONOFF_Zigbee_3\.0_USB_Dongle_Plus_V2_[^\":]*:/dev/zigbee\"|\"${ZIGBEE_DEVICE}\"|" "$YML"
+  local want
+  for want in "$ZWAVE_DEVICE" "$ZIGBEE_DEVICE"; do
+    [[ -z "$want" ]] || grep -qF "$want" "$YML" \
+      || warn "mapping $want non scritto in arfea.yml: impostalo dalla Web UI (Impianto → Dispositivi)"
+  done
 
   if [[ ${#OPENHAB_DEVICES[@]} -gt 0 ]]; then
     local devices_block="    devices:"

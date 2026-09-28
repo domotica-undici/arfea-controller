@@ -14,6 +14,12 @@
     :root {
       --bg: #f2f4f7; --card: #fff; --text: #1d2433; --muted: #6b7280; --line: #e5e7eb;
       --primary: #1f6feb; --primary-soft: #e8f0fe;
+      /* Colori del logo ARFEA per il menu delle sezioni. L'arancione sul blu scuro fa
+         4,46:1, appena sotto la soglia AA del testo: sull'arancione il testo e' quasi
+         nero (5,3:1), sul blu scuro i nomi sono bianchi o grigi (15,7:1 e 8,3:1) e
+         l'arancione resta per icone e indicatori (alla grafica basta 3:1). */
+      --brand-orange: #ea592d; --brand-dark: #20232c; --nav-text: #b9bdc7; --nav-hover: #2c303b;
+      --nav-active-text: #111318; --nav-err: #ef4444;
       --ok: #1a7f37; --ok-soft: #e7f5ec; --warn: #b45309; --warn-soft: #fff4e5;
       --err: #c62828; --err-soft: #fdecec; --idle-soft: #f1f3f5;
       --radius: 14px; --nav-h: 64px; --top-h: 56px;
@@ -27,7 +33,7 @@
 
     /* ── Barra in alto ── */
     .topbar { position: sticky; top: 0; z-index: 20; height: var(--top-h); display: flex; align-items: center; gap: 10px; padding: 0 16px; background: var(--card); border-bottom: 1px solid var(--line); }
-    .logo { width: 34px; height: 34px; border-radius: 10px; background: var(--primary); color: #fff; display: grid; place-items: center; font-weight: 700; flex: none; }
+    .logo { display: block; width: 34px; height: 34px; flex: none; }
     .brand { flex: 1; min-width: 0; }
     .brand b { display: block; font-size: 1em; }
     .brand small { display: block; color: var(--muted); font-size: .8em; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
@@ -36,15 +42,18 @@
     .icon-btn svg, .tab svg { width: 22px; height: 22px; fill: none; stroke: currentColor; stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round; }
 
     /* ── Sezioni: barra in basso sul telefono ── */
-    .tabs { position: fixed; left: 0; right: 0; bottom: 0; z-index: 20; display: flex; background: var(--card); border-top: 1px solid var(--line); padding-bottom: env(safe-area-inset-bottom); }
-    .tab { flex: 1; min-width: 0; height: var(--nav-h); display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 3px; color: var(--muted); text-decoration: none; font-size: .72em; position: relative; }
+    .tabs { position: fixed; left: 0; right: 0; bottom: 0; z-index: 20; display: flex; background: var(--brand-dark); padding-bottom: env(safe-area-inset-bottom); }
+    .tab { flex: 1; min-width: 0; height: var(--nav-h); display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 3px; color: var(--nav-text); text-decoration: none; font-size: .72em; position: relative; }
     .tab span { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 100%; }
-    .tab.active { color: var(--primary); }
+    .tab.active { color: #fff; font-weight: 600; }
+    .tab.active svg { stroke: var(--brand-orange); }
+    .tab.active::before { content: ""; position: absolute; top: 0; left: 28%; right: 28%; height: 3px; border-radius: 0 0 3px 3px; background: var(--brand-orange); }
+    .tab:focus-visible { outline: 2px solid var(--brand-orange); outline-offset: -3px; border-radius: 10px; }
     .tab .l-short { display: none; }
     @media (max-width: 420px) { .tab .l-long { display: none; } .tab .l-short { display: inline; } }
-    .tab .dot { position: absolute; top: 9px; left: calc(50% + 7px); width: 9px; height: 9px; border-radius: 50%; border: 2px solid var(--card); display: none; }
+    .tab .dot { position: absolute; top: 9px; left: calc(50% + 7px); width: 9px; height: 9px; border-radius: 50%; border: 2px solid var(--brand-dark); display: none; }
     .tab .dot.warn { display: block; background: #f59e0b; }
-    .tab .dot.err { display: block; background: var(--err); }
+    .tab .dot.err { display: block; background: var(--nav-err); }
     main { padding: 16px 12px calc(var(--nav-h) + 24px + env(safe-area-inset-bottom)); max-width: 1200px; margin: 0 auto; }
 
     /* ── Sezione e griglia delle card ── */
@@ -65,9 +74,12 @@
 
     /* Schermo grande: barra delle sezioni a sinistra, card su due colonne */
     @media (min-width: 900px) {
-      .tabs { top: var(--top-h); bottom: 0; right: auto; width: 210px; flex-direction: column; border-top: none; border-right: 1px solid var(--line); padding: 12px 10px; gap: 2px; }
+      .tabs { top: var(--top-h); bottom: 0; right: auto; width: 210px; flex-direction: column; padding: 12px 10px; gap: 2px; }
       .tab { flex: none; height: 44px; flex-direction: row; justify-content: flex-start; gap: 12px; padding: 0 12px; border-radius: 10px; font-size: .95em; }
-      .tab.active { background: var(--primary-soft); font-weight: 600; }
+      .tab:hover { background: var(--nav-hover); color: #fff; }
+      .tab.active { background: var(--brand-orange); color: var(--nav-active-text); }
+      .tab.active svg { stroke: currentColor; }
+      .tab.active::before { display: none; }
       .tab .dot { top: 50%; left: auto; right: 12px; transform: translateY(-50%); }
       main { margin-left: 210px; padding: 24px 28px 40px; }
       .grid { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 18px; }
@@ -145,7 +157,7 @@
     /* ── Accesso ── */
     .login-box { min-height: 100vh; display: grid; place-items: center; padding: 16px; }
     .login-card { width: 100%; max-width: 360px; text-align: center; }
-    .login-card .logo { width: 52px; height: 52px; margin: 0 auto 12px; font-size: 1.4em; border-radius: 14px; }
+    .login-card .logo { width: 72px; height: 72px; margin: 0 auto 14px; }
     .login-card input { text-align: center; }
 
     /* ── Avanzamento ── */
@@ -162,10 +174,16 @@
 </head>
 <body>
 
+  <!-- Logo ARFEA: il marchio ufficiale (Marchio DomoticaXI.svg), dentro la pagina: la
+       centralina puo' essere senza internet. Lo usano barra in alto, accesso e favicon. -->
+  <svg width="0" height="0" style="position:absolute" aria-hidden="true">
+    <symbol id="arfea-logo" viewBox="0 0 107.88 101.76"><path fill="#20232c" d="M86,74a5.68,5.68,0,0,0,0-4.06,7.07,7.07,0,0,0-2-2.81L69.87,54.68a7.05,7.05,0,0,1-2.18-3.39H59.16A10.14,10.14,0,0,0,49.05,61.4V82.47A10.14,10.14,0,0,0,59.16,92.59h8.53a7.05,7.05,0,0,1,2.18-3.39L84.06,76.78A7.14,7.14,0,0,0,86,74Z"/><path fill="#ea592d" d="M90.27,71.94V61.4A10.11,10.11,0,0,0,80.16,51.29H67.69a7.18,7.18,0,0,1,6.9-9.17,7.26,7.26,0,0,1,2.53.46,7,7,0,0,1,2.2,1.32l26.05,22.86c2.39,2.17,2.51,3.8,2.51,5.18s-.12,3-2.51,5.17L79.32,100a7.37,7.37,0,0,1-2.2,1.32,7.26,7.26,0,0,1-2.53.46,7.18,7.18,0,0,1-6.9-9.17H80.16A10.11,10.11,0,0,0,90.27,82.48Z"/><path fill="#20232c" d="M21.86,27.79a5.68,5.68,0,0,0,0,4.06,7.25,7.25,0,0,0,2,2.81L38,47.08a7.15,7.15,0,0,1,2.19,3.39h8.52a10.1,10.1,0,0,0,10-8.46,9.07,9.07,0,0,0,.14-1.66V19.29a9.07,9.07,0,0,0-.14-1.66,10.1,10.1,0,0,0-10-8.46H40.2A7.15,7.15,0,0,1,38,12.56L23.82,25A7.18,7.18,0,0,0,21.86,27.79Z"/><path fill="#ea592d" d="M17.61,29.82V40.36A10.11,10.11,0,0,0,27.72,50.47H40.2a7.18,7.18,0,0,1-9.43,8.71,7.42,7.42,0,0,1-2.21-1.32S2.53,35,2.52,35C.12,32.83,0,31.2,0,29.82s.12-3,2.52-5.17c0,0,26-22.87,26-22.87A7.42,7.42,0,0,1,30.77.46,7.18,7.18,0,0,1,40.2,9.17H27.72A10.11,10.11,0,0,0,17.61,19.28Z"/></symbol>
+  </svg>
+
   <!-- Accesso -->
   <div id="login" class="login-box">
     <div class="card login-card">
-      <div class="logo">A</div>
+      <svg class="logo" viewBox="0 0 107.88 101.76" role="img" aria-label="ARFEA"><use href="#arfea-logo" width="107.88" height="101.76"/></svg>
       <h2>ARFEA Controller</h2>
       <p class="card-sub">Inserisci la API Key della centralina</p>
       <input class="lp-input" type="password" id="apiKeyInput" placeholder="API Key" autofocus>
@@ -176,7 +194,7 @@
 
   <div id="app">
     <header class="topbar">
-      <div class="logo">A</div>
+      <svg class="logo" viewBox="0 0 107.88 101.76" role="img" aria-label="ARFEA"><use href="#arfea-logo" width="107.88" height="101.76"/></svg>
       <div class="brand"><b>ARFEA Controller</b><small id="hdrInfo">&nbsp;</small></div>
       <button class="icon-btn" onclick="refreshAll()" title="Aggiorna i dati" aria-label="Aggiorna i dati">
         <svg viewBox="0 0 24 24"><path d="M21 12a9 9 0 1 1-2.64-6.36L21 8"/><path d="M21 3v5h-5"/></svg>
@@ -427,6 +445,18 @@
   </div>
 
 <script>
+// Favicon dallo stesso simbolo del logo (una copia sola nella pagina)
+(function() {
+  var sym = document.getElementById('arfea-logo');
+  var svg = '<svg xmlns="http://www.w3.org/2000/svg" viewBox="' + sym.getAttribute('viewBox') + '">' +
+    sym.innerHTML + '</svg>';
+  var link = document.createElement('link');
+  link.rel = 'icon';
+  link.type = 'image/svg+xml';
+  link.href = 'data:image/svg+xml,' + encodeURIComponent(svg);
+  document.head.appendChild(link);
+})();
+
 var API_KEY = '';
 var selectedBackup = '';
 var backupPolling = null;

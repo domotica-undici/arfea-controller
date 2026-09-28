@@ -415,7 +415,12 @@ logger = logging.getLogger(__name__)
 #          non torna mai alla pagina (vuoto = invariata), un link di condivisione
 #          Nextcloud diventa l'indirizzo WebDAV (#203), URL vuoto = backup solo
 #          locale. Vale dal backup successivo, senza riavvio.
-VERSION = "1.8.9"
+#   1.8.10 Web UI coi colori ARFEA (Redmine #264): il marchio ufficiale (SVG,
+#          dentro la pagina) al posto della «A» su quadrato blu, nella barra in
+#          alto, nell'accesso e come favicon. Il menu delle sezioni e' blu scuro
+#          del logo: sul desktop la voce attiva e' arancione con testo quasi nero
+#          (5,3:1), sul telefono ha icona e lineetta arancioni e nome bianco.
+VERSION = "1.8.10"
 
 # -- Globals initialised at startup -----------------------------------------
 

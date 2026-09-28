@@ -931,7 +931,9 @@ avvio NM rimette il blocco rfkill anche sulla scheda esclusa e create_ap esce co
 Dal controller 1.8.6 è divisa in **cinque sezioni**. Sul telefono si scelgono dalla
 barra in basso, su uno schermo grande dalla barra a sinistra, con le card su due
 colonne. L'indirizzo ricorda la sezione (`…:8888/#rete`), quindi si può aprire
-direttamente.
+direttamente. Dalla 1.8.10 porta il logo ARFEA (anche come icona della scheda del
+browser) e la barra delle sezioni ne prende i colori: blu scuro, con la sezione
+aperta in arancione.
 
 | Sezione | Cosa c'è |
 |---|---|
