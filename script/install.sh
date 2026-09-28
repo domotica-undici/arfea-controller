@@ -261,7 +261,7 @@ configure_yml() {
   $INSTALL_OTBR    && enable_service otbr        "$YML"
 
   [[ -n "$ARFEA_ZWAVE_DEVICE"  ]] && sed -i "s|/dev/ttyACM0:/dev/zwave|${ARFEA_ZWAVE_DEVICE}:/dev/zwave|" "$YML"
-  [[ -n "$ARFEA_ZIGBEE_DEVICE" ]] && sed -i "s|/dev/serial/by-id/usb-ITEAD_SONOFF_Zigbee_3.0_USB_Dongle_Plus_V2_20231031184237-if00:/dev/zigbee|${ARFEA_ZIGBEE_DEVICE}:/dev/zigbee|" "$YML"
+  [[ -n "$ARFEA_ZIGBEE_DEVICE" ]] && sed -i "s|/dev/serial/by-id/usb-ITEAD_SONOFF_Zigbee_3.0_USB_Dongle_Plus_V2_XXXXXXXXXXXXXX-if00:/dev/zigbee|${ARFEA_ZIGBEE_DEVICE}:/dev/zigbee|" "$YML"
   # openhab: nessun device nel template — costruiamo il blocco da Modbus + extra
   # (in mancanza, si aggiungono poi dalla Web UI: Servizi → Dispositivi).
   configure_openhab_devices "$YML"

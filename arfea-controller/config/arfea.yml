@@ -234,7 +234,7 @@ services:
     environment:
       TZ: "Europe/Rome"
     devices:
-      - "/dev/serial/by-id/usb-ITEAD_SONOFF_Zigbee_3.0_USB_Dongle_Plus_V2_20231031184237-if00:/dev/zigbee"
+      - "/dev/serial/by-id/usb-ITEAD_SONOFF_Zigbee_3.0_USB_Dongle_Plus_V2_XXXXXXXXXXXXXX-if00:/dev/zigbee"
     log_max_size: "10m"
 
   node-red:

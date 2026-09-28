@@ -32,6 +32,8 @@ from . import semantic_cards
 from .models import (
     AccessPointUpdate,
     AddonsKarStatus,
+    BackupConfigUpdate,
+    BackupState,
     BackupStatus,
     HABAppFunctionsUpdate,
     HABAppParamsUpdate,
@@ -407,7 +409,13 @@ logger = logging.getLogger(__name__)
 #          interruttore: «Nessun software selezionato», o upgrade parziale), e con
 #          i tag esatti lo stesso sarebbe capitato a mosquitto e otbr. Ora il
 #          widget manda gli esclusi (apply?exclude=) e si aggiorna tutto il resto.
-VERSION = "1.8.8"
+#   1.8.9  Web UI, sezione Backup: card «Destinazione WebDAV» con URL, utente e
+#          password (Redmine #261). Prima si scrivevano solo a mano in arfea.yml,
+#          e sugli impianti migrati restavano i segnaposto (#194). La password
+#          non torna mai alla pagina (vuoto = invariata), un link di condivisione
+#          Nextcloud diventa l'indirizzo WebDAV (#203), URL vuoto = backup solo
+#          locale. Vale dal backup successivo, senza riavvio.
+VERSION = "1.8.9"
 
 # -- Globals initialised at startup -----------------------------------------
 
@@ -2058,24 +2066,50 @@ async def run_backup(background_tasks: BackgroundTasks):
     return OperationResponse(success=True, message="Backup started")
 
 
+def _webdav_is_set(v: str) -> bool:
+    """Un campo WebDAV col segnaposto del template (CAMBIARE-CON-...) vale come vuoto."""
+    return bool(v) and not v.startswith("CAMBIARE")
+
+
 @app.get("/api/backup/config", dependencies=[Depends(verify_api_key)])
 def get_backup_config():
-    """Stato della destinazione backup. Non espone MAI le credenziali WebDAV:
-    ritorna solo se sono configurate e l'host di destinazione (senza token)."""
+    """Destinazione del backup, per il modulo della Web UI. La password WebDAV
+    non esce MAI (solo has_password); i segnaposto del template tornano vuoti."""
     b = config_manager.config.backup
-    def _is_set(v: str) -> bool:
-        return bool(v) and not v.startswith("CAMBIARE")
     host = ""
-    if _is_set(b.webdav_url):
+    if _webdav_is_set(b.webdav_url):
         try:
             from urllib.parse import urlparse
             host = urlparse(b.webdav_url).hostname or ""
         except Exception:
             host = ""
     return {
-        "configured": _is_set(b.webdav_url) and _is_set(b.webdav_user) and _is_set(b.webdav_password),
+        "configured": (_webdav_is_set(b.webdav_url) and _webdav_is_set(b.webdav_user)
+                       and _webdav_is_set(b.webdav_password)),
         "host": host,
+        "webdav_url": b.webdav_url if _webdav_is_set(b.webdav_url) else "",
+        "webdav_user": b.webdav_user if _webdav_is_set(b.webdav_user) else "",
+        "has_password": _webdav_is_set(b.webdav_password),
     }
+
+
+@app.put("/api/backup/config", response_model=OperationResponse, dependencies=[Depends(verify_api_key)])
+def update_backup_config(body: BackupConfigUpdate):
+    """Imposta la destinazione WebDAV del backup (Redmine #261). Vale dal backup
+    successivo, senza riavvio."""
+    if backup_manager.status.state not in (BackupState.IDLE, BackupState.COMPLETED,
+                                           BackupState.FAILED):
+        raise HTTPException(409, "Backup o ripristino in corso: riprova quando ha finito")
+    data = body.model_dump(exclude_none=True)
+    if data.get("webdav_password", None) == "":
+        data.pop("webdav_password")   # vuota = mantieni quella attuale
+    try:
+        cfg = config_manager.set_backup_config(data)
+    except ValueError as exc:
+        raise HTTPException(400, str(exc))
+    msg = ("Destinazione WebDAV salvata" if cfg.webdav_url
+           else "WebDAV tolto: il backup resta solo sulla centralina")
+    return OperationResponse(success=True, message=msg)
 
 
 @app.get("/api/backup/status", response_model=BackupStatus, dependencies=[Depends(verify_api_key)])

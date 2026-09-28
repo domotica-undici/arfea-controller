@@ -408,6 +408,18 @@
               <button class="btn btn-orange" id="btnRestore" onclick="runRestore()" disabled>Ripristina</button>
             </div>
           </div>
+          <div class="card">
+            <h2>Destinazione WebDAV</h2>
+            <div id="webdavStatus" class="status-bar status-idle">Caricamento...</div>
+            <label class="field-label" for="wdUrl">URL WebDAV</label>
+            <input class="lp-input" id="wdUrl" type="url" inputmode="url" autocomplete="off" placeholder="https://host/public.php/dav/files/&lt;token&gt;">
+            <label class="field-label" for="wdUser">Utente</label>
+            <input class="lp-input" id="wdUser" autocomplete="off" placeholder="per Nextcloud: il token della condivisione">
+            <label class="field-label" for="wdPass">Password</label>
+            <input class="lp-input" id="wdPass" type="password" autocomplete="new-password" placeholder="vuoto = invariata">
+            <button class="btn btn-blue btn-block" onclick="saveWebdav()">Salva destinazione</button>
+            <p class="hint">Vale dal prossimo backup. Un link di condivisione Nextcloud (<code>/s/&lt;token&gt;</code>) viene convertito da solo nell'indirizzo WebDAV. URL vuoto = backup solo sulla centralina.</p>
+          </div>
         </div>
       </section>
 
@@ -477,7 +489,7 @@ function showTab(name) {
     a.classList.toggle('active', a.dataset.tab === name);
   });
   window.scrollTo(0, 0);
-  if (name === 'backup') loadBackups();
+  if (name === 'backup') { loadBackups(); loadWebdav(); }
   if (name === 'aggiornamenti' && !relPolling && Date.now() - lastRelCheck > 5 * 60 * 1000) checkReleases();
 }
 
@@ -1172,6 +1184,37 @@ function runRestore() {
   if (!confirm('Sei sicuro di voler ripristinare il backup?\n\n' + selectedBackup + '\n\nTutti i servizi verranno fermati.')) return;
   apiPost('/backup/restore?backup_name=' + encodeURIComponent(selectedBackup)).then(function() {
     pollBackup();
+  });
+}
+
+// ── Destinazione WebDAV ───────────────────────────────────
+// La password non torna mai dal controller: il campo resta vuoto e vuoto vuol
+// dire «invariata» (Redmine #261).
+
+function loadWebdav() {
+  apiGet('/backup/config').then(function(cfg) {
+    document.getElementById('wdUrl').value = cfg.webdav_url || '';
+    document.getElementById('wdUser').value = cfg.webdav_user || '';
+    document.getElementById('wdPass').value = '';
+    document.getElementById('wdPass').placeholder = cfg.has_password ? 'Password impostata (vuoto = invariata)' : 'Password WebDAV';
+    var el = document.getElementById('webdavStatus');
+    var cls = 'status-idle', text = 'Non configurato: i backup restano solo sulla centralina';
+    if (cfg.configured) { cls = 'status-completed'; text = 'Configurato: ' + (cfg.host || cfg.webdav_url); }
+    else if (cfg.webdav_url) { cls = 'status-failed'; text = 'Incompleto: mancano utente o password'; }
+    el.className = 'status-bar ' + cls;
+    el.textContent = text;
+  });
+}
+
+function saveWebdav() {
+  var body = {
+    webdav_url: document.getElementById('wdUrl').value.trim(),
+    webdav_user: document.getElementById('wdUser').value.trim(),
+    webdav_password: document.getElementById('wdPass').value  // vuoto = invariata
+  };
+  apiPutJson('/backup/config', body).then(function(r) {
+    alert(r.message || 'Salvato');
+    if (r.success !== false) loadWebdav();
   });
 }
 

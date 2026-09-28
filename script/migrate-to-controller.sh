@@ -86,6 +86,23 @@ die()  { echo "ERRORE: $*" >&2; exit 1; }
 # ── Pre-check comuni ────────────────────────────────────────────────────────
 [[ $EUID -eq 0 ]] || die "esegui come root (sudo)"
 
+# Strumenti che servono DOPO lo stop dei servizi (estrazione del tarball, API key,
+# lettura del compose): se ne manca uno la centralina resta ferma a meta'. Su un
+# impianto mancava xz, e l'estrazione sarebbe fallita coi container gia' fermi
+# (Redmine #260). Si installano qui, prima di toccare qualunque cosa.
+ensure_prerequisites() {
+  local pkgs=()
+  command -v xz      &>/dev/null || pkgs+=(xz-utils)
+  command -v curl    &>/dev/null || pkgs+=(curl)
+  command -v openssl &>/dev/null || pkgs+=(openssl)
+  python3 -c "import yaml" &>/dev/null || pkgs+=(python3-yaml)
+  [[ ${#pkgs[@]} -eq 0 ]] && return 0
+  log "Installazione dei prerequisiti mancanti: ${pkgs[*]}"
+  { apt-get update -qq && DEBIAN_FRONTEND=noninteractive apt-get install -y -qq "${pkgs[@]}"; } >/dev/null 2>&1 \
+    || die "non riesco a installare ${pkgs[*]}: installali a mano e rilancia (nessun servizio è stato toccato)"
+}
+ensure_prerequisites
+
 # Tarball: se manca ma c'è build-update-tarball.sh accanto, generalo al volo.
 if [[ ! -f "$TARBALL_PATH" ]]; then
   if [[ -x "$SCRIPT_DIR/build-update-tarball.sh" ]]; then
@@ -522,6 +539,7 @@ run_docker_migration() {
   if [[ -z "$OLD_COMPOSE_PATH" ]]; then
     for candidate in \
       /opt/docker_store/docker-compose-arfea-2.yml \
+      /opt/docker_store/docker-compose-arfea.yml \
       /opt/docker_store/docker-compose.yml \
       /opt/docker-compose-arfea-2.yml \
       /home/openhab/docker-compose-arfea-2.yml \
@@ -619,13 +637,17 @@ except Exception as e:
   echo ""
 
   # ── Device paths ──
+  # Si conserva il mapping intero host:container, non solo il lato host: la config
+  # del servizio (serial.port di zigbee2mqtt, zwave.port di zwave-js-ui) punta al
+  # percorso DENTRO il container. Forzare /dev/zigbee su un impianto che usava
+  # /dev/ttyUSB0 lasciava zigbee2mqtt senza chiavetta (Redmine #260).
   local ZWAVE_DEVICE="" ZIGBEE_DEVICE=""
   local OPENHAB_DEVICES=()
   if echo " $ACTIVE " | grep -q " zwave-js-ui "; then
-    ZWAVE_DEVICE=$(inspect_devices_running zwave-js-ui | head -1 | cut -d: -f1)
+    ZWAVE_DEVICE=$(inspect_devices_running zwave-js-ui | head -1)
   fi
   if echo " $ACTIVE " | grep -q " zigbee2mqtt "; then
-    ZIGBEE_DEVICE=$(inspect_devices_running zigbee2mqtt | head -1 | cut -d: -f1)
+    ZIGBEE_DEVICE=$(inspect_devices_running zigbee2mqtt | head -1)
   fi
   if echo " $ACTIVE " | grep -q " openhab "; then
     while IFS= read -r line; do
@@ -637,8 +659,8 @@ except Exception as e:
       [[ -z "$line" ]] && continue
       local cn="${line%%|*}" dev="${line##*|}"
       case "$cn" in
-        zwave-js-ui|zwave) [[ -z "$ZWAVE_DEVICE" ]] && ZWAVE_DEVICE="${dev%%:*}" ;;
-        zigbee2mqtt) [[ -z "$ZIGBEE_DEVICE" ]] && ZIGBEE_DEVICE="${dev%%:*}" ;;
+        zwave-js-ui|zwave) [[ -z "$ZWAVE_DEVICE" ]] && ZWAVE_DEVICE="$dev" ;;
+        zigbee2mqtt) [[ -z "$ZIGBEE_DEVICE" ]] && ZIGBEE_DEVICE="$dev" ;;
         openhab)
           if ! printf '%s\n' "${OPENHAB_DEVICES[@]}" | grep -q "^${dev}:rwm$"; then
             OPENHAB_DEVICES+=("${dev}:rwm")
@@ -714,6 +736,10 @@ except Exception as e:
   echo ""
   log "[3/5] Estrazione tarball arfea-controller..."
   extract_tarball
+  # Skeleton OpenHAB (arfea.items, regole JS ARFEA, script, cont-init.d): lo porta
+  # l'OTA del controller, ma solo a un aggiornamento di versione; senza, un impianto
+  # migrato restava senza item e regole ARFEA fino al primo OTA (Redmine #260).
+  deploy_arfea_skeleton
 
   # 4. Configura arfea.yml
   echo ""
@@ -731,8 +757,8 @@ except Exception as e:
     esac
   done
 
-  [[ -n "$ZWAVE_DEVICE" ]]  && sed -i "s|/dev/ttyACM0:/dev/zwave|${ZWAVE_DEVICE}:/dev/zwave|" "$YML"
-  [[ -n "$ZIGBEE_DEVICE" ]] && sed -i "s|/dev/serial/by-id/usb-ITEAD_SONOFF_Zigbee_3.0_USB_Dongle_Plus_V2_20231031184237-if00:/dev/zigbee|${ZIGBEE_DEVICE}:/dev/zigbee|" "$YML"
+  [[ -n "$ZWAVE_DEVICE" ]]  && sed -i "s|\"/dev/ttyACM0:/dev/zwave\"|\"${ZWAVE_DEVICE}\"|" "$YML"
+  [[ -n "$ZIGBEE_DEVICE" ]] && sed -i "s|\"/dev/serial/by-id/usb-ITEAD_SONOFF_Zigbee_3.0_USB_Dongle_Plus_V2_XXXXXXXXXXXXXX-if00:/dev/zigbee\"|\"${ZIGBEE_DEVICE}\"|" "$YML"
 
   if [[ ${#OPENHAB_DEVICES[@]} -gt 0 ]]; then
     local devices_block="    devices:"

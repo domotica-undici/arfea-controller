@@ -216,6 +216,14 @@ class LinphoneConfigUpdate(BaseModel):
     repeat: Optional[int] = None
 
 
+class BackupConfigUpdate(BaseModel):
+    """Body parziale per la destinazione WebDAV del backup (campi opzionali).
+    webdav_password vuota = invariata; webdav_url vuoto = backup solo locale."""
+    webdav_url: Optional[str] = None
+    webdav_user: Optional[str] = None
+    webdav_password: Optional[str] = None
+
+
 class AccessPointUpdate(BaseModel):
     """Body parziale per la configurazione dell'access point (campi opzionali)."""
     enabled: Optional[bool] = None

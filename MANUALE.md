@@ -450,7 +450,9 @@ sudo MIGRATE_MODE=native bash migrate-to-controller.sh   # forza la modalità
 sudo MIGRATE_SKIP_SPACE_CHECK=1 bash migrate-to-controller.sh   # salta il controllo dello spazio
 ```
 
-**Sequenza (comune):** rileva la sorgente → **controlla lo spazio su disco** →
+**Sequenza (comune):** installa i prerequisiti che mancano (`xz`, `curl`, `openssl`,
+`python3-yaml`: servono dopo lo stop dei servizi, e senza `xz` la centralina restava
+ferma a metà) → rileva la sorgente → **controlla lo spazio su disco** →
 backup dei dati → estrae il tarball `arfea-controller` → configura `arfea.yml` (API
 key generata, `update_url` e `releases_url` **sempre** valorizzati) → build + avvio
 dello stack.
@@ -463,12 +465,26 @@ dello stack.
 - **OTA:** la centralina migrata resta sotto OTA. Se il controller pubblicato è più
   nuovo del tarball usato per la migrazione, al primo avvio si aggiorna da solo.
 - **WebDAV:** la migrazione **non** imposta le credenziali WebDAV: finché non si
-  compilano in `arfea.yml` il backup resta solo locale.
+  compilano (Web UI, sezione *Backup*, dal controller 1.8.9; oppure `arfea.yml`)
+  il backup resta solo locale.
 
 **In più per la sorgente DOCKER:** la versione di OpenHAB **resta quella che girava**
 (immagine del container, del vecchio compose o, se il tag è mobile come `latest`,
 quella scritta nell'userdata). La migrazione cambia la struttura, non la versione:
 l'upgrade si fa dopo, dalla card *"Aggiornamento software"*, che prima fa il backup.
+Gli altri servizi (zwave-js-ui, zigbee2mqtt, mosquitto) prendono invece le versioni
+del template, cioè quelle della release certificata.
+- Il vecchio compose si cerca in `/opt/docker_store/docker-compose-arfea-2.yml`,
+  `docker-compose-arfea.yml` o `docker-compose.yml` (altrimenti va passato come
+  primo argomento). I container con i nomi noti (openhab, zwave-js-ui, zigbee2mqtt,
+  mosquitto, samba, ...) si fermano anche se stanno in un altro compose.
+- Le porte seriali di zwave-js-ui e zigbee2mqtt si riprendono dai container vecchi
+  **con il percorso interno**: se zigbee2mqtt vedeva la chiavetta come
+  `/dev/ttyUSB0` resta `/dev/ttyUSB0`, perché è quello scritto nella sua
+  `configuration.yaml` (prima si forzava `/dev/zigbee` e Zigbee non partiva).
+- Lo skeleton OpenHAB (`arfea.items`, regole JS ARFEA, script, `cont-init.d`) si
+  installa subito, senza sovrascrivere file già presenti: prima arrivava solo col
+  primo OTA di versione, e nel frattempo mancavano item e regole ARFEA.
 
 **In più per la sorgente NATIVA:**
 1. **Installa Docker** se assente (repo apt Ubuntu/Debian). Se il daemon non parte
@@ -923,7 +939,7 @@ direttamente.
 | **Impianto** | HABApp (funzioni attive), configurazione dell'impianto (`params/*.yml`), porte seriali dei dispositivi, telefono di emergenza. |
 | **Rete** | LAN, wifi, access point di emergenza; installazione di NetworkManager se manca. |
 | **Aggiornamenti** | Versioni dei software (release certificate, con avanzamento e scelta *continua senza backup / ferma*), controller, pacchetto addon offline. |
-| **Backup** | Backup manuale e ripristino (elenco aggiornato all'apertura della sezione). |
+| **Backup** | Backup manuale, ripristino (elenco aggiornato all'apertura della sezione), destinazione WebDAV (URL, utente, password). |
 
 Un pallino sulla sezione (arancione = da guardare, rosso = problema) segnala dove
 c'è qualcosa in sospeso anche senza aprirla.
@@ -957,6 +973,7 @@ Base: `http://<IP>:8888/api` — documentazione interattiva su `http://<IP>:8888
 | POST | `/api/openhab/addons/download?force=` | Scarica il pacchetto addon (background) |
 | POST | `/api/backup/run` · GET `/status` · `/list` | Backup |
 | POST | `/api/backup/restore?backup_name=...` | Ripristino |
+| GET/PUT | `/api/backup/config` | Destinazione WebDAV (la password non esce mai) |
 | GET/PUT | `/api/linphone/config` · GET `/status` · POST `/call?number=&message=` | Emergenza |
 | GET | `/api/habapp/status` | Funzioni HABApp, versione sorgenti, stato token |
 | PUT | `/api/habapp/functions` | Sceglie le funzioni attive (ricrea HABApp) |
@@ -1002,6 +1019,14 @@ caricamento lì risponde **401**. Fino al controller 1.8.3 era il default degli
 installer, e con quello nessun backup arrivava su WebDAV. Dalla 1.8.4 il
 controller converte da solo il link nell'indirizzo WebDAV all'avvio e lo salva.
 
+**Destinazione WebDAV dalla Web UI** (dal controller 1.8.9): la sezione *Backup*
+ha la card *"Destinazione WebDAV"* con URL, utente e password, che il controller
+scrive in `arfea.yml` (`PUT /api/backup/config`). Valgono dal backup successivo,
+senza riavvio. La password non torna mai alla pagina: il campo resta vuoto, e
+lasciarlo vuoto la mantiene. Un link di condivisione Nextcloud incollato lì viene
+convertito nell'indirizzo WebDAV già al salvataggio; URL vuoto = backup solo sulla
+centralina. Durante un backup o un ripristino il salvataggio è rifiutato.
+
 L'impianto resta fermo solo per l'archiviazione (passi 1-2): l'upload avviene a
 container riavviati, perche' l'archivio su disco e' gia' completo e coerente e
 mezzo giga su una linea domestica sono decine di minuti. L'upload ha un tetto di
@@ -1044,7 +1069,8 @@ bridge trusted; reboot da remoto via OpenHAB Cloud → regola JS → localhost.
 
 **Checklist nuova installazione:**
 - [ ] `api_key` unica in `arfea.yml`
-- [ ] Credenziali WebDAV configurate (o vuote per disabilitare l'upload)
+- [ ] Credenziali WebDAV configurate, da Web UI → *Backup* o in `arfea.yml` (o
+      vuote per disabilitare l'upload)
 - [ ] Porta 8888 **non** esposta su internet (no port forwarding)
 - [ ] OpenVPN/WireGuard configurato per l'accesso remoto
 - [ ] `update_url` punta a un server **fidato** (il tarball viene estratto ed

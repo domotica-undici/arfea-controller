@@ -9,8 +9,8 @@ from pathlib import Path
 import yaml
 
 from .models import (
-    DEFAULT_UPDATE_URL, AccessPointConfig, ArfeaConfig, DependencyRule, LinphoneConfig,
-    ServiceDefinition,
+    DEFAULT_UPDATE_URL, AccessPointConfig, ArfeaConfig, BackupConfig, DependencyRule,
+    LinphoneConfig, ServiceDefinition,
 )
 
 logger = logging.getLogger(__name__)
@@ -234,6 +234,27 @@ class ConfigManager:
         self._save()
         logger.info("Configurazione linphone aggiornata (enabled=%s)", self.config.linphone.enabled)
         return self.config.linphone
+
+    def set_backup_config(self, data: dict) -> BackupConfig:
+        """Aggiorna (parzialmente) la destinazione WebDAV e persiste arfea.yml.
+
+        Modifica l'oggetto sul posto: BackupManager ne tiene il riferimento, e cosi'
+        il backup successivo usa i valori nuovi senza riavviare il controller. Un
+        link di condivisione Nextcloud diventa l'indirizzo WebDAV (#203)."""
+        if "webdav_url" in data:
+            url = webdav_upload_url(data["webdav_url"].strip()).rstrip("/")
+            if url and not url.lower().startswith(("http://", "https://")):
+                raise ValueError("L'URL WebDAV deve cominciare con http:// o https://")
+            data["webdav_url"] = url
+        if "webdav_user" in data:
+            data["webdav_user"] = data["webdav_user"].strip()
+        backup = self.config.backup
+        for key, value in data.items():
+            setattr(backup, key, value)
+        self._save()
+        logger.info("Destinazione WebDAV del backup aggiornata (%s)",
+                    backup.webdav_url or "nessuna: backup solo locale")
+        return backup
 
     def set_access_point(self, data: dict) -> AccessPointConfig:
         """Aggiorna (parzialmente) la configurazione dell'access point e persiste
