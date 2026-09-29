@@ -448,6 +448,7 @@ sudo bash migrate-to-controller.sh                    # rileva da solo la sorgen
 sudo bash migrate-to-controller.sh /path/old-compose.yml /path/tarball.tar.xz
 sudo MIGRATE_MODE=native bash migrate-to-controller.sh   # forza la modalità
 sudo MIGRATE_SKIP_SPACE_CHECK=1 bash migrate-to-controller.sh   # salta il controllo dello spazio
+sudo MIGRATE_OH_UPGRADE=1 bash migrate-to-controller.sh   # docker: OpenHAB all'immagine del template (0 = mai)
 ```
 
 **Sequenza (comune):** installa i prerequisiti che mancano (`xz`, `curl`, `openssl`,
@@ -466,11 +467,26 @@ dello stack.
   prudente: `MIGRATE_SKIP_SPACE_CHECK=1`.
 - **OTA:** la centralina migrata resta sotto OTA. Se il controller pubblicato è più
   nuovo del tarball usato per la migrazione, al primo avvio si aggiorna da solo.
+- **Docker di Ubuntu:** col `docker.io` mancano `docker compose` e buildx. Lo script li
+  installa e aggiorna `docker.io`, ma il pacchetto, senza terminale, non riavvia il
+  demone. Resta quello vecchio (API 1.41), che il client nuovo rifiuta («client version
+  is too new»), e lo script si sarebbe fermato a metà: ora lo riavvia, e i container
+  ripartono da soli. Con Docker 29 le versioni vecchie di Portainer non partono più
+  (API minima 1.44).
+- **Portainer si toglie** dove si trova, con immagine e dati: nel mondo controller non
+  serve, e un «Start» dello stack da Portainer rimetterebbe in piedi il vecchio
+  impianto accanto al controller, con le stesse porte. I dati restano nel backup, e un
+  volume Docker con nome si salva in un tar accanto. I container che gestiva e che
+  restano fuori dal controller non si fermano.
+- **Seriali per by-id:** il lato host del mapping si scrive per `/dev/serial/by-id`
+  quando il tty ne ha uno; il percorso nel container resta quello delle config.
 - **IP dei container:** gli indirizzi della rete dei vecchi compose scritti nelle
   configurazioni non valgono più (i container passano sulla rete del controller).
   Lo script li corregge: il broker MQTT di OpenHAB (file `.things` e JSONDB) diventa
   `localhost`, `mqtt.host` di zwave-js-ui e `mqtt.server` di zigbee2mqtt diventano
-  `mosquitto`. Il gateway della bridge di default (`172.17.0.1`, con cui un container
+  `mosquitto`. Nei flow di Node-RED il broker diventa `mosquitto`, e l'IP del vecchio
+  container openhab diventa il gateway della rete del controller (OpenHAB ora sta sulla
+  rete dell'host). Il gateway della bridge di default (`172.17.0.1`, con cui un container
   raggiungeva un mosquitto nativo) diventa `mosquitto` per zwave-js-ui e zigbee2mqtt,
   mentre in OpenHAB resta: dalla rete dell'host funziona ancora.
 - **WebDAV:** la migrazione **non** imposta le credenziali WebDAV: finché non si
@@ -483,10 +499,28 @@ quella scritta nell'userdata). La migrazione cambia la struttura, non la version
 l'upgrade si fa dopo, dalla card *"Aggiornamento software"*, che prima fa il backup.
 Gli altri servizi (zwave-js-ui, zigbee2mqtt, mosquitto) prendono invece le versioni
 del template, cioè quelle della release certificata.
-- Il vecchio compose si cerca in `/opt/docker_store/docker-compose-arfea-2.yml`,
-  `docker-compose-arfea.yml` o `docker-compose.yml` (altrimenti va passato come
-  primo argomento). I container con i nomi noti (openhab, zwave-js-ui, zigbee2mqtt,
-  mosquitto, samba, ...) si fermano anche se stanno in un altro compose.
+- Il vecchio compose è quello del container openhab (label del compose), anche
+  dentro il volume di Portainer (`/data/compose/N` nel container). Altrimenti si cerca
+  in `/opt/docker_store/docker-compose-arfea-2.yml`, `docker-compose-arfea.yml` o
+  `docker-compose.yml`, oppure si passa come primo argomento. I container si
+  riconoscono dal servizio del compose, non solo dal nome: gli stack di Portainer li
+  chiamano `<stack>-<servizio>-1`, e zwave-js-ui a volte è il servizio `zwave`.
+  frontail si toglie (nessun servizio nel controller).
+- **OpenHAB 3.x non si conserva:** col controller non girerebbero né HABApp 25 né le
+  regole JS ARFEA. Si passa all'immagine del template, e OpenHAB aggiorna l'userdata al
+  primo avvio, con le stesse correzioni del flusso nativo (Jython, JS Scripting,
+  doppioni, persist) e la lista delle cose da guardare a mano. Anche con una Blockly di
+  OpenHAB 3: va aperta e salvata dalla UI, per rigenerare il codice.
+  `MIGRATE_OH_UPGRADE=1|0` forza la scelta.
+- **HABApp:** se il vecchio container montava la config altrove (per esempio
+  `/opt/docker_store/habapp/config`) la si porta in `openhab/conf/habapp`, dove la cerca
+  il controller, con i ritocchi del flusso nativo. I params del codice vecchio avevano
+  le valvole on/off come nomi semplici (`- valveX`), e il codice 25.12 vuole
+  `- name: valveX`: con una stringa la creazione del termostato fallisce. Lo script le
+  converte, tenendo l'originale in `thermo.yml.prima-della-migrazione`.
+- **Node-RED** di una major diversa da quella del template resta alla sua immagine
+  (i nodi aggiuntivi in `/data` sono installati per il suo Node). L'aggiornamento si
+  fa dalla release, dopo aver provato i flow.
 - Le porte seriali di zwave-js-ui e zigbee2mqtt si riprendono dai container vecchi
   **con il percorso interno**: se zigbee2mqtt vedeva la chiavetta come
   `/dev/ttyUSB0` resta `/dev/ttyUSB0`, perché è quello scritto nella sua

@@ -207,18 +207,41 @@ configure_yml_base() {
   grep -qE '^  update_url: "https?://' "$YML" || die "update_url non impostato in $YML"
 }
 
-# Scrive l'immagine del SOLO servizio openhab (la prima riga image: del blocco).
-# Non dipende dal tag del template, che cambia a ogni release. Ritorna 0 solo se
-# la riga risulta scritta.
-set_openhab_image() {
-  local f="$1" img="$2"
-  awk -v img="$img" '
-    /^  openhab:[[:space:]]*$/ { inoh = 1 }
-    inoh && /^  [A-Za-z0-9_-]+:[[:space:]]*$/ && $0 !~ /^  openhab:/ { inoh = 0 }
-    inoh && !done && /^    image:/ { print "    image: \"" img "\""; done = 1; next }
+# Scrive l'immagine di UN servizio (la prima riga image: del suo blocco). Non
+# dipende dal tag del template, che cambia a ogni release. Ritorna 0 solo se la
+# riga risulta scritta.
+set_service_image() {
+  local f="$1" svc="$2" img="$3"
+  awk -v img="$img" -v svc="$svc" '
+    $0 ~ "^  " svc ":[[:space:]]*$" { insvc = 1; print; next }
+    insvc && /^  [A-Za-z0-9_-]+:[[:space:]]*$/ { insvc = 0 }
+    insvc && !done && /^    image:/ { print "    image: \"" img "\""; done = 1; next }
     { print }
   ' "$f" > "$f.t" && mv "$f.t" "$f"
   grep -qF "    image: \"$img\"" "$f"
+}
+set_openhab_image() { set_service_image "$1" openhab "$2"; }
+
+# Immagine di un servizio nel template (o in un arfea.yml): "" se non c'e'.
+template_image_of() {
+  awk -v s="$2" '$0 ~ "^  "s":[[:space:]]*$" {f=1; next}
+                 f && /^  [A-Za-z0-9_-]+:[[:space:]]*$/ {f=0}
+                 f && /^    image:/ {gsub(/^    image:[[:space:]]*|"/, ""); print; exit}' "$1"
+}
+
+# Lato host di un mapping "host:container[:perm]" scritto per /dev/serial/by-id,
+# se il tty ne ha uno: col nome del kernel un riavvio puo' scambiare due
+# adattatori (Modbus e Z-Wave fermi un mese su un impianto, Redmine #243). Il
+# percorso nel container resta quello che le config usano.
+stable_dev_map() {
+  local m="$1" host rest link
+  host="${m%%:*}"; rest="${m#*:}"
+  if [[ "$host" =~ ^/dev/tty(USB|ACM)[0-9]+$ && -d /dev/serial/by-id ]]; then
+    for link in /dev/serial/by-id/*; do
+      if [[ "$(readlink -f "$link")" == "$host" ]]; then echo "$link:$rest"; return 0; fi
+    done
+  fi
+  echo "$m"
 }
 
 # Versione di OpenHAB scritta nell'userdata (quella con cui i dati sono allineati).
@@ -241,17 +264,17 @@ existing_parent() { local d="$1"; while [[ ! -e "$d" ]]; do d=$(dirname "$d"); d
 free_mb_of()      { df -Pm "$1" | awk 'NR == 2 { print $4 }'; }
 mount_of()        { df -P "$1" | awk 'NR == 2 { print $6 }'; }
 
-# Immagini che la migrazione nativa scarica: stima per servizio (arm64, estratte
-# e compresse durante il pull), zero per quelle gia' presenti. Conviene scaricarle
+# Immagini che la migrazione scarica: stima per servizio (arm64, estratte e
+# compresse durante il pull), zero per quelle gia' presenti. Conviene scaricarle
 # prima, per accorciare il fermo: contarle comunque fermava la migrazione su una
 # eMMC con lo spazio giusto (4,0 GB liberi contro 4,4 stimati, Redmine #276).
 declare -A IMAGE_MB=([openhab]=900 [habapp]=400 [zwave-js-ui]=400 [zigbee2mqtt]=300
                      [node-red]=300 [mosquitto]=20 [samba]=100)
 CONTROLLER_BASE_IMAGE="python:3.11-slim"
-native_images_mb() {
+images_mb_for() {
   local tpl svc img mb=0
   tpl=$(tar -xJOf "$TARBALL_PATH" arfea-controller/config/arfea.yml 2>/dev/null || true)
-  for svc in openhab "${ENABLE_CTRL[@]}"; do
+  for svc in "$@"; do
     img=$(awk -v s="$svc" '$0 ~ "^  "s":[[:space:]]*$" {f=1; next}
                            f && /^  [A-Za-z0-9_-]+:[[:space:]]*$/ {f=0}
                            f && /^    image:/ {gsub(/^    image:[[:space:]]*|"/, ""); print; exit}' <<<"$tpl")
@@ -270,7 +293,10 @@ check_disk_space() {
     native_mb=$(du -sm --exclude=cache --exclude=tmp --exclude=logs --exclude='openhab-addons-*.kar' \
                   "$CONF" "$USERDATA" "$ADDONS" 2>/dev/null \
                 | awk '{ s += $1 } END { print s + 0 }')
-    images_mb=$(native_images_mb)   # anche OpenHAB e i servizi, non solo il controller
+    images_mb=$(images_mb_for openhab "${ENABLE_CTRL[@]}")   # anche OpenHAB e i servizi
+  elif [[ -n "${DOCKER_IMG_SVCS+x}" ]]; then
+    # shellcheck disable=SC2086
+    images_mb=$(images_mb_for $DOCKER_IMG_SVCS)
   fi
   local opt_dir docker_dir
   opt_dir=$(existing_parent "$DATA_PATH")
@@ -355,8 +381,18 @@ ensure_compose_buildx() {
   else
     apt-get install -y -qq docker-compose-plugin docker-buildx-plugin || true
   fi
+  # Il docker.io di Ubuntu, senza terminale, NON riavvia il demone: resta quello
+  # vecchio (API 1.41) e il client nuovo non ci parla piu' ("client version is
+  # too new"). Lo script si sarebbe fermato a meta' (Redmine #278).
+  if ! docker info &>/dev/null; then
+    log "Riavvio del demone Docker (aggiornato col pacchetto): i container ripartono da soli"
+    systemctl daemon-reload || true
+    systemctl restart docker || true
+  fi
   local tries=0
   until docker info &>/dev/null || (( ++tries >= 30 )); do sleep 2; done
+  docker info &>/dev/null \
+    || die "il demone Docker non risponde dopo l'aggiornamento: nessun servizio è stato toccato."
   docker compose version &>/dev/null \
     || die "docker compose non disponibile: nessun servizio è stato toccato. Installalo e rilancia."
   docker buildx version &>/dev/null \
@@ -468,6 +504,7 @@ declare -A COMPANION_MOUNT=()      # "servizio|path nel container" -> path sull'
 COMPANION_HABAPP_CFG=""            # cartella della config HABApp montata nel container
 OLD_DOCKER_SUBNETS=()              # subnet delle reti dei vecchi compose (IP da non tenere)
 DOCKER_BRIDGE_SUBNET=""            # subnet della bridge di default (172.17.0.0/16)
+OLD_OH_IP=""                       # IP del vecchio container openhab (se non in rete host)
 detect_foreign_containers() {
   command -v docker &>/dev/null && docker info &>/dev/null || return 0
   local name img dev cf m
@@ -478,7 +515,8 @@ detect_foreign_containers() {
       FOREIGN_DEVICES[$(readlink -f "$dev" 2>/dev/null || echo "$dev")]="$name"
     done < <(docker inspect -f '{{range .HostConfig.Devices}}{{println .PathOnHost}}{{end}}' "$name" 2>/dev/null || true)
     if [[ " $COMPANION_MANAGED " != *" $name "* ]]; then
-      FOREIGN_CONTAINERS+=("$name ($img)")
+      # Portainer non resta: lo toglie remove_portainer (Redmine #278)
+      [[ "$img" =~ ^(cr\.portainer\.io/)?portainer/ ]] || FOREIGN_CONTAINERS+=("$name ($img)")
       continue
     fi
     COMPANION_NAMES+=("$name")
@@ -569,6 +607,13 @@ copy_companion_data() {
 # del container mosquitto (Redmine #273).
 fix_container_ip_refs() {
   [[ ${#OLD_DOCKER_SUBNETS[@]} -gt 0 || -n "$DOCKER_BRIDGE_SUBNET" ]] || return 0
+  # Gateway della rete del controller: da li' un container raggiunge l'host, e
+  # quindi OpenHAB, che col controller sta sulla rete dell'host.
+  local gw
+  gw=$(awk '/^network:/ {f=1; next} f && /^[^[:space:]]/ {f=0}
+            f && /^[[:space:]]+gateway:/ {gsub(/["[:space:]]/, "", $2); print $2; exit}' \
+       "$DATA_PATH/arfea-controller/config/arfea.yml" 2>/dev/null || true)
+  OLD_OH_IP="$OLD_OH_IP" CTRL_GW="${gw:-172.11.0.1}" \
   python3 - "$DATA_PATH" "$DOCKER_BRIDGE_SUBNET" "${OLD_DOCKER_SUBNETS[@]}" <<'PY' || warn "correzione degli IP dei container non riuscita: controlla i broker MQTT"
 import ipaddress, json, re, sys, glob, os
 data = sys.argv[1]
@@ -600,6 +645,22 @@ for f in glob.glob(f"{data}/openhab/conf/things/*.things"):
         if old_ip(m.group(2)):
             new = new.replace(m.group(0), m.group(1) + "localhost" + m.group(3)); log(f"{os.path.basename(f)}: broker {m.group(2)} -> localhost")
     if new != s: open(f, "w").write(new)
+# Node-RED: broker MQTT -> mosquitto, controller OpenHAB -> gateway della rete
+# (Redmine #278: puntavano agli IP fissi dei container di uno stack Portainer)
+p = f"{data}/node-red/flows.json"
+if os.path.isfile(p):
+    oh_ip, gw = os.environ.get("OLD_OH_IP", ""), os.environ.get("CTRL_GW", "")
+    flows = json.load(open(p)); ch = False
+    for n in flows if isinstance(flows, list) else []:
+        t = str(n.get("type", ""))
+        if t == "mqtt-broker" and old_ip(str(n.get("broker", "")), True):
+            log(f"node-red broker {n['broker']} -> mosquitto"); n["broker"] = "mosquitto"; ch = True
+        elif t.startswith("openhab") and n.get("host") and oh_ip and n["host"] == oh_ip and gw:
+            log(f"node-red {t} {n['host']} -> {gw}"); n["host"] = gw; ch = True
+    if ch:
+        os.replace(p, p + ".prima-della-migrazione")
+        json.dump(flows, open(p, "w"), indent=4)
+        st = os.stat(p + ".prima-della-migrazione"); os.chown(p, st.st_uid, st.st_gid)
 p = f"{data}/openhab/userdata/jsondb/org.openhab.core.thing.Thing.json"
 if os.path.isfile(p):
     t = json.load(open(p)); ch = False
@@ -779,11 +840,190 @@ EOF
 # ═════════════════════════════════════════════════════════════════════════════
 # FLUSSO A — MIGRAZIONE DA DOCKER-COMPOSE (comportamento storico)
 # ═════════════════════════════════════════════════════════════════════════════
+# ── Stack docker non standard (Redmine #278) ─────────────────────────────────
+# Servizio del controller che corrisponde a un nome di servizio o di container
+# del vecchio stack. Gli stack di Portainer chiamano i container
+# <stack>-<servizio>-1, e zwave-js-ui a volte e' il servizio "zwave". frontail
+# non ha un servizio nel controller: si toglie e basta.
+svc_alias() {
+  case "$1" in
+    openhab|habapp|zigbee2mqtt|mosquitto|samba|docker-socket-proxy|frontail) echo "$1" ;;
+    zwave|zwave-js-ui|zwavejs2mqtt|zwavejs) echo zwave-js-ui ;;
+    node-red|nodered) echo node-red ;;
+  esac
+  return 0
+}
+ctrl_service_of() {
+  local s
+  s=$(svc_alias "$(docker inspect -f '{{index .Config.Labels "com.docker.compose.service"}}' "$1" 2>/dev/null || true)")
+  [[ -n "$s" ]] || s=$(svc_alias "$1")
+  echo "$s"
+}
+
+# Compose di uno stack di Portainer: la label del container dice il percorso
+# visto da Portainer (/data/compose/N/...), sull'host sta sotto il volume
+# montato su /data. Imposta OLD_COMPOSE_PATH, se trovato.
+find_portainer_compose() {
+  local p="$1" ct src
+  [[ "$p" == /data/* ]] || return 0
+  for ct in $(portainer_containers); do
+    src=$(docker inspect -f '{{range .Mounts}}{{if eq .Destination "/data"}}{{.Source}}{{end}}{{end}}' "$ct" 2>/dev/null || true)
+    if [[ -n "$src" && -z "$OLD_COMPOSE_PATH" && -f "$src${p#/data}" ]]; then OLD_COMPOSE_PATH="$src${p#/data}"; fi
+  done
+  return 0
+}
+
+# Portainer non fa parte di un impianto ARFEA: la gestione dei container e' del
+# controller, e un «Start» dello stack da Portainer rimetterebbe in piedi il
+# vecchio impianto accanto al controller, con le stesse porte. Si toglie dove lo
+# si trova: container, immagine e dati (volume, o cartella sotto $DATA_PATH, e il
+# file della password). Restano nel backup della migrazione.
+portainer_containers() {
+  docker ps -a --format '{{.Names}} {{.Image}}' 2>/dev/null | awk '$2 ~ /^(portainer|cr\.portainer\.io\/portainer)\// {print $1}'
+  return 0
+}
+remove_portainer() {
+  local ct img type src name
+  for ct in $(portainer_containers); do
+    img=$(docker inspect -f '{{.Config.Image}}' "$ct" 2>/dev/null || true)
+    local mounts
+    mounts=$(docker inspect -f '{{range .Mounts}}{{.Type}}|{{.Source}}|{{.Name}}|{{.Destination}}{{println}}{{end}}' "$ct" 2>/dev/null || true)
+    docker rm -f "$ct" >/dev/null 2>&1 || true
+    log "  portainer: container $ct tolto"
+    while IFS='|' read -r type src name _; do
+      [[ -n "$type" ]] || continue
+      [[ "$src" == /var/run/docker.sock ]] && continue
+      if [[ "$type" == volume && -n "$name" ]]; then
+        # un volume non sta in $DATA_PATH, quindi nemmeno nel backup: lo si salva a parte
+        local vb; vb="$(dirname "$DATA_PATH")/portainer-$name-$(date +%Y%m%d_%H%M%S).tar.gz"
+        if [[ -d "$src" ]] && tar -czf "$vb" -C "$src" . 2>/dev/null; then
+          log "  portainer: dati del volume $name salvati in $vb"
+          docker volume rm "$name" >/dev/null 2>&1 && log "  portainer: volume $name tolto" || true
+        else
+          warn "portainer: volume $name non salvato, lo lascio"
+        fi
+      elif [[ "$type" == bind && "$src" == "$DATA_PATH"/* && -e "$src" ]]; then
+        rm -rf "$src" && log "  portainer: $src tolto" || true
+      fi
+    done <<<"$mounts"
+    [[ -z "$img" ]] || { docker rmi "$img" >/dev/null 2>&1 && log "  portainer: immagine $img tolta" || true; }
+  done
+  return 0
+}
+
+# Gli script Jython di OpenHAB 3 nei percorsi che il 4.2+/5.x legge.
+fix_jython_paths() {
+  # Le librerie: da OpenHAB 4.2 si cercano in automation/jython/lib e non piu' in
+  # automation/lib/python, dove stanno le helper library di OpenHAB 3: senza
+  # spostarle ogni "from core.rules import rule" fallisce.
+  if [[ -d "$DEST/conf/automation/lib/python" && ! -e "$DEST/conf/automation/jython/lib" ]]; then
+    log "  jython:   automation/lib/python -> automation/jython/lib (percorso di OpenHAB 4.2+)"
+    mkdir -p "$DEST/conf/automation/jython"
+    cp -a "$DEST/conf/automation/lib/python" "$DEST/conf/automation/jython/lib"
+  fi
+  # ...e gli script: il 5.x li carica SOLO da automation/jython. In
+  # automation/jsr223/python restavano li' senza un errore nel log, e con loro le
+  # regole di allagamento, allarmi e gas di un impianto (Redmine #237).
+  if [[ -d "$DEST/conf/automation/jsr223/python" ]]; then
+    local py rel
+    while IFS= read -r py; do
+      rel="${py#"$DEST/conf/automation/jsr223/python/"}"
+      mkdir -p "$(dirname "$DEST/conf/automation/jython/$rel")"
+      mv "$py" "$DEST/conf/automation/jython/$rel"
+      log "  jython:   script jsr223/python/$rel -> automation/jython/$rel"
+    done < <(find "$DEST/conf/automation/jsr223/python" -type f -name '*.py')
+  fi
+  return 0
+}
+
+# Ritocchi a una config HABApp del vecchio codice ARFEA, in $DEST/conf/habapp.
+fix_habapp_config() {
+  local h="$DEST/conf/habapp"
+  [[ -d "$h" ]] || return 0
+  # Log con percorsi dell'host (/var/log/openhab/HABApp.log): nel container
+  # non esistono e HABApp esce subito, in loop (Redmine #236). Un nome
+  # relativo finisce in conf/habapp/log.
+  if [[ -f "$h/logging.yml" ]] && grep -qE "^[[:space:]]*filename:[[:space:]]*['\"]?/" "$h/logging.yml"; then
+    sed -i -E "s#^([[:space:]]*filename:[[:space:]]*['\"]?)/[^'\"[:space:]]*/#\1#" "$h/logging.yml"
+    log "  habapp:   logging.yml, file di log relativi (in conf/habapp/log)"
+  fi
+  # Regole di sistema del vecchio HABApp ARFEA: nel mondo controller le fanno
+  # arfea_system.js + arfea.items e aasystem/tools.py, e tenerle vuol dire
+  # averle in doppio (Redmine #237). Messe da parte, non cancellate.
+  local old oldbak="$DATA_PATH/arfea-controller/backups/habapp-regole-vecchie-$(date +%Y%m%d_%H%M%S)"
+  for old in rules/system/arfea.py rules/system/time.py rules/tools/tools.py; do
+    [[ -f "$h/$old" ]] || continue
+    mkdir -p "$(dirname "$oldbak/$old")"
+    mv "$h/$old" "$oldbak/$old"
+    log "  habapp:   $old messa da parte in $oldbak (la sostituisce il controller)"
+  done
+  # Params del codice vecchio: le valvole on/off erano nomi semplici
+  # (onoffvalves: heat: [- valveX]), il codice 25.12.x vuole "- name: valveX" e
+  # con una stringa la creazione del termostato fallisce (Redmine #278). Si
+  # riscrivono solo quelle righe, e il file si tiene solo se rilegge uguale.
+  local t="$h/params/thermo.yml"
+  if [[ -f "$t" ]]; then
+    python3 - "$t" <<'PY' || warn "thermo.yml non convertito: controlla le onoffvalves (vogliono '- name: ...')"
+import re, sys, yaml
+p = sys.argv[1]; src = open(p).read()
+out, base = [], None
+for line in src.splitlines(keepends=True):
+    ind = len(line) - len(line.lstrip())
+    if re.match(r"^\s*onoffvalves:\s*(#.*)?$", line):
+        base = ind
+    elif base is not None and line.strip() and ind <= base:
+        base = None
+    if base is not None:
+        m = re.match(r"^(\s*)-\s+([A-Za-z_][A-Za-z0-9_]*)\s*(#.*)?$", line.rstrip("\n"))
+        if m:
+            line = f"{m.group(1)}- name: {m.group(2)}" + (f"  {m.group(3)}" if m.group(3) else "") + "\n"
+    out.append(line)
+new = "".join(out)
+if new == src:
+    sys.exit(0)
+def valves(d):
+    r = []
+    for th in (d or {}).get("thermostats") or []:
+        for k, lst in ((th or {}).get("onoffvalves") or {}).items():
+            r += [(th.get("name"), k, v if isinstance(v, str) else v.get("name")) for v in lst or []]
+    return r
+old_v, new_d = valves(yaml.safe_load(src)), yaml.safe_load(new)
+ok = valves(new_d) == old_v and all(isinstance(v, dict) for th in new_d.get("thermostats") or []
+                                   for lst in ((th or {}).get("onoffvalves") or {}).values() for v in lst or [])
+if not ok:
+    sys.exit(1)
+open(p + ".prima-della-migrazione", "w").write(src)
+open(p, "w").write(new)
+print(f"  habapp:   params/thermo.yml, {len(old_v)} valvole on/off nel formato del codice 25.12 (- name: ...)")
+PY
+  fi
+  chown -R "$OH_UID:$OH_GID" "$h"
+  return 0
+}
+
 run_docker_migration() {
   command -v docker &>/dev/null || die "docker non installato"
   docker info &>/dev/null || die "Docker non attivo. systemctl start docker.service"
 
-  # ── Rileva il vecchio compose ──
+  # ── Container del vecchio stack, per servizio del controller (Redmine #278) ──
+  local -A CT_OF=()
+  local OBSOLETE_CT=() OLD_PROJECT="" n s
+  while IFS= read -r n; do
+    [[ -n "$n" ]] || continue
+    s=$(ctrl_service_of "$n")
+    if [[ "$s" == frontail ]]; then OBSOLETE_CT+=("$n")
+    elif [[ -n "$s" && -z "${CT_OF[$s]:-}" ]]; then CT_OF[$s]="$n"; fi
+  done < <(docker ps --format '{{.Names}}')
+
+  # ── Rileva il vecchio compose: prima quello del container openhab (anche dentro
+  # Portainer), poi i percorsi soliti ──
+  if [[ -n "${CT_OF[openhab]:-}" ]]; then
+    OLD_PROJECT=$(docker inspect -f '{{index .Config.Labels "com.docker.compose.project"}}' "${CT_OF[openhab]}" 2>/dev/null || true)
+    local cf
+    cf=$(docker inspect -f '{{index .Config.Labels "com.docker.compose.project.config_files"}}' "${CT_OF[openhab]}" 2>/dev/null | cut -d, -f1 || true)
+    if [[ -z "$OLD_COMPOSE_PATH" && -n "$cf" && -f "$cf" ]]; then OLD_COMPOSE_PATH="$cf"; fi
+    find_portainer_compose "$cf"
+  fi
   if [[ -z "$OLD_COMPOSE_PATH" ]]; then
     for candidate in \
       /opt/docker_store/docker-compose-arfea-2.yml \
@@ -808,15 +1048,21 @@ run_docker_migration() {
   echo "   MIGRAZIONE verso arfea-controller  (sorgente: DOCKER)"
   echo "════════════════════════════════════════════════════════════"
   echo ""
-  echo "Vecchio compose: ${OLD_COMPOSE_PATH:-(non trovato)}"
+  echo "Vecchio compose: ${OLD_COMPOSE_PATH:-(non trovato)}${OLD_PROJECT:+  (progetto $OLD_PROJECT)}"
+  local PORTAINER_LIST; PORTAINER_LIST=$(portainer_containers | tr '\n' ' ')
+  [[ -z "$PORTAINER_LIST" ]] || echo "Portainer ($PORTAINER_LIST): viene tolto, con immagine e dati (restano nel backup)"
   echo "Tarball:         $TARBALL_PATH"
   echo ""
 
   local MANAGED_NAMES="openhab habapp zwave-js-ui zigbee2mqtt node-red mosquitto samba docker-socket-proxy"
   local ACTIVE=""
   for name in $MANAGED_NAMES; do
-    if docker ps --format '{{.Names}}' | grep -qx "$name"; then ACTIVE="$ACTIVE $name"; fi
+    if [[ -n "${CT_OF[$name]:-}" ]]; then
+      ACTIVE="$ACTIVE $name"
+      [[ "${CT_OF[$name]}" == "$name" ]] || echo "  $name  <-  container ${CT_OF[$name]}"
+    fi
   done
+  for n in "${OBSOLETE_CT[@]}"; do echo "  $n: non serve piu' (nessun servizio nel controller), viene tolto"; done
 
   inspect_devices_running() {
     docker inspect "$1" 2>/dev/null | python3 -c "
@@ -878,7 +1124,8 @@ except Exception as e:
   if [[ -z "$ACTIVE" && -n "$OLD_COMPOSE_PATH" ]]; then
     echo "Nessun container attivo. Analizzo il vecchio compose..."
     for cn in $(parse_compose_services "$OLD_COMPOSE_PATH"); do
-      if echo "$MANAGED_NAMES" | tr ' ' '\n' | grep -qx "$cn"; then ACTIVE="$ACTIVE $cn"; fi
+      cn=$(svc_alias "$cn")
+      if [[ -n "$cn" ]] && echo "$MANAGED_NAMES" | tr ' ' '\n' | grep -qx "$cn"; then ACTIVE="$ACTIVE $cn"; fi
     done
   fi
   echo "Container rilevati:$ACTIVE"
@@ -891,23 +1138,23 @@ except Exception as e:
   # /dev/ttyUSB0 lasciava zigbee2mqtt senza chiavetta (Redmine #260).
   local ZWAVE_DEVICE="" ZIGBEE_DEVICE=""
   local OPENHAB_DEVICES=()
-  if echo " $ACTIVE " | grep -q " zwave-js-ui "; then
-    ZWAVE_DEVICE=$(inspect_devices_running zwave-js-ui | head -1)
+  if [[ -n "${CT_OF[zwave-js-ui]:-}" ]]; then
+    ZWAVE_DEVICE=$(inspect_devices_running "${CT_OF[zwave-js-ui]}" | head -1)
   fi
-  if echo " $ACTIVE " | grep -q " zigbee2mqtt "; then
-    ZIGBEE_DEVICE=$(inspect_devices_running zigbee2mqtt | head -1)
+  if [[ -n "${CT_OF[zigbee2mqtt]:-}" ]]; then
+    ZIGBEE_DEVICE=$(inspect_devices_running "${CT_OF[zigbee2mqtt]}" | head -1)
   fi
-  if echo " $ACTIVE " | grep -q " openhab "; then
+  if [[ -n "${CT_OF[openhab]:-}" ]]; then
     while IFS= read -r line; do
       [[ -n "$line" ]] && OPENHAB_DEVICES+=("${line}:rwm")
-    done < <(inspect_devices_running openhab)
+    done < <(inspect_devices_running "${CT_OF[openhab]}")
   fi
   if [[ -n "$OLD_COMPOSE_PATH" ]]; then
     while IFS= read -r line; do
       [[ -z "$line" ]] && continue
       local cn="${line%%|*}" dev="${line##*|}"
-      case "$cn" in
-        zwave-js-ui|zwave) [[ -z "$ZWAVE_DEVICE" ]] && ZWAVE_DEVICE="$dev" ;;
+      case "$(svc_alias "$cn")" in
+        zwave-js-ui) [[ -z "$ZWAVE_DEVICE" ]] && ZWAVE_DEVICE="$dev" ;;
         zigbee2mqtt) [[ -z "$ZIGBEE_DEVICE" ]] && ZIGBEE_DEVICE="$dev" ;;
         openhab)
           if ! printf '%s\n' "${OPENHAB_DEVICES[@]}" | grep -q "^${dev}:rwm$"; then
@@ -916,6 +1163,12 @@ except Exception as e:
       esac
     done < <(parse_compose_devices "$OLD_COMPOSE_PATH")
   fi
+
+  # Lato host per by-id, dove il tty ne ha uno (Redmine #243, #278)
+  [[ -z "$ZWAVE_DEVICE" ]] || ZWAVE_DEVICE=$(stable_dev_map "$ZWAVE_DEVICE")
+  [[ -z "$ZIGBEE_DEVICE" ]] || ZIGBEE_DEVICE=$(stable_dev_map "$ZIGBEE_DEVICE")
+  local i
+  for i in "${!OPENHAB_DEVICES[@]}"; do OPENHAB_DEVICES[$i]=$(stable_dev_map "${OPENHAB_DEVICES[$i]}"); done
 
   echo "Device paths rilevati:"
   echo "  Z-Wave:   ${ZWAVE_DEVICE:-(nessuno)}"
@@ -928,7 +1181,7 @@ except Exception as e:
   # giri, e al primo pull porterebbe una versione diversa da quella dell'userdata:
   # in quel caso vale la versione scritta nell'userdata.
   local OPENHAB_IMAGE_DETECTED
-  OPENHAB_IMAGE_DETECTED=$(docker inspect openhab --format '{{.Config.Image}}' 2>/dev/null || echo "")
+  OPENHAB_IMAGE_DETECTED=$(docker inspect "${CT_OF[openhab]:-openhab}" --format '{{.Config.Image}}' 2>/dev/null || echo "")
   if [[ -z "$OPENHAB_IMAGE_DETECTED" && -n "$OLD_COMPOSE_PATH" ]]; then
     OPENHAB_IMAGE_DETECTED=$(parse_compose_openhab_image "$OLD_COMPOSE_PATH")
   fi
@@ -941,13 +1194,59 @@ except Exception as e:
       OPENHAB_IMAGE_DETECTED="openhab/openhab:$oh_ver"
     fi
   fi
-  if [[ -n "$OPENHAB_IMAGE_DETECTED" ]]; then
+  # OpenHAB 3.x non si conserva: col controller non girano ne' HABApp 25 ne' le
+  # regole JS ARFEA. Si passa all'immagine del template (l'userdata la aggiorna
+  # OpenHAB al primo avvio) con le correzioni del flusso nativo. Redmine #278.
+  local OH_UPGRADE=false oh_major="${OPENHAB_IMAGE_DETECTED##*:}"
+  oh_major="${oh_major%%.*}"
+  case "${MIGRATE_OH_UPGRADE:-auto}" in
+    1|si|yes) OH_UPGRADE=true ;;
+    0|no) OH_UPGRADE=false ;;
+    *) if [[ "$oh_major" =~ ^[0-9]+$ ]] && (( oh_major < 4 )); then OH_UPGRADE=true; fi ;;
+  esac
+  if $OH_UPGRADE && [[ -n "$OPENHAB_IMAGE_DETECTED" ]]; then
+    echo "OpenHAB $OPENHAB_IMAGE_DETECTED: passa all'immagine del template (upgrade dell'userdata al primo avvio)"
+    OPENHAB_IMAGE_DETECTED=""
+  elif [[ -n "$OPENHAB_IMAGE_DETECTED" ]]; then
     echo "Immagine OpenHAB conservata: $OPENHAB_IMAGE_DETECTED"
   else
     warn "versione di OpenHAB non rilevata: resterà l'immagine del template e OpenHAB aggiornerà l'userdata al primo avvio."
   fi
+
+  # Config HABApp del vecchio container, se non e' gia' dove la cerca il controller
+  local OLD_HABAPP_CFG=""
+  if [[ -n "${CT_OF[habapp]:-}" ]]; then
+    OLD_HABAPP_CFG=$(docker inspect -f '{{range .Mounts}}{{if eq .Destination "/habapp/config"}}{{.Source}}{{end}}{{end}}' "${CT_OF[habapp]}" 2>/dev/null || true)
+    if [[ -n "$OLD_HABAPP_CFG" && "$(readlink -f "$OLD_HABAPP_CFG")" != "$(readlink -f "$DEST/conf/habapp" 2>/dev/null)" ]]; then
+      echo "Config HABApp: $OLD_HABAPP_CFG -> $DEST/conf/habapp"
+    else
+      OLD_HABAPP_CFG=""
+    fi
+  fi
+  # Node-RED: se la major in uso e' diversa da quella del template resta la sua
+  # immagine (i nodi aggiuntivi in /data sono compilati per il suo Node).
+  local NODERED_KEEP=""
+  if [[ -n "${CT_OF[node-red]:-}" ]]; then
+    local nrv nrt
+    nrv=$(docker exec "${CT_OF[node-red]}" sh -c 'grep -m1 "\"version\"" /usr/src/node-red/node_modules/node-red/package.json' 2>/dev/null | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' || true)
+    nrt=$(tar -xJOf "$TARBALL_PATH" arfea-controller/config/arfea.yml 2>/dev/null | template_image_of /dev/stdin node-red || true)
+    nrt="${nrt##*:}"
+    if [[ -n "$nrv" && -n "$nrt" && "${nrv%%.*}" != "${nrt%%.*}" ]]; then
+      NODERED_KEEP="nodered/node-red:$nrv"
+      echo "Node-RED $nrv: resta alla sua versione ($NODERED_KEEP), il template ha la $nrt"
+    fi
+  fi
+  # IP del container openhab sulla vecchia rete: altri container (Node-RED) lo
+  # chiamano per indirizzo, e col controller OpenHAB sta sulla rete dell'host.
+  OLD_OH_IP=""
+  if [[ -n "${CT_OF[openhab]:-}" ]]; then
+    OLD_OH_IP=$(docker inspect -f '{{range .NetworkSettings.Networks}}{{.IPAddress}} {{end}}' "${CT_OF[openhab]}" 2>/dev/null | awk '{print $1}' || true)
+  fi
   echo ""
 
+  # shellcheck disable=SC2034  # letta da check_disk_space
+  DOCKER_IMG_SVCS="$ACTIVE"
+  if ! $OH_UPGRADE; then DOCKER_IMG_SVCS="${DOCKER_IMG_SVCS/ openhab/}"; fi
   check_disk_space docker
 
   echo "OPERAZIONI CHE VERRANNO ESEGUITE:"
@@ -974,13 +1273,15 @@ except Exception as e:
   echo ""
   log "[2/5] Stop container vecchi..."
   if [[ -n "$OLD_COMPOSE_PATH" ]]; then
-    ( cd "$(dirname "$OLD_COMPOSE_PATH")" && docker compose -f "$OLD_COMPOSE_PATH" down 2>/dev/null ) || true
+    # shellcheck disable=SC2086
+    ( cd "$(dirname "$OLD_COMPOSE_PATH")" && docker compose ${OLD_PROJECT:+-p "$OLD_PROJECT"} -f "$OLD_COMPOSE_PATH" down 2>/dev/null ) || true
   fi
-  for c in $ACTIVE; do
-    docker stop "$c" 2>/dev/null || true
-    docker rm -f "$c" 2>/dev/null || true
+  for c in $ACTIVE "${CT_OF[@]}" "${OBSOLETE_CT[@]}"; do
+    docker stop "$c" >/dev/null 2>&1 || true
+    docker rm -f "$c" >/dev/null 2>&1 || true
   done
   log "Container vecchi rimossi"
+  remove_portainer
 
   # 3. Estrai tarball
   echo ""
@@ -990,6 +1291,25 @@ except Exception as e:
   # l'OTA del controller, ma solo a un aggiornamento di versione; senza, un impianto
   # migrato restava senza item e regole ARFEA fino al primo OTA (Redmine #260).
   deploy_arfea_skeleton
+  if [[ -n "$OLD_HABAPP_CFG" ]]; then
+    if [[ -f "$DEST/conf/habapp/config.yml" ]]; then
+      warn "c'e' gia' una config HABApp in $DEST/conf/habapp: tengo quella, $OLD_HABAPP_CFG resta dov'e'"
+    else
+      log "  habapp:   $OLD_HABAPP_CFG -> $DEST/conf/habapp"
+      mkdir -p "$DEST/conf/habapp"; cp -a "$OLD_HABAPP_CFG"/. "$DEST/conf/habapp"/
+    fi
+  fi
+  [[ -z "${CT_OF[habapp]:-}" ]] || fix_habapp_config
+  # Ritocchi validi per ogni versione: doppioni di arfea.items nel JSONDB, JS
+  # Scripting per le regole ARFEA, strategia default nei .persist (OpenHAB 5.1+)
+  dedupe_managed_items
+  ensure_jsscripting_addon
+  fix_persist_default
+  if $OH_UPGRADE; then
+    fix_jython_paths
+    collect_upgrade_notes
+  fi
+  chown -R "$OH_UID:$OH_GID" "$DEST/conf" "$DEST/userdata/jsondb" 2>/dev/null || true
 
   # 4. Configura arfea.yml
   echo ""
@@ -1035,6 +1355,13 @@ except Exception as e:
       warn "non sono riuscito a scrivere l'immagine openhab in arfea.yml: controlla il blocco openhab."
     fi
   fi
+  if [[ -n "$NODERED_KEEP" ]]; then
+    if set_service_image "$YML" node-red "$NODERED_KEEP"; then
+      UPGRADE_NOTES+=("Node-RED resta a $NODERED_KEEP: l'aggiornamento del template si fa dalla release, dopo aver provato i flow")
+    else
+      warn "immagine di Node-RED non scritta in arfea.yml: controlla il blocco node-red"
+    fi
+  fi
   log "arfea.yml configurato (API key: $ARFEA_API_KEY)"
   fix_container_ip_refs
 
@@ -1063,7 +1390,13 @@ except Exception as e:
   echo ""
   echo "  Vecchio compose: ${OLD_COMPOSE_PATH:-N/A}"
   echo "    (puoi rinominarlo/spostarlo per evitare avvii accidentali)"
+  [[ -z "$PORTAINER_LIST" ]] || echo "  Portainer tolto ($PORTAINER_LIST): i suoi dati sono nel backup"
   echo ""
+  if [[ ${#UPGRADE_NOTES[@]} -gt 0 ]]; then
+    echo "  DA VERIFICARE A MANO:"
+    for n in "${UPGRADE_NOTES[@]}"; do echo "    - $n"; done
+    echo ""
+  fi
   if [[ -n "$BACKUP_FILE" ]]; then
     echo "  In caso di problemi, ripristina con:"
     echo "    cd $DATA_PATH/arfea-controller && docker compose down"
@@ -1207,28 +1540,7 @@ copy_native_data() {
     log "  habapp:   tenuta la config del container HABApp ($DEST/conf/habapp), non quella nativa"
   fi
   copy_companion_data
-
-  # Jython: da OpenHAB 4.2 le librerie si cercano in automation/jython/lib e non
-  # più in automation/lib/python, dove stanno le helper library di OpenHAB 3:
-  # senza spostarle ogni "from core.rules import rule" fallisce. Gli script in
-  # automation/jsr223 invece si caricano ancora (percorso deprecato).
-  if [[ -d "$DEST/conf/automation/lib/python" && ! -e "$DEST/conf/automation/jython/lib" ]]; then
-    log "  jython:   automation/lib/python -> automation/jython/lib (percorso di OpenHAB 4.2+)"
-    mkdir -p "$DEST/conf/automation/jython"
-    cp -a "$DEST/conf/automation/lib/python" "$DEST/conf/automation/jython/lib"
-  fi
-  # ...e gli script: il 5.x li carica SOLO da automation/jython. In
-  # automation/jsr223/python restavano lì senza un errore nel log, e con loro le
-  # regole di allagamento, allarmi e gas di un impianto (Redmine #237).
-  if [[ -d "$DEST/conf/automation/jsr223/python" ]]; then
-    local py rel
-    while IFS= read -r py; do
-      rel="${py#"$DEST/conf/automation/jsr223/python/"}"
-      mkdir -p "$(dirname "$DEST/conf/automation/jython/$rel")"
-      mv "$py" "$DEST/conf/automation/jython/$rel"
-      log "  jython:   script jsr223/python/$rel -> automation/jython/$rel"
-    done < <(find "$DEST/conf/automation/jsr223/python" -type f -name '*.py')
-  fi
+  fix_jython_paths
 
   # userdata -> /openhab/userdata (escludo cache/tmp/logs: rigenerati e legati
   # alla versione; vanno ripuliti in fase di upgrade)
@@ -1278,24 +1590,7 @@ copy_native_data() {
         if $have_rsync; then rsync -a "$hcfg"/ "$DEST/conf/habapp"/
         else cp -a "$hcfg"/. "$DEST/conf/habapp"/; fi
       fi
-      # Log con percorsi dell'host (/var/log/openhab/HABApp.log): nel container
-      # non esistono e HABApp esce subito, in loop (Redmine #236). Un nome
-      # relativo finisce in conf/habapp/log.
-      if [[ -f "$DEST/conf/habapp/logging.yml" ]] \
-         && grep -qE "^[[:space:]]*filename:[[:space:]]*['\"]?/" "$DEST/conf/habapp/logging.yml"; then
-        sed -i -E "s#^([[:space:]]*filename:[[:space:]]*['\"]?)/[^'\"[:space:]]*/#\1#" "$DEST/conf/habapp/logging.yml"
-        log "  habapp:   logging.yml, file di log relativi (in conf/habapp/log)"
-      fi
-      # Regole di sistema del vecchio HABApp ARFEA: nel mondo controller le fanno
-      # arfea_system.js + arfea.items e aasystem/tools.py, e tenerle vuol dire
-      # averle in doppio (Redmine #237). Messe da parte, non cancellate.
-      local old oldbak="$DATA_PATH/arfea-controller/backups/habapp-regole-native-$(date +%Y%m%d_%H%M%S)"
-      for old in rules/system/arfea.py rules/system/time.py rules/tools/tools.py; do
-        [[ -f "$DEST/conf/habapp/$old" ]] || continue
-        mkdir -p "$(dirname "$oldbak/$old")"
-        mv "$DEST/conf/habapp/$old" "$oldbak/$old"
-        log "  habapp:   $old messa da parte in $oldbak (la sostituisce il controller)"
-      done
+      fix_habapp_config
     else
       warn "HABApp attivo ma config non trovata: migra a mano le regole in $DEST/conf/habapp"
     fi
@@ -1450,6 +1745,8 @@ configure_yml_native() {
   done
   # Seriali dei container compagni, col percorso interno che la loro config usa
   local zdev="${COMPANION_DEV[zwave-js-ui]:-}" gdev="${COMPANION_DEV[zigbee2mqtt]:-}"
+  [[ -z "$zdev" ]] || zdev=$(stable_dev_map "$zdev")
+  [[ -z "$gdev" ]] || gdev=$(stable_dev_map "$gdev")
   [[ -n "$zdev" ]] && sed -i "s|\"/dev/ttyACM0:/dev/zwave\"|\"${zdev}\"|" "$YML"
   [[ -n "$gdev" ]] && sed -i -E "s|\"/dev/serial/by-id/usb-ITEAD_SONOFF_Zigbee_3\.0_USB_Dongle_Plus_V2_[^\":]*:/dev/zigbee\"|\"${gdev}\"|" "$YML"
 
@@ -1465,7 +1762,7 @@ configure_yml_native() {
       missing+="  - $d"$'\n'
       continue
     fi
-    devlist+="${d}:${d}"$'\n'
+    devlist+="$(stable_dev_map "${d}:${d}")"$'\n'
     if [[ "$real" == /dev/tty* && -z "${rxseen[$real]:-}" ]]; then
       rxseen[$real]=1
       rxtx+="${rxtx:+:}$real"
@@ -1523,6 +1820,11 @@ run_native_migration() {
     for d in "${COMPANION_COMPOSE[@]}"; do echo "  il loro compose ($d) viene chiuso prima di avviare il controller"; done
     echo ""
   fi
+  local pl; pl=$(portainer_containers | tr '\n' ' ')
+  if [[ -n "$pl" ]]; then
+    echo "Portainer ($pl): viene tolto, con immagine e dati (restano nel backup). I container che gestiva restano accesi."
+    echo ""
+  fi
   if [[ ${#FOREIGN_CONTAINERS[@]} -gt 0 ]]; then
     echo "Container già presenti, che restano FUORI dal controller (non vengono toccati):"
     for d in "${FOREIGN_CONTAINERS[@]}"; do echo "  - $d"; done
@@ -1563,6 +1865,7 @@ run_native_migration() {
   echo ""; log "[3/7] Stop servizi nativi..."
   stop_native_services
   stop_companion_containers
+  remove_portainer
 
   echo ""; log "[4/7] Copia dati OpenHAB nativi in $DEST..."
   copy_native_data
