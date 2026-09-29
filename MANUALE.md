@@ -518,6 +518,9 @@ del template, cioè quelle della release certificata.
   le valvole on/off come nomi semplici (`- valveX`), e il codice 25.12 vuole
   `- name: valveX`: con una stringa la creazione del termostato fallisce. Lo script le
   converte, tenendo l'originale in `thermo.yml.prima-della-migrazione`.
+- **Container del vecchio stack che il controller non gestisce** (per esempio la
+  MariaDB di Undici dentro lo stack): restano accesi, e il vecchio progetto non si
+  chiude con un `down`, che li toglierebbe; si tolgono solo i container ARFEA.
 - **Node-RED** di una major diversa da quella del template resta alla sua immagine
   (i nodi aggiuntivi in `/data` sono installati per il suo Node). L'aggiornamento si
   fa dalla release, dopo aver provato i flow.
@@ -607,6 +610,20 @@ Alla fine stampa cosa resta **da guardare a mano**:
   discovery retained. Su un impianto migrato: 29 item ricollegati così, tutti verificati;
 - se il log dice *Graal JavaScript language not initialized*, riavviare il container
   openhab (JS Scripting installato a caldo).
+
+**Impianti con deasy/Undici** (Redmine #280): Undici sta sempre in docker, nel suo
+compose in `/opt/docker_store/deasy` (container `deasy`, `mariadb`, `autoheal`), che resta
+suo e non lo gestisce il controller. A migrazione finita lo script:
+- mette il compose sulla rete del controller (`domotica`) al posto della sua rete
+  esterna (per esempio `shared_network`) e lo riavvia. Node-RED, che fa da ponte fra
+  OpenHAB e Undici, continua a chiamarlo `deasy`; la copia del compose resta in
+  `docker-compose.yml.prima-della-migrazione`;
+- esclude `deasy/mariadb/database` dal backup del controller. Copiato a caldo sarebbe
+  inutilizzabile, e il database lo salva a mano chi gestisce deasy.
+
+Undici usa la porta 80 e la seriale della XBee: nessun conflitto col controller.
+Sull'host possono restare il watchdog `undici-watchdog.service`, che serve, e avanzi del
+nativo come `php5.6-fpm`, `lighttpd` e `undici.service`, da disattivare.
 
 **Un vecchio zwavejs2mqtt → zwave-js-ui del controller** (fatto su un impianto migrato):
 fermare il vecchio container e togliergli il riavvio automatico

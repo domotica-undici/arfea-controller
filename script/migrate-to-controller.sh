@@ -278,7 +278,9 @@ images_mb_for() {
     img=$(awk -v s="$svc" '$0 ~ "^  "s":[[:space:]]*$" {f=1; next}
                            f && /^  [A-Za-z0-9_-]+:[[:space:]]*$/ {f=0}
                            f && /^    image:/ {gsub(/^    image:[[:space:]]*|"/, ""); print; exit}' <<<"$tpl")
-    if [[ -n "$img" ]] && docker image inspect "$img" &>/dev/null; then continue; fi
+    # niente immagine nel template: non e' un servizio del controller (docker-socket-proxy)
+    [[ -n "$img" ]] || continue
+    if docker image inspect "$img" &>/dev/null; then continue; fi
     mb=$((mb + ${IMAGE_MB[$svc]:-300}))
   done
   # controller: base python + i suoi strati
@@ -911,6 +913,63 @@ remove_portainer() {
   return 0
 }
 
+# ── deasy/Undici (sistema a parte, Redmine #280, #281) ───────────────────────
+# Il suo compose sta in $DATA_PATH/deasy e resta suo, ma entra nella rete del
+# controller: Node-RED, che fa da ponte fra OpenHAB e Undici, continua a
+# chiamarlo per nome. Il suo database non va nel backup del controller: copiato
+# a caldo sarebbe inutilizzabile, e lo salva a mano chi gestisce deasy.
+DEASY_DIR="$DATA_PATH/deasy"
+setup_deasy() {
+  local cf="$DEASY_DIR/docker-compose.yml" YML="$DATA_PATH/arfea-controller/config/arfea.yml"
+  [[ -f "$cf" ]] || return 0
+  log "deasy: compose in $DEASY_DIR"
+  local db="$DEASY_DIR/mariadb/database"
+  if [[ -f "$YML" ]] && ! grep -qF "\"$db\"" "$YML"; then
+    if grep -qE '^  exclude_paths:[[:space:]]*$' "$YML"; then
+      sed -i "/^  exclude_paths:[[:space:]]*\$/a\    - \"$db\"" "$YML"
+      log "  deasy: $db escluso dal backup del controller (il database si salva a mano)"
+    else
+      warn "deasy: exclude_paths non trovato in arfea.yml, aggiungi a mano $db alle esclusioni del backup"
+    fi
+  fi
+  local net
+  net=$(awk '/^network:/ {f=1; next} f && /^[^[:space:]]/ {f=0}
+             f && /^[[:space:]]+name:/ {gsub(/["[:space:]]/, "", $2); print $2; exit}' "$YML" 2>/dev/null || true)
+  net="${net:-domotica}"
+  # Reti esterne del compose diverse da quella del controller: se e' una sola si
+  # sostituisce il nome (il file resta com'e', commenti compresi)
+  local ext
+  ext=$(python3 - "$cf" "$net" <<'PY' || true
+import sys, yaml
+d = yaml.safe_load(open(sys.argv[1])) or {}
+nets = [k for k, v in (d.get("networks") or {}).items() if isinstance(v, dict) and v.get("external")]
+print(" ".join(n for n in nets if n != sys.argv[2]))
+PY
+)
+  if [[ -z "$ext" ]]; then
+    if ! grep -qE "^[[:space:]]+$net:[[:space:]]*\$|^[[:space:]]+- $net[[:space:]]*\$" "$cf"; then
+      warn "deasy: il compose non usa reti esterne; mettilo a mano sulla rete $net (external), o Node-RED non lo trova per nome"
+    fi
+    return 0
+  fi
+  if [[ "$ext" == *" "* ]]; then
+    warn "deasy: il compose usa piu' reti esterne ($ext): mettilo a mano sulla rete $net"
+    return 0
+  fi
+  cp -p "$cf" "$cf.prima-della-migrazione"
+  sed -i -E "s/(^|[^A-Za-z0-9_-])$ext([^A-Za-z0-9_-]|\$)/\1$net\2/g" "$cf"
+  log "  deasy: rete $ext -> $net nel compose (copia in $cf.prima-della-migrazione)"
+  if ( cd "$DEASY_DIR" && docker compose up -d 2>&1 | tail -4 ); then
+    log "  deasy: container ricreati sulla rete $net"
+    if [[ -z "$(docker network inspect -f '{{range .Containers}}{{.Name}} {{end}}' "$ext" 2>/dev/null | tr -d ' ')" ]]; then
+      docker network rm "$ext" >/dev/null 2>&1 && log "  deasy: rete $ext tolta (vuota)" || true
+    fi
+  else
+    warn "deasy: docker compose up non riuscito in $DEASY_DIR: controlla (copia del compose in $cf.prima-della-migrazione)"
+  fi
+  return 0
+}
+
 # Gli script Jython di OpenHAB 3 nei percorsi che il 4.2+/5.x legge.
 fix_jython_paths() {
   # Le librerie: da OpenHAB 4.2 si cercano in automation/jython/lib e non piu' in
@@ -1063,6 +1122,19 @@ run_docker_migration() {
     fi
   done
   for n in "${OBSOLETE_CT[@]}"; do echo "  $n: non serve piu' (nessun servizio nel controller), viene tolto"; done
+  # Container del vecchio progetto che il controller non gestisce (es. la MariaDB
+  # di Undici dentro lo stack): restano accesi, e il progetto non si chiude con
+  # un "down", che li toglierebbe (Redmine #281)
+  local KEEP_CT=()
+  if [[ -n "$OLD_PROJECT" ]]; then
+    while IFS= read -r n; do
+      [[ -n "$n" ]] || continue
+      if [[ " ${CT_OF[*]} ${OBSOLETE_CT[*]} " != *" $n "* ]] && [[ -z "$(portainer_containers | grep -x "$n" || true)" ]]; then
+        KEEP_CT+=("$n")
+      fi
+    done < <(docker ps -a --filter "label=com.docker.compose.project=$OLD_PROJECT" --format '{{.Names}}')
+  fi
+  for n in "${KEEP_CT[@]}"; do echo "  $n: non e' un servizio del controller, resta acceso"; done
 
   inspect_devices_running() {
     docker inspect "$1" 2>/dev/null | python3 -c "
@@ -1247,6 +1319,9 @@ except Exception as e:
   # shellcheck disable=SC2034  # letta da check_disk_space
   DOCKER_IMG_SVCS="$ACTIVE"
   if ! $OH_UPGRADE; then DOCKER_IMG_SVCS="${DOCKER_IMG_SVCS/ openhab/}"; fi
+  if [[ -n "$NODERED_KEEP" ]] && docker image inspect "$NODERED_KEEP" &>/dev/null; then
+    DOCKER_IMG_SVCS="${DOCKER_IMG_SVCS/ node-red/}"
+  fi
   check_disk_space docker
 
   echo "OPERAZIONI CHE VERRANNO ESEGUITE:"
@@ -1272,9 +1347,11 @@ except Exception as e:
   collect_old_subnets
   echo ""
   log "[2/5] Stop container vecchi..."
-  if [[ -n "$OLD_COMPOSE_PATH" ]]; then
+  if [[ -n "$OLD_COMPOSE_PATH" && ${#KEEP_CT[@]} -eq 0 ]]; then
     # shellcheck disable=SC2086
     ( cd "$(dirname "$OLD_COMPOSE_PATH")" && docker compose ${OLD_PROJECT:+-p "$OLD_PROJECT"} -f "$OLD_COMPOSE_PATH" down 2>/dev/null ) || true
+  elif [[ ${#KEEP_CT[@]} -gt 0 ]]; then
+    log "Vecchio progetto non chiuso: restano accesi ${KEEP_CT[*]}"
   fi
   for c in $ACTIVE "${CT_OF[@]}" "${OBSOLETE_CT[@]}"; do
     docker stop "$c" >/dev/null 2>&1 || true
@@ -1371,6 +1448,7 @@ except Exception as e:
   ( cd "$DATA_PATH/arfea-controller" && docker compose build && docker compose up -d )
   wait_openhab_running
   import_arfea_ui
+  setup_deasy
 
   local CRED_FILE; CRED_FILE=$(save_credentials)
   echo ""
@@ -1899,6 +1977,7 @@ run_native_migration() {
   fi
 
   import_arfea_ui
+  setup_deasy
 
   echo ""; log "[7/7] Disabilito i servizi nativi (autostart solo Docker)..."
   disable_native_services
