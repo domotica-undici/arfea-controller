@@ -486,7 +486,10 @@ dello stack.
   `localhost`, `mqtt.host` di zwave-js-ui e `mqtt.server` di zigbee2mqtt diventano
   `mosquitto`. Nei flow di Node-RED il broker diventa `mosquitto`, e l'IP del vecchio
   container openhab diventa il gateway della rete del controller (OpenHAB ora sta sulla
-  rete dell'host). Il gateway della bridge di default (`172.17.0.1`, con cui un container
+  rete dell'host). Se il vecchio Node-RED stava sulla rete dell'host, `localhost` e
+  `127.0.0.1` (controller openHAB, websocket, broker) passano al gateway o a
+  `mosquitto`: sulla rete del controller `localhost` è il container stesso. Con deasy
+  a bordo, l'indirizzo di Undici nel flow «Deasy Connection Parameters» diventa `deasy`. Il gateway della bridge di default (`172.17.0.1`, con cui un container
   raggiungeva un mosquitto nativo) diventa `mosquitto` per zwave-js-ui e zigbee2mqtt,
   mentre in OpenHAB resta: dalla rete dell'host funziona ancora.
 - **WebDAV:** la migrazione **non** imposta le credenziali WebDAV: finché non si

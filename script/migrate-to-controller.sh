@@ -507,6 +507,7 @@ COMPANION_HABAPP_CFG=""            # cartella della config HABApp montata nel co
 OLD_DOCKER_SUBNETS=()              # subnet delle reti dei vecchi compose (IP da non tenere)
 DOCKER_BRIDGE_SUBNET=""            # subnet della bridge di default (172.17.0.0/16)
 OLD_OH_IP=""                       # IP del vecchio container openhab (se non in rete host)
+NODERED_WAS_HOST=""                # 1 se il vecchio Node-RED stava sulla rete dell'host (o era nativo)
 detect_foreign_containers() {
   command -v docker &>/dev/null && docker info &>/dev/null || return 0
   local name img dev cf m
@@ -615,7 +616,8 @@ fix_container_ip_refs() {
   gw=$(awk '/^network:/ {f=1; next} f && /^[^[:space:]]/ {f=0}
             f && /^[[:space:]]+gateway:/ {gsub(/["[:space:]]/, "", $2); print $2; exit}' \
        "$DATA_PATH/arfea-controller/config/arfea.yml" 2>/dev/null || true)
-  OLD_OH_IP="$OLD_OH_IP" CTRL_GW="${gw:-172.11.0.1}" \
+  OLD_OH_IP="$OLD_OH_IP" CTRL_GW="${gw:-172.11.0.1}" NODERED_WAS_HOST="$NODERED_WAS_HOST" \
+  DEASY="$( [[ -f "$DATA_PATH/deasy/docker-compose.yml" ]] && echo 1 || true )" \
   python3 - "$DATA_PATH" "$DOCKER_BRIDGE_SUBNET" "${OLD_DOCKER_SUBNETS[@]}" <<'PY' || warn "correzione degli IP dei container non riuscita: controlla i broker MQTT"
 import ipaddress, json, re, sys, glob, os
 data = sys.argv[1]
@@ -652,13 +654,30 @@ for f in glob.glob(f"{data}/openhab/conf/things/*.things"):
 p = f"{data}/node-red/flows.json"
 if os.path.isfile(p):
     oh_ip, gw = os.environ.get("OLD_OH_IP", ""), os.environ.get("CTRL_GW", "")
+    # Node-RED che stava sulla rete dell'host (o nativo): sulla rete del
+    # controller "localhost" e' il container stesso (Redmine #283)
+    was_host, deasy = os.environ.get("NODERED_WAS_HOST") == "1", os.environ.get("DEASY") == "1"
+    local = ("localhost", "127.0.0.1")
     flows = json.load(open(p)); ch = False
     for n in flows if isinstance(flows, list) else []:
         t = str(n.get("type", ""))
-        if t == "mqtt-broker" and old_ip(str(n.get("broker", "")), True):
+        if t == "mqtt-broker" and (old_ip(str(n.get("broker", "")), True) or (was_host and n.get("broker") in local)):
             log(f"node-red broker {n['broker']} -> mosquitto"); n["broker"] = "mosquitto"; ch = True
-        elif t.startswith("openhab") and n.get("host") and oh_ip and n["host"] == oh_ip and gw:
+        elif t.startswith("openhab") and n.get("host") and gw and (
+                (oh_ip and n["host"] == oh_ip) or (was_host and n["host"] in local)):
             log(f"node-red {t} {n['host']} -> {gw}"); n["host"] = gw; ch = True
+        elif t == "websocket-client" and was_host and gw:
+            m = re.match(r"^(wss?://)(localhost|127\.0\.0\.1)([:/].*)$", str(n.get("path", "")))
+            if m:
+                log(f"node-red websocket {m.group(2)} -> {gw}"); n["path"] = m.group(1) + gw + m.group(3); ch = True
+        elif t == "function" and deasy:
+            # ponte con Undici (flow «Deasy Connection Parameters»): Undici sta
+            # nel container deasy, sulla stessa rete di Node-RED
+            f = str(n.get("func", ""))
+            nf = re.sub(r"""(flow\.set\(\s*["']address["']\s*,\s*["'])(localhost|127\.0\.0\.1|172\.17\.0\.1)(["'])""",
+                        r"\1deasy\3", f)
+            if nf != f:
+                log(f"node-red funzione {n.get('name', '')}: indirizzo di Undici -> deasy"); n["func"] = nf; ch = True
     if ch:
         os.replace(p, p + ".prima-della-migrazione")
         json.dump(flows, open(p, "w"), indent=4)
@@ -1325,6 +1344,9 @@ except Exception as e:
       NODERED_KEEP="nodered/node-red:$nrv"
       echo "Node-RED $nrv: resta alla sua versione ($NODERED_KEEP), il template ha la $nrt"
     fi
+  fi
+  if [[ -n "${CT_OF[node-red]:-}" && "$(docker inspect -f '{{.HostConfig.NetworkMode}}' "${CT_OF[node-red]}" 2>/dev/null)" == host ]]; then
+    NODERED_WAS_HOST=1
   fi
   # IP del container openhab sulla vecchia rete: altri container (Node-RED) lo
   # chiamano per indirizzo, e col controller OpenHAB sta sulla rete dell'host.
