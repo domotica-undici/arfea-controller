@@ -460,10 +460,19 @@ dello stack.
 - **Spazio su disco:** prima di fermare qualunque servizio lo script stima per
   eccesso cosa scriverà (backup di `/opt/docker_store`, nel caso nativo la copia
   dei dati, il pacchetto addon di OpenHAB da ~1,8 GB fra download ed estrazione, le
-  immagini Docker, un margine) e si ferma se non basta. Se la stima è troppo
+  immagini Docker, un margine) e si ferma se non basta. Nel caso nativo le immagini
+  del template già scaricate non si contano: scaricarle prima (`docker pull`) accorcia
+  il fermo e fa passare il controllo su una eMMC piena. Se la stima è troppo
   prudente: `MIGRATE_SKIP_SPACE_CHECK=1`.
 - **OTA:** la centralina migrata resta sotto OTA. Se il controller pubblicato è più
   nuovo del tarball usato per la migrazione, al primo avvio si aggiorna da solo.
+- **IP dei container:** gli indirizzi della rete dei vecchi compose scritti nelle
+  configurazioni non valgono più (i container passano sulla rete del controller).
+  Lo script li corregge: il broker MQTT di OpenHAB (file `.things` e JSONDB) diventa
+  `localhost`, `mqtt.host` di zwave-js-ui e `mqtt.server` di zigbee2mqtt diventano
+  `mosquitto`. Il gateway della bridge di default (`172.17.0.1`, con cui un container
+  raggiungeva un mosquitto nativo) diventa `mosquitto` per zwave-js-ui e zigbee2mqtt,
+  mentre in OpenHAB resta: dalla rete dell'host funziona ancora.
 - **WebDAV:** la migrazione **non** imposta le credenziali WebDAV: finché non si
   compilano (Web UI, sezione *Backup*, dal controller 1.8.9; oppure `arfea.yml`)
   il backup resta solo locale.
@@ -503,6 +512,23 @@ del template, cioè quelle della release certificata.
    - `frontail` → **solo `stop`+`disable`** (non più necessario, nessun servizio controller);
    - la config HABApp viene individuata (da `ExecStart --config` o path comuni) e copiata
      in `openhab/conf/habapp`.
+   - **mosquitto**: si porta il suo `mosquitto.db` (i retained: il pacchetto Debian ha
+     la persistenza accesa), solo se il controller estratto è almeno il 1.8.11. Con
+     uno più vecchio il broker partirebbe senza leggerlo, e al primo avvio con la
+     persistenza caricherebbe valori vecchi di giorni. La config non si porta: il
+     broker del controller è anonimo sulla 1883, e se il nativo aveva utenti, ACL,
+     bridge o altri listener lo script lo elenca fra le cose da rifare a mano.
+   - **Container compagni**: se accanto al nativo gira un vecchio compose con container
+     che si chiamano come i servizi del controller (`habapp`, `zwave-js-ui`,
+     `zigbee2mqtt`, `node-red`, `mosquitto`), sono loro a fare il lavoro (su un
+     impianto la termoregolazione girava nel container HABApp, con l'unità nativa
+     spenta e una config vecchia). Lo script li prende in carico: servizio acceso sul
+     controller, seriale con il percorso interno del container, config HABApp quella
+     montata nel container (non quella dell'unità nativa), dati copiati nelle cartelle
+     del controller se stavano altrove. Prima dell'avvio chiude il loro compose
+     (`down`, che toglie anche la rete: spesso ha la stessa subnet di `domotica` e il
+     controller non riuscirebbe a crearla); se il compose ha anche altri container,
+     toglie solo i compagni e lo segnala.
 4. **Porte seriali USB** (zwave/modbus): rilevate da `EXTRA_JAVA_OPTS` (solo le righe
    attive: il file del pacchetto ha un esempio commentato con `/dev/ttyS0`, che sulla
    C4 è la console seriale), dalle `things`/jsondb e dai nodi presenti. Una seriale già
@@ -698,6 +724,16 @@ usavano. Probabilmente si toglie; per questo è l'unico servizio a `:latest`, fu
 ### 6.3 Mosquitto (auto-dipendenza, porta 1883)
 Broker MQTT. Avviato **automaticamente** quando abiliti zwave-js-ui o zigbee2mqtt;
 fermato quando nessuno dei due lo richiede più. Host del broker per i client: `mosquitto`.
+
+**Persistenza** (dal controller 1.8.11): i messaggi retained stanno su disco, in
+`/opt/docker_store/mosquitto/data/mosquitto.db`. Prima stavano solo in memoria e
+sparivano a ogni riavvio del container (reboot, aggiornamento di versione):
+zwave-js-ui non li ripubblica quando si ricollega, e gli item MQTT di OpenHAB
+restavano `NULL` finché ogni nodo non ritrasmetteva, anche per ore con le testine a
+batteria. Il template ha `persistence true`; a un `mosquitto.conf` già presente che
+non ne dice nulla il controller aggiunge le due righe all'avvio e alla creazione del
+container. Non tocca un file che nomina già la persistenza o che usa `include_dir`, e
+non riavvia il broker: la persistenza vale dal suo avvio successivo.
 
 ### 6.4 HABApp (opzionale)
 Engine di automazione Python. Tre funzioni attivabili **dalla Web UI** (card

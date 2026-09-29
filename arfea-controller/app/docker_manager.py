@@ -43,6 +43,19 @@ _DEFAULT_CONFIGS: dict[str, list[tuple[str, str]]] = {
     "zigbee2mqtt": [("zigbee2mqtt/configuration.yaml", "zigbee2mqtt/data/configuration.yaml")],
 }
 
+# Persistenza del broker (Redmine #275): senza, i messaggi retained stanno solo in
+# memoria e spariscono a ogni riavvio del container mosquitto. zwave-js-ui non li
+# ripubblica quando si ricollega, e gli item MQTT di OpenHAB restano NULL finche'
+# ogni nodo non ritrasmette: ore, per le testine a batteria. Il template la ha;
+# le config nate prima la ricevono da ensure_mosquitto_persistence.
+_MOSQUITTO_PERSISTENCE = (
+    "\n"
+    "# Messaggi retained e sessioni su disco (Redmine #275): senza, a ogni riavvio\n"
+    "# del container gli item MQTT restano NULL finche' i dispositivi non ritrasmettono.\n"
+    "persistence true\n"
+    "persistence_location /mosquitto/data/\n"
+)
+
 
 class DockerManager:
     def __init__(self, config_manager: ConfigManager):
@@ -265,6 +278,37 @@ class DockerManager:
                     "Servizio '%s': copia della config di default %s fallita: %s",
                     name, dst, exc,
                 )
+
+        if name == "mosquitto":
+            # Qui, prima dell'avvio: una config vecchia prende la persistenza
+            # subito, e non solo al riavvio successivo del broker.
+            self.ensure_mosquitto_persistence()
+
+    def ensure_mosquitto_persistence(self) -> None:
+        """Aggiunge la persistenza a un mosquitto.conf che non ne dice nulla.
+
+        Le config create prima del Redmine #275 (template, install.sh, vecchi
+        compose) non la hanno, e il no-clobber di _ensure_default_config non le
+        tocca mai. E' l'unica eccezione, ed e' stretta: si aggiungono solo le due
+        righe, e solo se il file non nomina gia' la persistenza e non include
+        altri file (mosquitto rifiuta di partire con persistence_location
+        ripetuto). Il broker in esecuzione non si riavvia: la persistenza vale
+        dal suo prossimo avvio (reboot, aggiornamento, recreate)."""
+        conf = Path(self.cfg.config.controller.data_path) / "mosquitto" / "config" / "mosquitto.conf"
+        try:
+            if not conf.is_file():
+                return
+            text = conf.read_text()
+            if re.search(r"^\s*(persistence\w*|include_dir)\s", text, re.MULTILINE):
+                return
+            with conf.open("a") as f:
+                f.write(("" if text.endswith("\n") else "\n") + _MOSQUITTO_PERSISTENCE)
+            logger.warning(
+                "mosquitto: aggiunta la persistenza a %s (messaggi retained su disco, "
+                "vale dal prossimo avvio del broker)", conf,
+            )
+        except OSError as exc:
+            logger.warning("mosquitto: persistenza non aggiunta a %s: %s", conf, exc)
 
     def stop_service(self, name: str) -> OperationResponse:
         svc = self.cfg.config.services.get(name)

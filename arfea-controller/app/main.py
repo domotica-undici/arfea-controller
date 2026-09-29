@@ -420,7 +420,16 @@ logger = logging.getLogger(__name__)
 #          alto, nell'accesso e come favicon. Il menu delle sezioni e' blu scuro
 #          del logo: sul desktop la voce attiva e' arancione con testo quasi nero
 #          (5,3:1), sul telefono ha icona e lineetta arancioni e nome bianco.
-VERSION = "1.8.10"
+#   1.8.11 mosquitto con la persistenza (Redmine #275): i messaggi retained
+#          stavano solo in memoria e sparivano a ogni riavvio del container
+#          (reboot, aggiornamento di versione), e gli item MQTT di OpenHAB
+#          restavano NULL finche' ogni nodo zwave non ritrasmetteva: ore, per le
+#          testine a batteria. Template con persistence true in /mosquitto/data;
+#          alle config gia' presenti che non ne dicono nulla (e senza include_dir)
+#          il controller aggiunge le due righe all'avvio e alla creazione del
+#          container, senza riavviare il broker: vale dal suo avvio successivo.
+#          La migrazione da nativo porta il mosquitto.db del pacchetto Debian.
+VERSION = "1.8.11"
 
 # -- Globals initialised at startup -----------------------------------------
 
@@ -506,6 +515,10 @@ async def lifespan(app: FastAPI):
         logger.info("Aggiornamento in corso, il controller si riavvierà...")
         yield
         return
+
+    # Broker con i retained su disco anche sugli impianti nati prima (Redmine
+    # #275): la start qui sotto non ricrea un mosquitto gia' esistente.
+    docker_manager.ensure_mosquitto_persistence()
 
     logger.info("Starting all enabled services...")
     results = docker_manager.start_all_enabled()

@@ -131,6 +131,24 @@ enable_service() {
 set_openhab_devices() {
   local f="$1" devlist="$2" has=0
   [[ -n "${devlist//[$'\n\r\t ']/}" ]] && has=1
+  # Il template non ha piu' "devices:" nel blocco openhab (le porte si aggiungono
+  # dalla Web UI): senza la chiave l'awk qui sotto non trovava dove scrivere e le
+  # seriali rilevate sparivano in silenzio (Redmine #265). Si inserisce allora
+  # il blocco subito dopo "network_mode: host".
+  if [[ "$has" == 1 ]] && ! awk '/^  openhab:[[:space:]]*$/{f=1;next} f&&/^  [A-Za-z0-9_-]+:[[:space:]]*$/{f=0} f&&/^    devices:[[:space:]]*$/{found=1} END{exit !found}' "$f"; then
+    awk -v devlist="$devlist" '
+      BEGIN { n = split(devlist, D, "\n") }
+      /^  openhab:[[:space:]]*$/ { inoh = 1 }
+      inoh && /^  [A-Za-z0-9_-]+:[[:space:]]*$/ && $0 !~ /^  openhab:/ { inoh = 0 }
+      { print }
+      inoh && !done && /^    network_mode:[[:space:]]*host/ {
+        print "    devices:"
+        for (i = 1; i <= n; i++) if (D[i] != "") print "      - \"" D[i] "\""
+        done = 1
+      }
+    ' "$f" > "$f.t" && mv "$f.t" "$f"
+    return 0
+  fi
   awk -v devlist="$devlist" -v has="$has" '
     BEGIN { n = split(devlist, D, "\n") }
     /^  openhab:[[:space:]]*$/ { inoh = 1 }
@@ -154,7 +172,18 @@ set_openhab_devices() {
 # Imposta il valore di -Dgnu.io.rxtx.SerialPorts nel EXTRA_JAVA_OPTS di openhab.
 set_rxtx_ports() {
   local f="$1" ports="$2"
-  sed -i -E "s#-Dgnu\.io\.rxtx\.SerialPorts=[^\" ]*#-Dgnu.io.rxtx.SerialPorts=${ports}#" "$f"
+  if grep -q -- '-Dgnu\.io\.rxtx\.SerialPorts=' "$f"; then
+    sed -i -E "s#-Dgnu\.io\.rxtx\.SerialPorts=[^\" ]*#-Dgnu.io.rxtx.SerialPorts=${ports}#" "$f"
+  elif [[ -n "$ports" ]]; then
+    # Il template non la ha piu': si aggiunge in coda a EXTRA_JAVA_OPTS del solo
+    # blocco openhab (Redmine #265).
+    awk -v ports="$ports" '
+      /^  openhab:[[:space:]]*$/ { inoh = 1 }
+      inoh && /^  [A-Za-z0-9_-]+:[[:space:]]*$/ && $0 !~ /^  openhab:/ { inoh = 0 }
+      inoh && !done && /^      EXTRA_JAVA_OPTS: "/ { sub(/"[[:space:]]*$/, " -Dgnu.io.rxtx.SerialPorts=" ports "\""); done = 1 }
+      { print }
+    ' "$f" > "$f.t" && mv "$f.t" "$f"
+  fi
 }
 
 # Imposta il GID di dialout (group_add) del container openhab, se diverso da 20.
@@ -212,6 +241,28 @@ existing_parent() { local d="$1"; while [[ ! -e "$d" ]]; do d=$(dirname "$d"); d
 free_mb_of()      { df -Pm "$1" | awk 'NR == 2 { print $4 }'; }
 mount_of()        { df -P "$1" | awk 'NR == 2 { print $6 }'; }
 
+# Immagini che la migrazione nativa scarica: stima per servizio (arm64, estratte
+# e compresse durante il pull), zero per quelle gia' presenti. Conviene scaricarle
+# prima, per accorciare il fermo: contarle comunque fermava la migrazione su una
+# eMMC con lo spazio giusto (4,0 GB liberi contro 4,4 stimati, Redmine #276).
+declare -A IMAGE_MB=([openhab]=900 [habapp]=400 [zwave-js-ui]=400 [zigbee2mqtt]=300
+                     [node-red]=300 [mosquitto]=20 [samba]=100)
+CONTROLLER_BASE_IMAGE="python:3.11-slim"
+native_images_mb() {
+  local tpl svc img mb=0
+  tpl=$(tar -xJOf "$TARBALL_PATH" arfea-controller/config/arfea.yml 2>/dev/null || true)
+  for svc in openhab "${ENABLE_CTRL[@]}"; do
+    img=$(awk -v s="$svc" '$0 ~ "^  "s":[[:space:]]*$" {f=1; next}
+                           f && /^  [A-Za-z0-9_-]+:[[:space:]]*$/ {f=0}
+                           f && /^    image:/ {gsub(/^    image:[[:space:]]*|"/, ""); print; exit}' <<<"$tpl")
+    if [[ -n "$img" ]] && docker image inspect "$img" &>/dev/null; then continue; fi
+    mb=$((mb + ${IMAGE_MB[$svc]:-300}))
+  done
+  # controller: base python + i suoi strati
+  if docker image inspect "$CONTROLLER_BASE_IMAGE" &>/dev/null; then mb=$((mb + 100)); else mb=$((mb + 230)); fi
+  echo "$mb"
+}
+
 check_disk_space() {
   local mode="$1" backup_mb=0 native_mb=0 images_mb=1024
   [[ -d "$DATA_PATH" ]] && backup_mb=$(mb_of "$DATA_PATH")
@@ -219,7 +270,7 @@ check_disk_space() {
     native_mb=$(du -sm --exclude=cache --exclude=tmp --exclude=logs --exclude='openhab-addons-*.kar' \
                   "$CONF" "$USERDATA" "$ADDONS" 2>/dev/null \
                 | awk '{ s += $1 } END { print s + 0 }')
-    images_mb=2048        # anche OpenHAB e i servizi, non solo il controller
+    images_mb=$(native_images_mb)   # anche OpenHAB e i servizi, non solo il controller
   fi
   local opt_dir docker_dir
   opt_dir=$(existing_parent "$DATA_PATH")
@@ -348,28 +399,42 @@ detect_native_layout() {
 STOP_UNITS=(); KILL_PROCS=(); ENABLE_CTRL=()
 NAT_HABAPP=false; NAT_MOSQUITTO=false; NAT_SAMBA=false; NAT_FRONTAIL=false
 NAT_HABAPP_UNIT=""
+NAT_OFF=()   # servizi nativi installati ma spenti: dati copiati, NON accesi sul controller
+# Un servizio nativo si accende sul controller solo se sul nativo girava o partiva
+# al boot. Installato ma spento vuol dire che qualcuno l'ha fermato: su un impianto
+# HABApp era disattivato da un anno, con regole di controllo accessi, e riaccenderlo
+# di colpo avrebbe rimesso in funzione automatismi voluti spenti (Redmine #272).
+svc_wanted() { svc_active "$1" || systemctl is-enabled --quiet "$1" 2>/dev/null; }
 detect_native_services() {
   # OpenHAB core: sempre presente in modalità native
   [[ -n "$NAT_OPENHAB_UNIT" ]] && STOP_UNITS+=("$NAT_OPENHAB_UNIT")
 
   # HABApp -> abilitato sul controller
   if svc_present habapp; then
-    NAT_HABAPP=true; NAT_HABAPP_UNIT="habapp"; STOP_UNITS+=("habapp"); ENABLE_CTRL+=("habapp")
+    NAT_HABAPP=true; NAT_HABAPP_UNIT="habapp"; STOP_UNITS+=("habapp")
+    if svc_wanted habapp; then ENABLE_CTRL+=("habapp"); else NAT_OFF+=("habapp"); fi
   elif pgrep -f 'HABApp' >/dev/null 2>&1; then
     NAT_HABAPP=true; KILL_PROCS+=("HABApp"); ENABLE_CTRL+=("habapp")
   fi
 
   # Mosquitto -> abilitato sul controller
   if svc_present mosquitto; then
-    NAT_MOSQUITTO=true; STOP_UNITS+=("mosquitto"); ENABLE_CTRL+=("mosquitto")
+    NAT_MOSQUITTO=true; STOP_UNITS+=("mosquitto")
+    if svc_wanted mosquitto; then ENABLE_CTRL+=("mosquitto"); else NAT_OFF+=("mosquitto"); fi
   fi
 
   # Samba (smbd/nmbd o unità "samba") -> abilitato sul controller
-  local sfound=false
+  local sfound=false swanted=false
   for u in smbd nmbd samba smb; do
-    if svc_present "$u"; then STOP_UNITS+=("$u"); sfound=true; fi
+    if svc_present "$u"; then
+      STOP_UNITS+=("$u"); sfound=true
+      svc_wanted "$u" && swanted=true
+    fi
   done
-  if $sfound; then NAT_SAMBA=true; ENABLE_CTRL+=("samba"); fi
+  if $sfound; then
+    NAT_SAMBA=true
+    if $swanted; then ENABLE_CTRL+=("samba"); else NAT_OFF+=("samba"); fi
+  fi
 
   # Frontail -> solo stop/disable (non più necessario, nessun servizio controller)
   if svc_present frontail; then
@@ -389,17 +454,200 @@ SERIAL_DEVICES=()   # path così come referenziati (usati per il mapping 1:1)
 # seriale già aperta da un container non va mappata anche in openhab (Redmine #234).
 FOREIGN_CONTAINERS=()      # "nome (immagine)"
 declare -A FOREIGN_DEVICES=()   # path reale sull'host -> nome del container
+# Container "compagni" dell'OpenHAB nativo: un compose messo accanto con HABApp,
+# zwave-js-ui, ... che hanno il nome di un servizio del controller. Sono loro a
+# fare il lavoro (su un impianto la termoregolazione girava nel container HABApp,
+# con l'unita' nativa spenta): il controller li prende in carico con i loro dati
+# e le loro seriali, e il loro compose va chiuso prima di avviarlo, perche' stesso
+# nome di container e spesso stessa subnet della rete "domotica" (Redmine #273).
+COMPANION_MANAGED="habapp zwave-js-ui zigbee2mqtt node-red mosquitto"
+COMPANION_NAMES=()                 # servizi del controller che sostituiscono un container
+COMPANION_COMPOSE=()               # compose dei container compagni
+declare -A COMPANION_DEV=()        # servizio -> "host:container" della prima seriale
+declare -A COMPANION_MOUNT=()      # "servizio|path nel container" -> path sull'host
+COMPANION_HABAPP_CFG=""            # cartella della config HABApp montata nel container
+OLD_DOCKER_SUBNETS=()              # subnet delle reti dei vecchi compose (IP da non tenere)
+DOCKER_BRIDGE_SUBNET=""            # subnet della bridge di default (172.17.0.0/16)
 detect_foreign_containers() {
   command -v docker &>/dev/null && docker info &>/dev/null || return 0
-  local name img dev
+  local name img dev cf m
   while IFS=' ' read -r name img; do
     [[ -z "$name" ]] && continue
-    FOREIGN_CONTAINERS+=("$name ($img)")
     while IFS= read -r dev; do
       [[ -z "$dev" ]] && continue
       FOREIGN_DEVICES[$(readlink -f "$dev" 2>/dev/null || echo "$dev")]="$name"
     done < <(docker inspect -f '{{range .HostConfig.Devices}}{{println .PathOnHost}}{{end}}' "$name" 2>/dev/null || true)
+    if [[ " $COMPANION_MANAGED " != *" $name "* ]]; then
+      FOREIGN_CONTAINERS+=("$name ($img)")
+      continue
+    fi
+    COMPANION_NAMES+=("$name")
+    cf=$(docker inspect -f '{{index .Config.Labels "com.docker.compose.project.config_files"}}' "$name" 2>/dev/null || true)
+    if [[ -n "$cf" && " ${COMPANION_COMPOSE[*]} " != *" $cf "* ]]; then COMPANION_COMPOSE+=("$cf"); fi
+    COMPANION_DEV[$name]=$(docker inspect -f '{{range .HostConfig.Devices}}{{.PathOnHost}}:{{.PathInContainer}}{{println}}{{end}}' "$name" 2>/dev/null | grep -m1 . || true)
+    while IFS='|' read -r m dev; do
+      if [[ -n "$m" ]]; then COMPANION_MOUNT["$name|$dev"]="$m"; fi
+    done < <(docker inspect -f '{{range .Mounts}}{{.Source}}|{{.Destination}}{{println}}{{end}}' "$name" 2>/dev/null || true)
+    if [[ "$name" == habapp ]]; then COMPANION_HABAPP_CFG="${COMPANION_MOUNT[habapp|/habapp/config]:-}"; fi
   done < <(docker ps --format '{{.Names}} {{.Image}}')
+
+  # I container compagni sono quelli che girano davvero: si accendono sul
+  # controller anche se l'unita' nativa corrispondente e' spenta (#272).
+  local n
+  for n in "${COMPANION_NAMES[@]}"; do
+    [[ " ${ENABLE_CTRL[*]} " == *" $n "* ]] || ENABLE_CTRL+=("$n")
+    NAT_OFF=("${NAT_OFF[@]/#$n/}")
+    if [[ "$n" == habapp ]]; then NAT_HABAPP=true; fi
+    if [[ "$n" == mosquitto ]]; then NAT_MOSQUITTO=true; fi
+  done
+  collect_old_subnets
+  return 0
+}
+
+# Subnet delle reti Docker create dai vecchi compose (non la bridge di default,
+# 172.17.0.0/16: il suo gateway, che per OpenHAB resta valido, si corregge solo
+# nelle config dei container).
+collect_old_subnets() {
+  command -v docker &>/dev/null && docker info &>/dev/null || return 0
+  local net
+  DOCKER_BRIDGE_SUBNET=$(docker network inspect -f '{{range .IPAM.Config}}{{.Subnet}}{{end}}' bridge 2>/dev/null || true)
+  for net in $(docker network ls --filter driver=bridge --format '{{.Name}}'); do
+    [[ "$net" == bridge ]] && continue
+    while IFS= read -r s; do
+      # solo IPv4 (la rete del vecchio compose ha anche una subnet IPv6)
+      if [[ "$s" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+/[0-9]+$ ]]; then OLD_DOCKER_SUBNETS+=("$s"); fi
+    done < <(docker network inspect -f '{{range .IPAM.Config}}{{println .Subnet}}{{end}}' "$net" 2>/dev/null || true)
+  done
+  return 0
+}
+
+# Chiude i compose dei container compagni (container e rete). Se un compose ha
+# anche container che il controller non gestisce, si tolgono solo i compagni:
+# un "down" spegnerebbe anche quelli.
+stop_companion_containers() {
+  local cf n others
+  for cf in "${COMPANION_COMPOSE[@]}"; do
+    others=$(docker ps -a --filter "label=com.docker.compose.project.config_files=$cf" --format '{{.Names}}' \
+             | while read -r n; do [[ " ${COMPANION_NAMES[*]} " == *" $n "* ]] || echo "$n"; done)
+    if [[ -z "$others" && -f "$cf" ]]; then
+      log "  docker compose down: $cf (container e rete del vecchio compose)"
+      ( cd "$(dirname "$cf")" && docker compose -f "$cf" down 2>&1 | tail -3 ) || true
+    else
+      warn "nel compose $cf ci sono anche container che il controller non gestisce ($(echo $others)): tolgo solo i compagni, la sua rete resta"
+    fi
+  done
+  for n in "${COMPANION_NAMES[@]}"; do
+    docker rm -f "$n" >/dev/null 2>&1 && log "  container $n tolto (lo sostituisce il servizio del controller)" || true
+  done
+}
+
+# Dati dei container compagni in cartelle diverse da quelle del controller: si
+# copiano dove li cerca il controller (senza cancellare nulla).
+copy_companion_data() {
+  local key dst src
+  declare -A want=(
+    ["zwave-js-ui|/usr/src/app/store"]="$DATA_PATH/zwave-js-ui"
+    ["zigbee2mqtt|/app/data"]="$DATA_PATH/zigbee2mqtt/data"
+    ["node-red|/data"]="$DATA_PATH/node-red"
+    ["mosquitto|/mosquitto/config"]="$DATA_PATH/mosquitto/config"
+    ["mosquitto|/mosquitto/data"]="$DATA_PATH/mosquitto/data"
+  )
+  for key in "${!want[@]}"; do
+    src="${COMPANION_MOUNT[$key]:-}"; dst="${want[$key]}"
+    [[ -n "$src" && -d "$src" ]] || continue
+    [[ "$(readlink -f "$src")" == "$(readlink -f "$dst" 2>/dev/null)" ]] && continue
+    log "  ${key%%|*}: $src -> $dst"
+    mkdir -p "$dst"; cp -a "$src"/. "$dst"/
+  done
+  return 0
+}
+
+# Indirizzi dei container della vecchia rete scritti nelle configurazioni: col
+# controller i container cambiano rete e IP. OpenHAB (rete host) raggiunge il
+# broker su localhost; zwave-js-ui e zigbee2mqtt, sulla rete del controller, lo
+# chiamano per nome. Su un impianto OpenHAB e zwave-js-ui puntavano all'IP fisso
+# del container mosquitto (Redmine #273).
+fix_container_ip_refs() {
+  [[ ${#OLD_DOCKER_SUBNETS[@]} -gt 0 || -n "$DOCKER_BRIDGE_SUBNET" ]] || return 0
+  python3 - "$DATA_PATH" "$DOCKER_BRIDGE_SUBNET" "${OLD_DOCKER_SUBNETS[@]}" <<'PY' || warn "correzione degli IP dei container non riuscita: controlla i broker MQTT"
+import ipaddress, json, re, sys, glob, os
+data = sys.argv[1]
+bridge = [ipaddress.ip_network(sys.argv[2], strict=False)] if sys.argv[2] else []
+nets = [ipaddress.ip_network(s, strict=False) for s in sys.argv[3:]]
+def old_ip(h, via_bridge=False):
+    # via_bridge: per i container anche il gateway della bridge di default (un
+    # mosquitto nativo raggiunto dal container), sul controller mosquitto e' un
+    # container della stessa rete e si chiama per nome
+    try: return any(ipaddress.ip_address(h) in n for n in nets + (bridge if via_bridge else []))
+    except ValueError: return False
+def log(m): print("  ip:       " + m)
+# zwave-js-ui: settings.json -> mqtt.host
+p = f"{data}/zwave-js-ui/settings.json"
+if os.path.isfile(p):
+    d = json.load(open(p)); h = (d.get("mqtt") or {}).get("host", "")
+    if old_ip(h, True):
+        d["mqtt"]["host"] = "mosquitto"; json.dump(d, open(p, "w"), indent=2); log(f"zwave-js-ui mqtt.host {h} -> mosquitto")
+# zigbee2mqtt: configuration.yaml -> mqtt.server
+p = f"{data}/zigbee2mqtt/data/configuration.yaml"
+if os.path.isfile(p):
+    s = open(p).read(); m = re.search(r"(server:\s*['\"]?mqtts?://)([0-9.]+)", s)
+    if m and old_ip(m.group(2), True):
+        open(p, "w").write(s.replace(m.group(0), m.group(1) + "mosquitto")); log(f"zigbee2mqtt mqtt.server {m.group(2)} -> mosquitto")
+# OpenHAB: broker MQTT nei file .things e nel JSONDB
+for f in glob.glob(f"{data}/openhab/conf/things/*.things"):
+    s = open(f).read(); new = s
+    for m in re.finditer(r'(Bridge\s+mqtt:broker:[^\[]*\[[^\]]*host\s*=\s*")([0-9.]+)(")', s):
+        if old_ip(m.group(2)):
+            new = new.replace(m.group(0), m.group(1) + "localhost" + m.group(3)); log(f"{os.path.basename(f)}: broker {m.group(2)} -> localhost")
+    if new != s: open(f, "w").write(new)
+p = f"{data}/openhab/userdata/jsondb/org.openhab.core.thing.Thing.json"
+if os.path.isfile(p):
+    t = json.load(open(p)); ch = False
+    for uid, v in t.items():
+        cfg = v.get("value", {}).get("configuration", {})
+        if uid.startswith("mqtt:broker:") and old_ip(str(cfg.get("host", ""))):
+            log(f"{uid}: host {cfg['host']} -> localhost"); cfg["host"] = "localhost"; ch = True
+    if ch: json.dump(t, open(p, "w"), indent=2)
+PY
+}
+
+# Mosquitto nativo: i retained stanno nel suo mosquitto.db (il pacchetto Debian ha
+# la persistenza accesa). Senza, dopo la migrazione gli item MQTT di OpenHAB
+# restano NULL finche' ogni nodo zwave non ritrasmette: ore, per le testine a
+# batteria (Redmine #275). Il db si porta solo se il controller estratto conosce
+# la persistenza: un broker senza non lo legge, e al primo avvio con la
+# persistenza caricherebbe valori vecchi di giorni. La config non si porta: il
+# broker del controller e' anonimo sulla 1883, e utenti, ACL, bridge e altri
+# listener del nativo vanno rifatti a mano.
+copy_native_mosquitto() {
+  svc_present mosquitto || return 0
+  local confs loc file db dst="$DATA_PATH/mosquitto/data" extra
+  confs=$(ls /etc/mosquitto/mosquitto.conf /etc/mosquitto/conf.d/*.conf 2>/dev/null || true)
+  if [[ -n "$confs" ]]; then
+    # shellcheck disable=SC2086
+    loc=$(grep -hE '^[[:space:]]*persistence_location[[:space:]]' $confs | tail -1 | awk '{print $2}' || true)
+    # shellcheck disable=SC2086
+    file=$(grep -hE '^[[:space:]]*persistence_file[[:space:]]' $confs | tail -1 | awk '{print $2}' || true)
+    # shellcheck disable=SC2086
+    extra=$(grep -hoE '^[[:space:]]*(password_file|acl_file|connection|psk_file|certfile|allow_anonymous[[:space:]]+false)' $confs \
+            | awk '{print $1}' | sort -u | tr '\n' ' ' || true)
+    # shellcheck disable=SC2086
+    if grep -hE '^[[:space:]]*listener[[:space:]]' $confs | awk '$2 != 1883' | grep -q .; then extra+="listener(porte oltre la 1883) "; fi
+    if [[ -n "$extra" ]]; then
+      UPGRADE_NOTES+=("mosquitto nativo con ${extra% }: il broker del controller e' anonimo sulla 1883, riporta a mano in $DATA_PATH/mosquitto/config ciò che serve")
+    fi
+  fi
+  loc="${loc:-/var/lib/mosquitto/}"; db="${loc%/}/${file:-mosquitto.db}"
+  [[ -f "$db" ]] || return 0
+  if [[ -f "$dst/mosquitto.db" ]]; then
+    log "  mosquitto: $dst/mosquitto.db esiste già, non porto $db"
+  elif ! grep -q ensure_mosquitto_persistence "$DATA_PATH/arfea-controller/app/docker_manager.py" 2>/dev/null; then
+    warn "mosquitto: il controller estratto non ha la persistenza del broker (Redmine #275): i messaggi retained di $db non si portano"
+  else
+    mkdir -p "$dst"; cp -p "$db" "$dst/mosquitto.db"; chown -R 1883:1883 "$dst"
+    log "  mosquitto: $db -> $dst (messaggi retained)"
+  fi
+  return 0
 }
 
 detect_native_serial() {
@@ -720,7 +968,9 @@ except Exception as e:
   backup_docker_store
   [[ -f "$BACKUP_FILE" ]] || die "backup fallito"
 
-  # 2. Stop container vecchi
+  # 2. Stop container vecchi (prima si annotano le subnet delle loro reti: gli IP
+  # dei container scritti nelle config vanno corretti, Redmine #273)
+  collect_old_subnets
   echo ""
   log "[2/5] Stop container vecchi..."
   if [[ -n "$OLD_COMPOSE_PATH" ]]; then
@@ -786,6 +1036,7 @@ except Exception as e:
     fi
   fi
   log "arfea.yml configurato (API key: $ARFEA_API_KEY)"
+  fix_container_ip_refs
 
   # 5. Avvia stack
   echo ""
@@ -935,12 +1186,27 @@ copy_native_data() {
 
   local have_rsync=false; command -v rsync &>/dev/null && have_rsync=true
 
-  # conf -> /openhab/conf
+  # conf -> /openhab/conf. Se la config HABApp buona e' quella del container
+  # compagno e sta gia' in $DEST/conf/habapp, la si mette da parte durante la
+  # copia: quella in $CONF/habapp e' dell'unita' nativa, spesso vecchia, e la
+  # sovrascriverebbe (token e parametri compresi, Redmine #273).
+  local keep_habapp=""
+  if [[ -n "$COMPANION_HABAPP_CFG" && -d "$DEST/conf/habapp" \
+        && "$(readlink -f "$COMPANION_HABAPP_CFG")" == "$(readlink -f "$DEST/conf/habapp")" ]]; then
+    keep_habapp=$(mktemp -d)
+    mv "$DEST/conf/habapp" "$keep_habapp/habapp"
+  fi
   if [[ -d "$CONF" ]]; then
     log "  conf:     $CONF -> $DEST/conf"
     if $have_rsync; then rsync -a "$CONF"/ "$DEST/conf"/
     else cp -a "$CONF"/. "$DEST/conf"/; fi
   fi
+  if [[ -n "$keep_habapp" ]]; then
+    rm -rf "$DEST/conf/habapp"
+    mv "$keep_habapp/habapp" "$DEST/conf/habapp"; rmdir "$keep_habapp"
+    log "  habapp:   tenuta la config del container HABApp ($DEST/conf/habapp), non quella nativa"
+  fi
+  copy_companion_data
 
   # Jython: da OpenHAB 4.2 le librerie si cercano in automation/jython/lib e non
   # più in automation/lib/python, dove stanno le helper library di OpenHAB 3:
@@ -1004,12 +1270,14 @@ copy_native_data() {
 
   # HABApp: config nativa -> $DEST/conf/habapp
   if $NAT_HABAPP; then
-    local hcfg; hcfg=$(detect_habapp_config)
+    local hcfg; hcfg="${COMPANION_HABAPP_CFG:-$(detect_habapp_config)}"
     if [[ -n "$hcfg" && -d "$hcfg" ]]; then
-      log "  habapp:   $hcfg -> $DEST/conf/habapp"
       mkdir -p "$DEST/conf/habapp"
-      if $have_rsync; then rsync -a "$hcfg"/ "$DEST/conf/habapp"/
-      else cp -a "$hcfg"/. "$DEST/conf/habapp"/; fi
+      if [[ "$(readlink -f "$hcfg")" != "$(readlink -f "$DEST/conf/habapp")" ]]; then
+        log "  habapp:   $hcfg -> $DEST/conf/habapp"
+        if $have_rsync; then rsync -a "$hcfg"/ "$DEST/conf/habapp"/
+        else cp -a "$hcfg"/. "$DEST/conf/habapp"/; fi
+      fi
       # Log con percorsi dell'host (/var/log/openhab/HABApp.log): nel container
       # non esistono e HABApp esce subito, in loop (Redmine #236). Un nome
       # relativo finisce in conf/habapp/log.
@@ -1180,6 +1448,10 @@ configure_yml_native() {
     log "  abilito servizio controller: $svc"
     enable_service "$svc" "$YML"
   done
+  # Seriali dei container compagni, col percorso interno che la loro config usa
+  local zdev="${COMPANION_DEV[zwave-js-ui]:-}" gdev="${COMPANION_DEV[zigbee2mqtt]:-}"
+  [[ -n "$zdev" ]] && sed -i "s|\"/dev/ttyACM0:/dev/zwave\"|\"${zdev}\"|" "$YML"
+  [[ -n "$gdev" ]] && sed -i -E "s|\"/dev/serial/by-id/usb-ITEAD_SONOFF_Zigbee_3\.0_USB_Dongle_Plus_V2_[^\":]*:/dev/zigbee\"|\"${gdev}\"|" "$YML"
 
   # Porte seriali: mapping 1:1 (le config dei binding nativi referenziano il
   # path reale, quindi NON rimappiamo su /dev/zwave). rxtx = nomi tty reali.
@@ -1232,9 +1504,10 @@ run_native_migration() {
   echo ""
   echo "Servizi nativi rilevati (verrà fatto stop + disable):"
   printf '  - OpenHAB (%s)\n' "${NAT_OPENHAB_UNIT:-processo}"
-  $NAT_HABAPP    && echo "  - HABApp      -> abilitato su controller"
-  $NAT_MOSQUITTO && echo "  - Mosquitto   -> abilitato su controller"
-  $NAT_SAMBA     && echo "  - Samba       -> abilitato su controller"
+  _stato() { [[ " ${NAT_OFF[*]} " == *" $1 "* ]] && echo "era spento: dati copiati, NON acceso sul controller" || echo "abilitato su controller"; }
+  $NAT_HABAPP    && echo "  - HABApp      -> $(_stato habapp)"
+  $NAT_MOSQUITTO && echo "  - Mosquitto   -> $(_stato mosquitto)"
+  $NAT_SAMBA     && echo "  - Samba       -> $(_stato samba)"
   $NAT_FRONTAIL  && echo "  - Frontail    -> solo disattivato (non più necessario)"
   echo ""
   echo "Porte seriali rilevate (mapping 1:1 nel container openhab):"
@@ -1244,6 +1517,12 @@ run_native_migration() {
     echo "  (nessuna) — se usi zwave/modbus verifica manualmente in arfea.yml"
   fi
   echo ""
+  if [[ ${#COMPANION_NAMES[@]} -gt 0 ]]; then
+    echo "Container accanto all'OpenHAB nativo, presi in carico dal controller (dati e seriali conservati):"
+    for d in "${COMPANION_NAMES[@]}"; do echo "  - $d${COMPANION_DEV[$d]:+  (seriale ${COMPANION_DEV[$d]})}"; done
+    for d in "${COMPANION_COMPOSE[@]}"; do echo "  il loro compose ($d) viene chiuso prima di avviare il controller"; done
+    echo ""
+  fi
   if [[ ${#FOREIGN_CONTAINERS[@]} -gt 0 ]]; then
     echo "Container già presenti, che restano FUORI dal controller (non vengono toccati):"
     for d in "${FOREIGN_CONTAINERS[@]}"; do echo "  - $d"; done
@@ -1265,7 +1544,7 @@ run_native_migration() {
   echo "OPERAZIONI:"
   echo "  1) (se assente) installazione Docker"
   echo "  2) Backup /opt/docker_store (se presente) — le cartelle native NON vengono cancellate"
-  echo "  3) Stop dei servizi nativi (openhab/habapp/mosquitto/samba/frontail)"
+  echo "  3) Stop dei servizi nativi (openhab/habapp/mosquitto/samba/frontail) e dei container presi in carico"
   echo "  4) Copia conf/userdata/addons (+ habapp) in $DEST (owner 9001:9001)"
   echo "  5) Estrazione tarball + arfea.yml (servizi + porte seriali)"
   echo "  6) Build e avvio dello stack Docker"
@@ -1283,6 +1562,7 @@ run_native_migration() {
 
   echo ""; log "[3/7] Stop servizi nativi..."
   stop_native_services
+  stop_companion_containers
 
   echo ""; log "[4/7] Copia dati OpenHAB nativi in $DEST..."
   copy_native_data
@@ -1295,6 +1575,8 @@ run_native_migration() {
   fix_persist_default
   collect_upgrade_notes
   configure_yml_native
+  fix_container_ip_refs
+  copy_native_mosquitto
 
   echo ""; log "[6/7] Build e avvio arfea-controller..."
   # Non hard-fail: i servizi nativi sono già fermi; in caso di errore proseguo
@@ -1349,7 +1631,7 @@ run_native_migration() {
   fi
   if [[ ${#UPGRADE_NOTES[@]} -gt 0 ]]; then
     echo ""
-    echo "  DA VERIFICARE A MANO (salto di versione di OpenHAB):"
+    echo "  DA VERIFICARE A MANO:"
     for n in "${UPGRADE_NOTES[@]}"; do echo "    - $n"; done
   fi
   echo ""
