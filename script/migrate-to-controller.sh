@@ -919,19 +919,37 @@ remove_portainer() {
 # chiamarlo per nome. Il suo database non va nel backup del controller: copiato
 # a caldo sarebbe inutilizzabile, e lo salva a mano chi gestisce deasy.
 DEASY_DIR="$DATA_PATH/deasy"
+# Prima dell'avvio del controller, che l'arfea.yml lo legge solo all'avvio: se lo
+# si scrive dopo, al primo salvataggio della config (es. il WebDAV dalla Web UI)
+# il controller lo riscrive dalla memoria e l'esclusione sparisce.
+deasy_backup_exclude() {
+  local YML="$DATA_PATH/arfea-controller/config/arfea.yml" db="$DEASY_DIR/mariadb/database"
+  [[ -f "$DEASY_DIR/docker-compose.yml" && -f "$YML" ]] || return 0
+  grep -qF "$db" "$YML" && return 0
+  python3 - "$YML" "$db" <<'PY' || warn "deasy: $db non escluso dal backup (exclude_paths non trovato): aggiungilo a mano"
+import re, sys, yaml
+p, db = sys.argv[1:3]
+lines = open(p).read().splitlines(keepends=True)
+for i, l in enumerate(lines):
+    if re.match(r"^  exclude_paths:\s*$", l):
+        # stessa indentazione delle voci gia' presenti (il controller le scrive a 2
+        # spazi, il template a 4): una lista con indentazioni diverse non e' YAML
+        nxt = lines[i + 1] if i + 1 < len(lines) else ""
+        ind = re.match(r"^(\s*)- ", nxt).group(1) if re.match(r"^\s*- ", nxt) else "    "
+        lines.insert(i + 1, f'{ind}- "{db}"\n')
+        new = "".join(lines)
+        assert db in (yaml.safe_load(new)["backup"]["exclude_paths"] or [])
+        open(p, "w").write(new)
+        print(f"  deasy:   {db} escluso dal backup del controller (il database si salva a mano)")
+        sys.exit(0)
+sys.exit(1)
+PY
+  return 0
+}
 setup_deasy() {
   local cf="$DEASY_DIR/docker-compose.yml" YML="$DATA_PATH/arfea-controller/config/arfea.yml"
   [[ -f "$cf" ]] || return 0
   log "deasy: compose in $DEASY_DIR"
-  local db="$DEASY_DIR/mariadb/database"
-  if [[ -f "$YML" ]] && ! grep -qF "\"$db\"" "$YML"; then
-    if grep -qE '^  exclude_paths:[[:space:]]*$' "$YML"; then
-      sed -i "/^  exclude_paths:[[:space:]]*\$/a\    - \"$db\"" "$YML"
-      log "  deasy: $db escluso dal backup del controller (il database si salva a mano)"
-    else
-      warn "deasy: exclude_paths non trovato in arfea.yml, aggiungi a mano $db alle esclusioni del backup"
-    fi
-  fi
   local net
   net=$(awk '/^network:/ {f=1; next} f && /^[^[:space:]]/ {f=0}
              f && /^[[:space:]]+name:/ {gsub(/["[:space:]]/, "", $2); print $2; exit}' "$YML" 2>/dev/null || true)
@@ -1441,6 +1459,7 @@ except Exception as e:
   fi
   log "arfea.yml configurato (API key: $ARFEA_API_KEY)"
   fix_container_ip_refs
+  deasy_backup_exclude
 
   # 5. Avvia stack
   echo ""
@@ -1958,6 +1977,7 @@ run_native_migration() {
   configure_yml_native
   fix_container_ip_refs
   copy_native_mosquitto
+  deasy_backup_exclude
 
   echo ""; log "[6/7] Build e avvio arfea-controller..."
   # Non hard-fail: i servizi nativi sono già fermi; in caso di errore proseguo
