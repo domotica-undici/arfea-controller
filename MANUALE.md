@@ -631,6 +631,18 @@ suo e non lo gestisce il controller. A migrazione finita lo script:
 - esclude `deasy/mariadb/database` dal backup del controller. Copiato a caldo sarebbe
   inutilizzabile, e il database lo salva a mano chi gestisce deasy.
 
+**Undici nativo → docker**: [script/deasy-to-docker.sh](script/deasy-to-docker.sh) (prova a
+vuoto per default, `--apply` per eseguire). Prende il **kit**, cioè Dockerfile, compose,
+lighttpd, libreria RXTX, Java e watchdog copiati da un impianto dove Undici gira già in
+docker, e l'immagine `deasy-deasy` caricata con `docker load`. Porta in
+`/opt/docker_store/deasy` `/opt/undici`, `/etc/undici`, `/var/www` e il database: dump e
+import da una MariaDB nativa, oppure spostamento della cartella dati da un container.
+Adatta il compose (seriale, `/etc/undici` montata, credenziali, rete), ferma il nativo,
+avvia i container, installa il watchdog col log del container ed esclude il database dal
+backup. Undici resta fermo un minuto o due; niente si cancella, e alla fine lo script
+stampa come tornare indietro. Comandi per copiare kit e immagine nel catalogo dello
+Script Hub.
+
 Undici usa la porta 80 e la seriale della XBee: nessun conflitto col controller.
 Sull'host possono restare il watchdog `undici-watchdog.service`, che serve, e avanzi del
 nativo come `php5.6-fpm`, `lighttpd` e `undici.service`, da disattivare.
