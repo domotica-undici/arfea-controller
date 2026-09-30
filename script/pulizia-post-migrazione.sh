@@ -7,8 +7,9 @@
 #   sudo bash pulizia-post-migrazione.sh --apply      # toglie davvero
 #   sudo bash pulizia-post-migrazione.sh --apply --nativo   # anche l'OpenHAB nativo
 #
-# Dal PC, su piu' centraline:
-#   for h in <centralina> ...; do ssh $h 'sudo bash -s -- --apply' < script/pulizia-post-migrazione.sh; done
+# Dal PC (o dallo Script Hub), su piu' centraline: lo script si manda da solo via
+# ssh a ognuna, con le stesse opzioni; una centralina che non risponde non ferma le altre.
+#   ./script/pulizia-post-migrazione.sh --centralina <alias> --centralina <alias> [--apply] [--nativo]
 #
 # Toglie:
 #   - i backup pre-migrazione /opt/docker_store-backup-*.tar.gz;
@@ -25,15 +26,31 @@
 ###############################################################################
 set -u
 
-APPLY=false; NATIVO=false
-for a in "$@"; do
-  case "$a" in
-    --apply) APPLY=true ;;
-    --nativo) NATIVO=true ;;
-    *) echo "opzione sconosciuta: $a"; exit 1 ;;
+APPLY=false; NATIVO=false; HOSTS=(); FWD=()
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --apply) APPLY=true; FWD+=(--apply) ;;
+    --nativo) NATIVO=true; FWD+=(--nativo) ;;
+    --centralina) [[ -n "${2:-}" ]] || { echo "--centralina vuole l'alias ssh"; exit 1; }; HOSTS+=("$2"); shift ;;
+    *) echo "opzione sconosciuta: $1"; exit 1 ;;
   esac
+  shift
 done
-[[ $EUID -eq 0 ]] || { echo "va lanciato da root"; exit 1; }
+
+# Dal PC: lo script va a ogni centralina via ssh, con le stesse opzioni
+if [[ ${#HOSTS[@]} -gt 0 ]]; then
+  [[ -f "$0" ]] || { echo "--centralina si usa lanciando il file, non via bash -s"; exit 1; }
+  rc=0
+  for h in "${HOSTS[@]}"; do
+    echo "=================== $h"
+    if ! ssh -o BatchMode=yes -o ConnectTimeout=15 "$h" "sudo bash -s -- ${FWD[*]:-}" < "$0"; then
+      echo "$h: non raggiungibile o errore"; rc=1
+    fi
+  done
+  exit $rc
+fi
+
+[[ $EUID -eq 0 ]] || { echo "va lanciato da root (o dal PC con --centralina)"; exit 1; }
 $APPLY || echo "PROVA A VUOTO: niente viene tolto (--apply per farlo)"
 
 run() { if $APPLY; then "$@"; fi; }
@@ -64,9 +81,15 @@ if $NATIVO; then
   done
 fi
 if $NATIVO; then
+  found=false
   for d in /etc/openhab /var/lib/openhab /usr/share/openhab /var/log/openhab /opt/habapp; do
-    [[ -e "$d" ]] && echo "nativo: $d ($(du -sh "$d" 2>/dev/null | cut -f1))"
+    [[ -e "$d" ]] && { echo "nativo: $d ($(du -sh "$d" 2>/dev/null | cut -f1))"; found=true; }
   done
+  dpkg -l openhab openhab-addons 2>/dev/null | grep -qE "^(ii|hi)" && found=true
+  ls /etc/systemd/system/srv-openhab* >/dev/null 2>&1 && found=true
+  $found || { echo "nativo: niente da togliere"; NATIVO=false; }
+fi
+if $NATIVO; then
   if $APPLY; then
     for u in 'srv-openhab\x2daddons.mount' 'srv-openhab\x2dconf.mount' 'srv-openhab\x2dsys.mount' 'srv-openhab\x2duserdata.mount'; do
       systemctl stop "$u" 2>/dev/null || true; systemctl disable "$u" 2>/dev/null || true

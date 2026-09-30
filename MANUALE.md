@@ -458,8 +458,10 @@ vecchia `page_amministrazione` e riavvia Node-RED, i cui nodi openHAB non riprov
 un 401 preso durante l'avvio.
 
 **Pulizia, a impianto confermato in esercizio:**
-[script/pulizia-post-migrazione.sh](script/pulizia-post-migrazione.sh) (Redmine #305). Per
-default è una prova a vuoto che elenca cosa toglierebbe; `--apply` toglie il backup
+[script/pulizia-post-migrazione.sh](script/pulizia-post-migrazione.sh) (Redmine #305), dal PC
+o dallo Script Hub con `--centralina <alias>` (ripetibile: lo script va da solo via ssh a
+ognuna), oppure sulla centralina da root. Per default è una prova a vuoto che elenca cosa
+toglierebbe; `--apply` toglie il backup
 pre-migrazione `/opt/docker_store-backup-*.tar.gz`, le immagini docker che nessun container
 usa e che `arfea.yml` non nomina (restano `arfea-controller` e `python:3.11-slim`, che serve
 al rebuild OTA), la cache apt, il journal oltre 200 MB e i log ruotati. Con `--nativo` toglie
