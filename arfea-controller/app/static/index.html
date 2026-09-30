@@ -421,6 +421,7 @@
           <div class="card">
             <h2>Ripristino</h2>
             <div id="backupList"></div>
+            <p class="hint" id="backupDlMsg" role="status"></p>
             <div class="row">
               <button class="btn btn-ghost" onclick="loadBackups()">Aggiorna elenco</button>
               <button class="btn btn-orange" id="btnRestore" onclick="runRestore()" disabled>Ripristina</button>
@@ -1192,20 +1193,30 @@ function selectBackup(el, name) {
   document.getElementById('btnRestore').disabled = false;
 }
 
+// Il download lo fa il browser, col suo avanzamento e scrivendo su disco man
+// mano. Un link pero' non puo' portare X-API-Key: la pagina chiede al controller
+// un link a tempo per quel backup e lo apre. Passando il file da fetch() restava
+// tutto nel browser fino alla fine, senza un segno in pagina (Redmine #302).
 function downloadBackup(event, name) {
   event.stopPropagation();
-  apiFetch('/backup/download/' + encodeURIComponent(name)).then(function(r) {
-    if (!r.ok) { alert('Download fallito: ' + r.status); return; }
-    return r.blob().then(function(blob) {
-      var url = URL.createObjectURL(blob);
+  var msg = document.getElementById('backupDlMsg');
+  msg.textContent = 'Preparo il download di ' + name + '...';
+  apiFetch('/backup/download-link/' + encodeURIComponent(name), {method: 'POST'}).then(function(resp) {
+    return resp.json().catch(function() { return null; }).then(function(body) {
+      if (!resp.ok || !body || !body.url) {
+        msg.textContent = 'Download non avviato: ' + (resp.ok ? 'risposta del controller non valida' : apiErrorMessage(resp, body));
+        return;
+      }
       var a = document.createElement('a');
-      a.href = url;
+      a.href = body.url;
       a.download = name;
       document.body.appendChild(a);
       a.click();
       document.body.removeChild(a);
-      URL.revokeObjectURL(url);
+      msg.textContent = 'Download di ' + name + ' avviato: l\'avanzamento è nei download del browser.';
     });
+  }).catch(function() {
+    msg.textContent = 'Download non avviato: il controller non risponde.';
   });
 }
 

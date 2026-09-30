@@ -1119,6 +1119,14 @@ fix_jython_paths() {
 fix_habapp_config() {
   local h="$DEST/conf/habapp"
   [[ -d "$h" ]] || return 0
+  local old oldbak="$DATA_PATH/arfea-controller/backups/habapp-regole-vecchie-$(date +%Y%m%d_%H%M%S)"
+  # logging.yml di un HABApp vecchio (MemoryHandler, tutto a ERROR): HABApp 25
+  # lo segnala come errore a ogni avvio e nasconde gli avvisi. Messo da parte:
+  # il controller mette il suo (WARN) quando manca.
+  if [[ -f "$h/logging.yml" ]] && grep -q "logging.handlers.MemoryHandler" "$h/logging.yml"; then
+    mkdir -p "$oldbak"; mv "$h/logging.yml" "$oldbak/logging.yml"
+    log "  habapp:   logging.yml del HABApp vecchio messo da parte in $oldbak (il controller mette il suo)"
+  fi
   # Log con percorsi dell'host (/var/log/openhab/HABApp.log): nel container
   # non esistono e HABApp esce subito, in loop (Redmine #236). Un nome
   # relativo finisce in conf/habapp/log.
@@ -1129,7 +1137,6 @@ fix_habapp_config() {
   # Regole di sistema del vecchio HABApp ARFEA: nel mondo controller le fanno
   # arfea_system.js + arfea.items e aasystem/tools.py, e tenerle vuol dire
   # averle in doppio (Redmine #237). Messe da parte, non cancellate.
-  local old oldbak="$DATA_PATH/arfea-controller/backups/habapp-regole-vecchie-$(date +%Y%m%d_%H%M%S)"
   for old in rules/system/arfea.py rules/system/time.py rules/tools/tools.py; do
     [[ -f "$h/$old" ]] || continue
     mkdir -p "$(dirname "$oldbak/$old")"
@@ -1175,6 +1182,16 @@ open(p + ".prima-della-migrazione", "w").write(src)
 open(p, "w").write(new)
 print(f"  habapp:   params/thermo.yml, {len(old_v)} valvole on/off nel formato del codice 25.12 (- name: ...)")
 PY
+  fi
+  # Carichi "type: NC": nel codice nativo, 24.11 e 25.04 il listener stava
+  # sull'item di nome "ON" e l'inversione NC non girava mai (OFF = staccato,
+  # come NO). Nel codice 25.12.x gira, e sullo stesso item: il carico commuta
+  # all'infinito (Redmine #303). NO conserva quello che l'impianto ha sempre fatto.
+  local l="$h/params/loads.yml"
+  if [[ -f "$l" ]] && grep -qE "^[[:space:]-]*type:[[:space:]]*['\"]?NC['\"]?[[:space:]]*(#.*)?$" "$l"; then
+    cp -p "$l" "$l.prima-della-migrazione"
+    sed -i -E "s/^([[:space:]-]*type:[[:space:]]*)['\"]?NC['\"]?[[:space:]]*(#.*)?$/\1'NO'  # era NC, mai applicato dal codice precedente (Redmine #303)/" "$l"
+    log "  habapp:   params/loads.yml, carichi NC -> NO (l'inversione NC non e' mai girata, #303)"
   fi
   chown -R "$OH_UID:$OH_GID" "$h"
   return 0

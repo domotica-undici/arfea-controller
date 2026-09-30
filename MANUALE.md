@@ -626,6 +626,8 @@ per tutte le versioni intermedie). Prima di avviarlo lo script prepara la copia:
 | item doppioni di `arfea.items` tolti dal JSONDB | il vecchio HABApp ARFEA li creava via REST (`users_list`, `send_message`, `timeSlot`, ...) |
 | `default = ...` tolto da Strategies nei `.persist` | dal 5.1 rende il file illeggibile (solo se ogni voce ha già le sue strategie, altrimenti lo segnala) |
 | log di HABApp relativi, vecchie regole `system/arfea.py`, `system/time.py`, `tools/tools.py` messe da parte | percorsi dell'host inesistenti nel container (HABApp in loop); le regole le sostituiscono `arfea_system.js` e `aasystem/tools.py` |
+| `logging.yml` di un HABApp vecchio (con `MemoryHandler`) messo da parte | HABApp 25 lo segnala come errore a ogni avvio, e con tutto a ERROR non si vedono gli avvisi; il controller mette il suo (WARN) |
+| carichi `type: NC` in `params/loads.yml` scritti `'NO'` | nel codice nativo, 24.11 e 25.04 l'inversione NC non girava mai (OFF = carico staccato, come NO); nel codice 25.12.x gira sullo stesso item e il carico commuta all'infinito (Redmine #303). Originale in `loads.yml.prima-della-migrazione` |
 | config di Felix FileInstall col percorso nativo degli addon messe da parte | su un OpenHAB 3.x nativo la userdata ne ha una col nome a UUID che punta a `/usr/share/openhab/addons`: il FeatureInstaller legge da lì la cartella degli addon, nel container non esiste e **nessun addon si installa** («Could not determine addons folder…», thing HANDLER_MISSING_ERROR) |
 
 Alla fine stampa cosa resta **da guardare a mano**:
@@ -1083,7 +1085,7 @@ aperta in arancione.
 | **Impianto** | HABApp (funzioni attive), configurazione dell'impianto (`params/*.yml`), porte seriali dei dispositivi, telefono di emergenza. |
 | **Rete** | LAN, wifi, access point di emergenza; installazione di NetworkManager se manca. |
 | **Aggiornamenti** | Versioni dei software (release certificate, con avanzamento e scelta *continua senza backup / ferma*), controller, pacchetto addon offline. |
-| **Backup** | Backup manuale, ripristino (elenco aggiornato all'apertura della sezione), destinazione WebDAV (URL, utente, password). |
+| **Backup** | Backup manuale, ripristino (elenco aggiornato all'apertura della sezione), download di un backup locale (freccia accanto al backup), destinazione WebDAV (URL, utente, password). |
 
 Un pallino sulla sezione (arancione = da guardare, rosso = problema) segnala dove
 c'è qualcosa in sospeso anche senza aprirla.
@@ -1117,6 +1119,8 @@ Base: `http://<IP>:8888/api` — documentazione interattiva su `http://<IP>:8888
 | POST | `/api/openhab/addons/download?force=` | Scarica il pacchetto addon (background) |
 | POST | `/api/backup/run` · GET `/status` · `/list` | Backup |
 | POST | `/api/backup/restore?backup_name=...` | Ripristino |
+| GET | `/api/backup/download/<FILE>` | Scarica un backup locale (con la API key, o col `?token=` del link) |
+| POST | `/api/backup/download-link/<FILE>` | Link a tempo (5 minuti, solo quel file) per scaricarlo dal browser |
 | GET/PUT | `/api/backup/config` | Destinazione WebDAV (la password non esce mai) |
 | GET/PUT | `/api/linphone/config` · GET `/status` · POST `/call?number=&message=` | Emergenza |
 | GET | `/api/habapp/status` | Funzioni HABApp, versione sorgenti, stato token |
@@ -1177,6 +1181,16 @@ mezzo giga su una linea domestica sono decine di minuti. L'upload ha un tetto di
 30 minuti oltre il quale viene interrotto e il backup segnalato fallito: senza,
 un trasferimento che avanza a singhiozzo non fa scattare nessun timeout e resta
 appeso, bloccando anche l'aggiornamento di versione che lo aspetta.
+
+**Scaricare un backup sul PC** (dal controller 1.8.13, Redmine #302): nella
+sezione *Backup* la freccia accanto a un backup lo scarica. Il download lo fa il
+browser, con il suo avanzamento: la pagina chiede al controller un link che vale
+5 minuti e solo per quel file (`POST /api/backup/download-link/<FILE>`), perché
+un link non può portare la API key. Sotto l'elenco la pagina dice se il download
+è partito o perché no. Fino alla 1.8.12 la pagina caricava tutto il file nel
+browser prima di salvarlo: con un backup grande o una linea lenta (VPN) restava
+ferma per minuti senza un segno. Da script: `curl -H "X-API-Key: ..." -O
+http://<centralina>:8888/api/backup/download/<FILE>`.
 
 **Ripristino** (UI o `POST /api/backup/restore?backup_name=<FILE>`):
 1. Ferma tutti i container
@@ -1364,6 +1378,7 @@ all'hardware:
     ├── config.py          # load YAML + dipendenze + ordine avvio
     ├── docker_manager.py  # lifecycle container Docker
     ├── backup.py          # backup/restore + WebDAV
+    ├── download_links.py  # link a tempo per i download dal browser
     └── static/index.html  # web UI
 ```
 

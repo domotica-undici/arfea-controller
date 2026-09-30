@@ -13,6 +13,7 @@ import time
 from contextlib import asynccontextmanager
 from datetime import datetime
 from pathlib import Path
+from urllib.parse import quote
 
 import httpx
 import yaml
@@ -25,6 +26,7 @@ from .addons import manager as addons_kar_manager
 from .backup import BackupManager
 from .config import ConfigManager
 from .docker_manager import DockerManager
+from .download_links import DownloadLinks
 from .habapp_manager import HABAppManager, last_provision as habapp_last_provision
 from .host_network import HostNetworkManager, ap_lan_conflict
 from .release_manager import ReleaseManager
@@ -438,7 +440,16 @@ logger = logging.getLogger(__name__)
 #          internet, gli addon si ritrovavano solo grazie a lui. Lo script non fa
 #          piu' apt-get update a ogni partenza: installa solo cio' che manca e
 #          senza rete va avanti (l'entrypoint lo esegue sotto set -e).
-VERSION = "1.8.12"
+#   1.8.13 FIX Web UI, pulsante Scarica del backup (Redmine #302): la pagina
+#          prendeva il file con fetch() e lo teneva tutto nel browser prima di
+#          passarlo al download. Fino ad allora nessun segno in pagina (40 s per
+#          40 MB a 1 MB/s, decine di minuti per un backup da GB via VPN), e un
+#          errore a meta' non veniva detto. Ora il download lo fa il browser, con
+#          il suo avanzamento e scrivendo su disco man mano: la pagina chiede un
+#          link a tempo (POST /api/backup/download-link/<nome>, 5 minuti, solo
+#          per quel file), perche' un link non puo' portare X-API-Key e la chiave
+#          in un URL finirebbe nei log. Esito ed errori scritti sotto l'elenco.
+VERSION = "1.8.13"
 
 # -- Globals initialised at startup -----------------------------------------
 
@@ -2162,19 +2173,49 @@ def list_backups():
     ]
 
 
-@app.get("/api/backup/download/{backup_name}", dependencies=[Depends(verify_api_key)])
-def download_backup(backup_name: str):
-    """Download a backup file. Blocks path traversal."""
+def _backup_file(backup_name: str) -> Path:
+    """Il file di un backup locale. Blocks path traversal."""
     if "/" in backup_name or ".." in backup_name:
-        raise HTTPException(400, "Invalid backup name")
+        raise HTTPException(400, "Nome del backup non valido")
 
     data_path = Path(config_manager.config.controller.data_path)
     backup_file = data_path / "arfea-controller" / "backups" / backup_name
     if not backup_file.exists() or not backup_file.is_file():
-        raise HTTPException(404, "Backup not found")
+        raise HTTPException(404, "Backup non trovato: aggiorna l'elenco")
+    return backup_file
 
+
+_backup_download_links = DownloadLinks()
+
+
+async def verify_backup_download(request: Request, backup_name: str, token: str = "",
+                                 api_key: str = Depends(api_key_header)):
+    """Come verify_api_key, ma al posto della chiave vale anche un link a tempo
+    rilasciato per questo backup (mai da IP pubblici)."""
+    client_ip = request.client.host if request.client else ""
+    if _is_private_ip(client_ip) and _backup_download_links.valid(token, backup_name):
+        return
+    await verify_api_key(request, api_key)
+
+
+@app.post("/api/backup/download-link/{backup_name}", dependencies=[Depends(verify_api_key)])
+def backup_download_link(backup_name: str):
+    """Link a tempo per scaricare un backup dal browser (Redmine #302): il
+    browser non puo' mettere X-API-Key in un download, e passare il file da
+    fetch() lo teneva tutto in memoria senza un segno in pagina."""
+    _backup_file(backup_name)
+    token = _backup_download_links.issue(backup_name)
+    return {
+        "url": f"/api/backup/download/{quote(backup_name)}?token={token}",
+        "expires_in": _backup_download_links.ttl,
+    }
+
+
+@app.get("/api/backup/download/{backup_name}", dependencies=[Depends(verify_backup_download)])
+def download_backup(backup_name: str):
+    """Download a backup file: con la API key, o col token di download-link."""
     return FileResponse(
-        path=str(backup_file),
+        path=str(_backup_file(backup_name)),
         filename=backup_name,
         media_type="application/gzip",
     )
