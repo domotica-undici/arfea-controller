@@ -763,10 +763,20 @@ UI di OpenHAB come sempre.
 - **Quanto pesa**: ~600 MB scaricati, ~1,2 GB a bordo (Karaf lo estrae in
   `openhab/userdata/tmp/kar`). Se il disco libero non basta il download non parte
   e il motivo finisce nei log: riempire l'eMMC fermerebbe tutto, OpenHAB compreso.
-- **Effetto sull'avvio**: `cont-init.d/20-arfea-custom` ripulisce `userdata/tmp`
-  ad ogni partenza, quindi Karaf riestrae il pacchetto ogni volta che il
-  container parte. Il file `.kar` in `addons/` deve percio' restare dov'e' — e
-  l'avvio di OpenHAB si allunga di qualche minuto.
+- **Effetto sull'avvio** (dal controller 1.8.12, Redmine #277): Karaf estrae il
+  pacchetto una volta sola, e ai riavvii successivi lo ritrova in
+  `userdata/tmp/kar`. Fino alla 1.8.11 `cont-init.d/20-arfea-custom` svuotava
+  `userdata/tmp` e `userdata/cache` a ogni partenza, e i danni erano tre:
+  - Karaf ripartiva da zero e reinstallava tutti i bundle, e le regole DSL restavano
+    sul class loader vecchio (`Invalid class loader from a refreshed bundle`,
+    `sendNotification` non trovato);
+  - il pacchetto veniva riestratto ogni volta (2-3 minuti in più);
+  - senza internet gli addon si ritrovavano solo grazie al kar.
+
+  Ora la cache resta: un riavvio, anche offline, non ha bisogno di nulla da fuori.
+  Lo script non fa nemmeno più `apt-get update` a ogni partenza: installa solo
+  quello che manca, e senza rete va avanti (l'entrypoint lo esegue sotto `set -e`,
+  e un errore fermerebbe OpenHAB).
 - **Dove si vede**: card «Addon OpenHAB (offline)» nella Web UI (stato,
   avanzamento, pulsante per scaricarlo a mano se la centralina e' stata
   installata senza linea) e `GET /api/openhab/addons`.
@@ -1148,8 +1158,9 @@ backup conteneva quello precedente.
 Fuori dall'archivio stanno il pacchetto addon di OpenHAB
 (`openhab/addons/*.kar`, vedi [6.1](#61-openhab-core-porta-8080-network_mode-host)), le
 sue copie estratte da Karaf (`openhab/userdata/kar`, `openhab/userdata/tmp/kar`) e
-la cache di OpenHAB (`userdata/cache`, `userdata/tmp`, che il container svuota
-comunque a ogni avvio). Con le copie dentro, un backup era passato da ~460 MB a
+la cache di OpenHAB (`userdata/cache`, `userdata/tmp`: si rigenerano, e una cache
+ripristinata da un altro momento non combacerebbe coi bundle installati). Con le
+copie dentro, un backup era passato da ~460 MB a
 2,15 GB e aveva riempito il disco. Il pacchetto addon è fatto di
 ~600 MB ri-scaricabili in qualsiasi momento, non dati dell'impianto. Tenerli
 dentro raddoppierebbe l'archivio e il tempo di trasmissione, mandando l'upload

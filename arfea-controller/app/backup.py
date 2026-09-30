@@ -39,7 +39,8 @@ UPLOAD_MAX_SECONDS = 1800
 # Stesso discorso per le sue copie: Karaf lo estrae in userdata/kar e in
 # userdata/tmp/kar (~600 MB ciascuna). Con quelle dentro il backup era passato da
 # ~460 MB a 2,15 GB e aveva riempito una eMMC da 16 GB (Redmine #202). cache e tmp
-# di userdata li svuota comunque il container a ogni avvio (cont-init.d).
+# di userdata si rigenerano, e una cache ripristinata da un altro momento non
+# combacerebbe coi bundle installati.
 # Un pattern che combacia con una cartella la esclude con tutto il contenuto;
 # "…/*" lascia la cartella (vuota) e toglie cio' che c'e' dentro.
 _EXCLUDE_GLOBS = (

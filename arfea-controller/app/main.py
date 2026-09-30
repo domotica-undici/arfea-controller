@@ -429,7 +429,16 @@ logger = logging.getLogger(__name__)
 #          il controller aggiunge le due righe all'avvio e alla creazione del
 #          container, senza riavviare il broker: vale dal suo avvio successivo.
 #          La migrazione da nativo porta il mosquitto.db del pacchetto Debian.
-VERSION = "1.8.11"
+#   1.8.12 OpenHAB non svuota piu' userdata/tmp e userdata/cache a ogni avvio
+#          (skeleton cont-init.d/20-arfea-custom, Redmine #277): Karaf ripartiva
+#          da zero, reinstallava e ricollegava tutti i bundle circa due minuti
+#          dopo l'avvio, e le regole DSL restavano sul class loader vecchio
+#          («Invalid class loader from a refreshed bundle», sendNotification non
+#          risolto); il kar degli addon veniva riestratto ogni volta e, senza
+#          internet, gli addon si ritrovavano solo grazie a lui. Lo script non fa
+#          piu' apt-get update a ogni partenza: installa solo cio' che manca e
+#          senza rete va avanti (l'entrypoint lo esegue sotto set -e).
+VERSION = "1.8.12"
 
 # -- Globals initialised at startup -----------------------------------------
 
