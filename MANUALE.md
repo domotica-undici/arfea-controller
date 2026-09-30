@@ -451,6 +451,29 @@ sudo MIGRATE_SKIP_SPACE_CHECK=1 bash migrate-to-controller.sh   # salta il contr
 sudo MIGRATE_OH_UPGRADE=1 bash migrate-to-controller.sh   # docker: OpenHAB all'immagine del template (0 = mai)
 ```
 
+**Dopo la migrazione:** [script/migrate-finish.py](script/migrate-finish.py) aspetta che
+OpenHAB abbia finito di partire (al primo avvio è lento), avvia i servizi rimasti fermi
+(di solito HABApp), reimporta la UI ARFEA, mette la pagina del controller al posto della
+vecchia `page_amministrazione` e riavvia Node-RED, i cui nodi openHAB non riprovano dopo
+un 401 preso durante l'avvio.
+
+**Docker deve funzionare davvero:** prima di fermare qualunque cosa lo script avvia un
+container di prova. Su un kernel 4.9 (ODROID-C4 con Ubuntu 22.04) coi cgroup v2 nessun
+container parte (`bpf_prog_query(BPF_CGROUP_DEVICE) failed`): la build del controller
+falliva coi servizi nativi già fermi. Lo script aggiunge allora
+`systemd.unified_cgroup_hierarchy=0` agli argomenti di boot (`/media/boot/boot.ini` o
+`/boot/armbianEnv.txt`, copia in `/root`), come hanno le altre centraline, ed esce
+chiedendo di riavviare e rilanciare.
+
+**UFW con le regole IPv6 a metà** (Redmine #300): con `iptables-nft` sul kernel 4.9 il
+modulo `ip6_tables` non si carica da solo, `ufw.service` fallisce a ogni avvio su
+`before6.rules` e lascia l'ingresso IPv6 chiuso anche su `lo`. `::1` non risponde, e
+chi risolve `localhost` prima in IPv6 (Python, Node) aspetta 20-30 s a ogni chiamata.
+Lo script aggiunge a `ufw.service` un drop-in che carica il modulo
+(`/etc/systemd/system/ufw.service.d/arfea-ip6tables.conf`) e ricarica il firewall con
+`/lib/ufw/ufw-init force-reload`. A mano non si usa `ufw reload`: quando fallisce
+scrive `ENABLED=no` in `/etc/ufw/ufw.conf`, e al riavvio il firewall resta spento.
+
 **Sequenza (comune):** installa i prerequisiti che mancano (`xz`, `curl`, `openssl`,
 `python3-yaml`: servono dopo lo stop dei servizi, e senza `xz` la centralina restava
 ferma a metà) → rileva la sorgente → **controlla lo spazio su disco** →

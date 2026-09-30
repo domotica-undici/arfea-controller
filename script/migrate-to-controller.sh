@@ -405,6 +405,81 @@ ensure_compose_buildx() {
 # RILEVAMENTO SISTEMA
 # ═════════════════════════════════════════════════════════════════════════════
 
+# Docker deve saper avviare un container PRIMA che si fermi qualunque cosa
+# (Redmine #290). Su un kernel 4.9 (ODROID-C4 con Ubuntu 22.04) coi cgroup v2
+# runc fallisce su ogni container (bpf_prog_query(BPF_CGROUP_DEVICE): il
+# controllo dei device via eBPF c'e' dal 4.15): la build del controller e' morta
+# coi servizi nativi gia' fermi. Le altre centraline funzionano coi cgroup v1
+# (systemd.unified_cgroup_hierarchy=0 negli argomenti di boot): lo si aggiunge e
+# si chiede di riavviare e rilanciare, come per l'installazione di Docker.
+ensure_docker_runs() {
+  local img="python:3.11-slim" err kver
+  docker image inspect "$img" >/dev/null 2>&1 || docker pull -q "$img" >/dev/null 2>&1 || true
+  if docker run --rm --network none "$img" true >/dev/null 2>&1; then
+    log "Docker avvia i container: ok"
+    return 0
+  fi
+  err=$(docker run --rm --network none "$img" true 2>&1 | tail -2 || true)
+  kver=$(uname -r | awk -F. '{printf "%d%03d", $1, $2}')
+  if [[ "$(stat -fc %T /sys/fs/cgroup/ 2>/dev/null)" == cgroup2fs && "$kver" -lt 4015 ]]; then
+    local arg="systemd.unified_cgroup_hierarchy=0" f
+    if [[ -f /media/boot/boot.ini ]] && grep -q '^setenv bootargs' /media/boot/boot.ini; then
+      f=/media/boot/boot.ini
+      if ! grep -q "$arg" "$f"; then
+        cp -p "$f" "/root/boot.ini.prima-cgroup-$(date +%Y%m%d_%H%M%S)"
+        local last; last=$(grep -n '^setenv bootargs' "$f" | tail -1 | cut -d: -f1)
+        sed -i "${last}a setenv bootargs \"\${bootargs} $arg\"" "$f"
+      fi
+    elif [[ -f /boot/armbianEnv.txt ]]; then
+      f=/boot/armbianEnv.txt
+      if ! grep -q "$arg" "$f"; then
+        cp -p "$f" "/root/armbianEnv.txt.prima-cgroup-$(date +%Y%m%d_%H%M%S)"
+        if grep -q '^extraargs=' "$f"; then sed -i "s/^extraargs=\(.*\)/extraargs=\1 $arg/" "$f"
+        else echo "extraargs=$arg" >> "$f"; fi
+      fi
+    else
+      die "Docker non avvia i container (kernel $(uname -r) coi cgroup v2): aggiungi $arg agli argomenti di boot, riavvia e rilancia. Nessun servizio e' stato toccato."
+    fi
+    warn "Docker non avvia i container: kernel $(uname -r) coi cgroup v2."
+    echo "  Aggiunto $arg in $f (copia accanto in /root). RIAVVIA la centralina e rilancia:"
+    echo "      sudo bash $0"
+    echo "  Nessun servizio e' stato toccato."
+    exit 2
+  fi
+  die "Docker non avvia i container ($err): nessun servizio e' stato toccato."
+}
+
+# UFW acceso ma con le regole IPv6 a meta' (Redmine #300). Con iptables-nft sul
+# kernel 4.9 il modulo ip6_tables non si carica da solo, il match icmp6 manca e
+# before6.rules si ferma a meta': ufw.service fallisce a ogni avvio lasciando
+# INPUT in DROP senza l'accept su lo. ::1 non risponde, e chi risolve localhost
+# prima in IPv6 (Python, Node) aspetta 20-30 s a ogni chiamata. Il modulo si
+# carica in un drop-in di ufw.service (DefaultDependencies=no: puo' partire prima
+# di systemd-modules-load). "ufw reload" qui non serve: se fallisce mette
+# ENABLED=no, e con le catene gia' presenti ricarica solo le regole utente.
+ensure_ufw_loopback() {
+  command -v ufw >/dev/null 2>&1 || return 0
+  grep -qi '^ENABLED=yes' /etc/ufw/ufw.conf 2>/dev/null || return 0
+  ip6tables -S ufw6-before-input >/dev/null 2>&1 || return 0   # IPV6=no: niente catene
+  if ip6tables -S ufw6-before-input | grep -q -- '-i lo -j ACCEPT'; then return 0; fi
+  warn "UFW non ha caricato le regole IPv6 (::1 bloccato): carico ip6_tables e ricarico"
+  modprobe ip6_tables 2>/dev/null || true
+  mkdir -p /etc/systemd/system/ufw.service.d
+  cat > /etc/systemd/system/ufw.service.d/arfea-ip6tables.conf <<'EOF'
+# ARFEA (Redmine #300): con iptables-nft sul kernel 4.9 senza ip6_tables le
+# regole IPv6 di ufw non si caricano e ::1 resta bloccato
+[Service]
+ExecStartPre=-/sbin/modprobe ip6_tables
+EOF
+  systemctl daemon-reload
+  /lib/ufw/ufw-init force-reload >/dev/null 2>&1 || true
+  if ip6tables -S ufw6-before-input 2>/dev/null | grep -q -- '-i lo -j ACCEPT'; then
+    log "UFW: regole IPv6 caricate, ::1 raggiungibile"
+  else
+    warn "UFW: regole IPv6 ancora non caricate (vedi journalctl -u ufw): localhost puo' essere lento"
+  fi
+}
+
 svc_present() { systemctl list-unit-files --no-legend "${1}.service" 2>/dev/null | grep -q .; }
 svc_active()  { systemctl is-active --quiet "$1" 2>/dev/null; }
 
@@ -1383,6 +1458,8 @@ except Exception as e:
   [[ "$confirm" =~ ^[SsYy] ]] || { echo "Annullato."; exit 0; }
 
   ensure_compose_buildx
+  ensure_docker_runs
+  ensure_ufw_loopback
 
   # 1. Backup
   echo ""
@@ -2035,6 +2112,8 @@ run_native_migration() {
   echo ""; log "[1/7] Verifica/installazione Docker..."
   ensure_docker
   ensure_compose_buildx
+  ensure_docker_runs
+  ensure_ufw_loopback
 
   echo ""; log "[2/7] Backup..."
   backup_docker_store
