@@ -550,6 +550,12 @@ del template, cioè quelle della release certificata.
 3. **Servizi companion** (verificati sull'OS con `systemctl`/`pgrep`):
    - `habapp`, `mosquitto`, `samba` → **abilitati sul controller** + `stop`+`disable` nativo;
    - `frontail` → **solo `stop`+`disable`** (non più necessario, nessun servizio controller);
+   - `nodered` (Node-RED nativo) → **servizio node-red del controller**. La cartella
+     utente (flow, credenziali, nodi aggiunti; `~<utente>/.node-red` o quella di
+     `--userDir`) passa in `/opt/docker_store/node-red` con owner 1000, e l'immagine
+     resta alla versione nativa se la major è diversa dal template. Nei flow
+     `localhost` diventa il gateway della rete del controller, e con deasy a bordo
+     l'indirizzo di Undici diventa `deasy`;
    - la config HABApp viene individuata (da `ExecStart --config` o path comuni) e copiata
      in `openhab/conf/habapp`.
    - **mosquitto**: si porta il suo `mosquitto.db` (i retained: il pacchetto Debian ha
@@ -597,6 +603,7 @@ per tutte le versioni intermedie). Prima di avviarlo lo script prepara la copia:
 | item doppioni di `arfea.items` tolti dal JSONDB | il vecchio HABApp ARFEA li creava via REST (`users_list`, `send_message`, `timeSlot`, ...) |
 | `default = ...` tolto da Strategies nei `.persist` | dal 5.1 rende il file illeggibile (solo se ogni voce ha già le sue strategie, altrimenti lo segnala) |
 | log di HABApp relativi, vecchie regole `system/arfea.py`, `system/time.py`, `tools/tools.py` messe da parte | percorsi dell'host inesistenti nel container (HABApp in loop); le regole le sostituiscono `arfea_system.js` e `aasystem/tools.py` |
+| config di Felix FileInstall col percorso nativo degli addon messe da parte | su un OpenHAB 3.x nativo la userdata ne ha una col nome a UUID che punta a `/usr/share/openhab/addons`: il FeatureInstaller legge da lì la cartella degli addon, nel container non esiste e **nessun addon si installa** («Could not determine addons folder…», thing HANDLER_MISSING_ERROR) |
 
 Alla fine stampa cosa resta **da guardare a mano**:
 - **regole UI in JavaScript**: dal 4.0 `application/javascript` è GraalJS, non più

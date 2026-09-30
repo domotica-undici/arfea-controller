@@ -435,8 +435,9 @@ detect_native_layout() {
 #   KILL_PROCS  : pattern di processi da fermare quando NON c'è unità systemd
 #   ENABLE_CTRL : servizi da abilitare in arfea.yml
 STOP_UNITS=(); KILL_PROCS=(); ENABLE_CTRL=()
-NAT_HABAPP=false; NAT_MOSQUITTO=false; NAT_SAMBA=false; NAT_FRONTAIL=false
+NAT_HABAPP=false; NAT_MOSQUITTO=false; NAT_SAMBA=false; NAT_FRONTAIL=false; NAT_NODERED=false
 NAT_HABAPP_UNIT=""
+NODERED_NATIVE_VER=""   # versione del Node-RED nativo (l'immagine del controller resta a quella)
 NAT_OFF=()   # servizi nativi installati ma spenti: dati copiati, NON accesi sul controller
 # Un servizio nativo si accende sul controller solo se sul nativo girava o partiva
 # al boot. Installato ma spento vuol dire che qualcuno l'ha fermato: su un impianto
@@ -472,6 +473,13 @@ detect_native_services() {
   if $sfound; then
     NAT_SAMBA=true
     if $swanted; then ENABLE_CTRL+=("samba"); else NAT_OFF+=("samba"); fi
+  fi
+
+  # Node-RED (nodered.service) -> container del controller, alla stessa versione
+  # (Redmine #283: il ponte fra OpenHAB e Undici gira su Node-RED)
+  if svc_present nodered; then
+    NAT_NODERED=true; STOP_UNITS+=("nodered")
+    if svc_wanted nodered; then ENABLE_CTRL+=("node-red"); else NAT_OFF+=("node-red"); fi
   fi
 
   # Frontail -> solo stop/disable (non più necessario, nessun servizio controller)
@@ -609,7 +617,7 @@ copy_companion_data() {
 # chiamano per nome. Su un impianto OpenHAB e zwave-js-ui puntavano all'IP fisso
 # del container mosquitto (Redmine #273).
 fix_container_ip_refs() {
-  [[ ${#OLD_DOCKER_SUBNETS[@]} -gt 0 || -n "$DOCKER_BRIDGE_SUBNET" ]] || return 0
+  [[ ${#OLD_DOCKER_SUBNETS[@]} -gt 0 || -n "$DOCKER_BRIDGE_SUBNET" || -n "$NODERED_WAS_HOST" ]] || return 0
   # Gateway della rete del controller: da li' un container raggiunge l'host, e
   # quindi OpenHAB, che col controller sta sulla rete dell'host.
   local gw
@@ -1685,6 +1693,19 @@ copy_native_data() {
   # nel tar di backup che l'upgrade crea in userdata/backup.
   rm -f "$DEST/userdata"/hs_err_pid*.log
 
+  # Config di Felix FileInstall col percorso nativo degli addon (nome a UUID,
+  # Karaf 4.3 di OpenHAB 3.x): il FeatureInstaller legge la cartella degli addon
+  # da li', nel container non esiste e nessun addon si installa piu' (Redmine
+  # #286). Quella giusta (fileinstall~deploy, /openhab/addons) la crea Karaf.
+  local fic fibak="$DATA_PATH/arfea-controller/backups/fileinstall-nativo-$(date +%Y%m%d_%H%M%S)"
+  for fic in "$DEST/userdata/config/org/apache/felix/fileinstall"/*.config; do
+    [[ -f "$fic" ]] || continue
+    if grep -qE '^felix\.fileinstall\.dir="?/(usr/share|var/lib|etc)/openhab' "$fic"; then
+      mkdir -p "$fibak"; mv "$fic" "$fibak/"
+      log "  userdata: config FileInstall col percorso nativo ($(basename "$fic")) messa da parte in $fibak"
+    fi
+  done
+
   # addons manuali (kar/jar). NON il pacchetto della distribuzione
   # (openhab-addons-X.Y.Z.kar del pacchetto deb openhab-addons, ~360 MB): è
   # della versione nativa, e il container con un OpenHAB più nuovo se lo
@@ -1712,6 +1733,31 @@ copy_native_data() {
       fix_habapp_config
     else
       warn "HABApp attivo ma config non trovata: migra a mano le regole in $DEST/conf/habapp"
+    fi
+  fi
+
+  # Node-RED nativo: cartella utente (flow, credenziali, nodi aggiunti) nel volume
+  # del container. Il container gira come utente 1000 e sulla rete del
+  # controller: "localhost" nei flow lo corregge fix_container_ip_refs.
+  if $NAT_NODERED; then
+    local nru nrdir nrhome
+    nru=$(systemctl cat nodered 2>/dev/null | awk -F= '/^[[:space:]]*User=/ {print $2; exit}' || true)
+    nrdir=$(systemctl cat nodered 2>/dev/null | grep -oE '(--userDir|-u)[= ]+[^ ]+' | grep -oE '/[^ ]+' | head -1 || true)
+    if [[ -z "$nrdir" ]]; then
+      nrhome=$(getent passwd "${nru:-root}" | cut -d: -f6)
+      nrdir="$nrhome/.node-red"
+    fi
+    if [[ -f "$nrdir/flows.json" || -n "$(ls "$nrdir"/flows*.json 2>/dev/null)" ]]; then
+      log "  node-red: $nrdir -> $DATA_PATH/node-red"
+      mkdir -p "$DATA_PATH/node-red"
+      if $have_rsync; then rsync -a "$nrdir"/ "$DATA_PATH/node-red"/
+      else cp -a "$nrdir"/. "$DATA_PATH/node-red"/; fi
+      chown -R 1000:1000 "$DATA_PATH/node-red"
+      NODERED_NATIVE_VER=$(grep -m1 '"version"' /usr/lib/node_modules/node-red/package.json /usr/local/lib/node_modules/node-red/package.json 2>/dev/null \
+                           | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' | head -1 || true)
+      NODERED_WAS_HOST=1
+    else
+      warn "Node-RED nativo: flow non trovati in $nrdir, copia a mano la cartella utente in $DATA_PATH/node-red"
     fi
   fi
 
@@ -1862,6 +1908,17 @@ configure_yml_native() {
     log "  abilito servizio controller: $svc"
     enable_service "$svc" "$YML"
   done
+  # Node-RED nativo di un'altra major: resta alla sua versione (i nodi aggiunti
+  # sono installati per il suo Node)
+  if [[ -n "$NODERED_NATIVE_VER" ]]; then
+    local nrt; nrt=$(template_image_of "$YML" node-red); nrt="${nrt##*:}"
+    if [[ -n "$nrt" && "${NODERED_NATIVE_VER%%.*}" != "${nrt%%.*}" ]]; then
+      if set_service_image "$YML" node-red "nodered/node-red:$NODERED_NATIVE_VER"; then
+        log "  node-red: resta alla $NODERED_NATIVE_VER (il template ha la $nrt)"
+        UPGRADE_NOTES+=("Node-RED resta a nodered/node-red:$NODERED_NATIVE_VER: l'aggiornamento del template si fa dalla release, dopo aver provato i flow")
+      fi
+    fi
+  fi
   # Seriali dei container compagni, col percorso interno che la loro config usa
   local zdev="${COMPANION_DEV[zwave-js-ui]:-}" gdev="${COMPANION_DEV[zigbee2mqtt]:-}"
   [[ -z "$zdev" ]] || zdev=$(stable_dev_map "$zdev")
@@ -1924,6 +1981,7 @@ run_native_migration() {
   $NAT_HABAPP    && echo "  - HABApp      -> $(_stato habapp)"
   $NAT_MOSQUITTO && echo "  - Mosquitto   -> $(_stato mosquitto)"
   $NAT_SAMBA     && echo "  - Samba       -> $(_stato samba)"
+  $NAT_NODERED   && echo "  - Node-RED    -> $(_stato node-red)"
   $NAT_FRONTAIL  && echo "  - Frontail    -> solo disattivato (non più necessario)"
   echo ""
   echo "Porte seriali rilevate (mapping 1:1 nel container openhab):"
@@ -1965,7 +2023,7 @@ run_native_migration() {
   echo "OPERAZIONI:"
   echo "  1) (se assente) installazione Docker"
   echo "  2) Backup /opt/docker_store (se presente) — le cartelle native NON vengono cancellate"
-  echo "  3) Stop dei servizi nativi (openhab/habapp/mosquitto/samba/frontail) e dei container presi in carico"
+  echo "  3) Stop dei servizi nativi (openhab/habapp/mosquitto/samba/node-red/frontail) e dei container presi in carico"
   echo "  4) Copia conf/userdata/addons (+ habapp) in $DEST (owner 9001:9001)"
   echo "  5) Estrazione tarball + arfea.yml (servizi + porte seriali)"
   echo "  6) Build e avvio dello stack Docker"
