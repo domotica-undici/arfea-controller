@@ -457,6 +457,17 @@ OpenHAB abbia finito di partire (al primo avvio è lento), avvia i servizi rimas
 vecchia `page_amministrazione` e riavvia Node-RED, i cui nodi openHAB non riprovano dopo
 un 401 preso durante l'avvio.
 
+**Pulizia, a impianto confermato in esercizio:**
+[script/pulizia-post-migrazione.sh](script/pulizia-post-migrazione.sh) (Redmine #305). Per
+default è una prova a vuoto che elenca cosa toglierebbe; `--apply` toglie il backup
+pre-migrazione `/opt/docker_store-backup-*.tar.gz`, le immagini docker che nessun container
+usa e che `arfea.yml` non nomina (restano `arfea-controller` e `python:3.11-slim`, che serve
+al rebuild OTA), la cache apt, il journal oltre 200 MB e i log ruotati. Con `--nativo` toglie
+anche l'OpenHAB nativo, mount `/srv/openhab-*` di openHABian compresi: dopo non si torna più
+al nativo. Non tocca `/root`, dove restano i dump del database di deasy (escluso dal backup
+del controller), né deasy, i backup del controller e i volumi docker, e non parte durante un
+backup o un aggiornamento di versione.
+
 **Docker deve funzionare davvero:** prima di fermare qualunque cosa lo script avvia un
 container di prova. Su un kernel 4.9 (ODROID-C4 con Ubuntu 22.04) coi cgroup v2 nessun
 container parte (`bpf_prog_query(BPF_CGROUP_DEVICE) failed`): la build del controller
