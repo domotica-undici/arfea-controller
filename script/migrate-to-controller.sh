@@ -736,6 +736,16 @@ if os.path.isfile(p):
     s = open(p).read(); m = re.search(r"(server:\s*['\"]?mqtts?://)([0-9.]+)", s)
     if m and old_ip(m.group(2), True):
         open(p, "w").write(s.replace(m.group(0), m.group(1) + "mosquitto")); log(f"zigbee2mqtt mqtt.server {m.group(2)} -> mosquitto")
+# mosquitto: un listener legato all'IP fisso del vecchio container non si apre
+# piu' («Address not available») e il broker resta in loop di riavvio: su un
+# impianto «listener 1883 172.11.0.7». Si ascolta su tutte le interfacce.
+for f in glob.glob(f"{data}/mosquitto/config/*.conf"):
+    s = open(f).read()
+    new = re.sub(r"(?m)^(\s*listener\s+\d+)\s+([0-9.]+)\s*$",
+                 lambda m: (m.group(1) + " 0.0.0.0") if old_ip(m.group(2)) else m.group(0), s)
+    if new != s:
+        open(f + ".prima-della-migrazione", "w").write(s); open(f, "w").write(new)
+        log(f"{os.path.basename(f)}: listener sull'IP del vecchio container -> 0.0.0.0")
 # OpenHAB: broker MQTT nei file .things e nel JSONDB
 for f in glob.glob(f"{data}/openhab/conf/things/*.things"):
     s = open(f).read(); new = s

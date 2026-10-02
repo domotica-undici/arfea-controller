@@ -575,7 +575,9 @@ dello stack.
   configurazioni non valgono più (i container passano sulla rete del controller).
   Lo script li corregge: il broker MQTT di OpenHAB (file `.things` e JSONDB) diventa
   `localhost`, `mqtt.host` di zwave-js-ui e `mqtt.server` di zigbee2mqtt diventano
-  `mosquitto`. Nei flow di Node-RED il broker diventa `mosquitto`, e l'IP del vecchio
+  `mosquitto`. Un `listener` di mosquitto legato all'IP fisso del vecchio container
+  (su un impianto `listener 1883 172.11.0.7`: col nuovo IP «Address not available» e
+  broker in loop di riavvio) passa a `0.0.0.0`. Nei flow di Node-RED il broker diventa `mosquitto`, e l'IP del vecchio
   container openhab diventa il gateway della rete del controller (OpenHAB ora sta sulla
   rete dell'host). Se il vecchio Node-RED stava sulla rete dell'host, `localhost` e
   `127.0.0.1` (controller openHAB, websocket, broker) passano al gateway o a
