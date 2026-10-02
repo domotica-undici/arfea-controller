@@ -479,7 +479,12 @@ va riavviato.
 **Dopo l'arrivo del pacchetto addon** Karaf ricarica i bundle (2-3 minuti). Se dopo
 qualche minuto la REST risponde ancora 404 a tutto (nel log `Can't find the request for
 ... Observer`), si riavvia il container openhab: su un impianto è rimasta rotta finché
-non lo si è fatto.
+non lo si è fatto. Stessa cura se i binding non si installano: su un impianto, dopo
+l'arrivo del kar, tutti i thing sono rimasti `HANDLER_MISSING_ERROR` per quasi un'ora
+(`feature:list -i` senza binding), e sono tornati col riavvio. Se HABApp è acceso va
+riavviato anche lui: perde la connessione mentre crea le regole. Lo stesso vale per un
+zwave-js-ui che pubblica senza retain: i valori mandati mentre OpenHAB ripartiva sono
+persi, e un suo riavvio li ripubblica.
 
 **Pulizia, a impianto confermato in esercizio:**
 [script/pulizia-post-migrazione.sh](script/pulizia-post-migrazione.sh) (Redmine #305), dal PC
@@ -577,7 +582,11 @@ dello stack.
   `localhost`, `mqtt.host` di zwave-js-ui e `mqtt.server` di zigbee2mqtt diventano
   `mosquitto`. Un `listener` di mosquitto legato all'IP fisso del vecchio container
   (su un impianto `listener 1883 172.11.0.7`: col nuovo IP «Address not available» e
-  broker in loop di riavvio) passa a `0.0.0.0`. Nei flow di Node-RED il broker diventa `mosquitto`, e l'IP del vecchio
+  broker in loop di riavvio) passa a `0.0.0.0`. Nella config di HABApp un url di
+  OpenHAB su `localhost`/`127.0.0.1` (il vecchio HABApp in rete host) o sull'IP del
+  vecchio container openhab passa al gateway (Redmine #330): col controller HABApp sta
+  sulla rete `domotica`, il controller riscrive la config solo se manca il token, e su
+  due impianti HABApp non si è mai collegato, senza un errore nel log. Nei flow di Node-RED il broker diventa `mosquitto`, e l'IP del vecchio
   container openhab diventa il gateway della rete del controller (OpenHAB ora sta sulla
   rete dell'host). Se il vecchio Node-RED stava sulla rete dell'host, `localhost` e
   `127.0.0.1` (controller openHAB, websocket, broker) passano al gateway o a
@@ -620,6 +629,10 @@ del template, cioè quelle della release certificata.
 - **Node-RED** di una major diversa da quella del template resta alla sua immagine
   (i nodi aggiuntivi in `/data` sono installati per il suo Node). L'aggiornamento si
   fa dalla release, dopo aver provato i flow.
+- **zigbee2mqtt** di una major diversa da quella del template resta alla sua versione
+  (Redmine #333): da 1.x a 2.x converte la configurazione e cambia l'API MQTT
+  (disponibilità, payload legacy) che usano i thing. Il salto si fa dalla release,
+  dopo le note di rilascio.
 - Le porte seriali di zwave-js-ui e zigbee2mqtt si riprendono dai container vecchi
   **con il percorso interno**: se zigbee2mqtt vedeva la chiavetta come
   `/dev/ttyUSB0` resta `/dev/ttyUSB0`, perché è quello scritto nella sua

@@ -736,6 +736,24 @@ if os.path.isfile(p):
     s = open(p).read(); m = re.search(r"(server:\s*['\"]?mqtts?://)([0-9.]+)", s)
     if m and old_ip(m.group(2), True):
         open(p, "w").write(s.replace(m.group(0), m.group(1) + "mosquitto")); log(f"zigbee2mqtt mqtt.server {m.group(2)} -> mosquitto")
+# HABApp: col controller gira sulla rete del controller, non piu' in rete host.
+# Un url di OpenHAB su localhost/127.0.0.1 (il vecchio HABApp in rete host) o
+# sull'IP del vecchio container openhab non risponde: HABApp non si collega e,
+# coi log a WARNING, non lo dice. Su due impianti la termoregolazione e' rimasta
+# ferma cosi'. Il controller lo scrive solo se manca il token: qui si corregge.
+p = f"{data}/openhab/conf/habapp/config.yml"
+gw = os.environ.get("CTRL_GW", "")
+if os.path.isfile(p) and gw:
+    s = open(p).read()
+    def fix_url(m):
+        h = m.group(3)
+        if h in ("localhost", "127.0.0.1") or old_ip(h):
+            log(f"habapp url {h} -> {gw}")
+            return m.group(1) + m.group(2) + gw + m.group(4)
+        return m.group(0)
+    new = re.sub(r"(?m)^(\s+url:\s*['\"]?)(https?://)([A-Za-z0-9.-]+)(:8080)", fix_url, s)
+    if new != s:
+        open(p + ".prima-della-migrazione", "w").write(s); open(p, "w").write(new)
 # mosquitto: un listener legato all'IP fisso del vecchio container non si apre
 # piu' («Address not available») e il broker resta in loop di riavvio: su un
 # impianto «listener 1883 172.11.0.7». Si ascolta su tutte le interfacce.
@@ -1466,6 +1484,21 @@ except Exception as e:
       echo "Node-RED $nrv: resta alla sua versione ($NODERED_KEEP), il template ha la $nrt"
     fi
   fi
+  # zigbee2mqtt: stessa regola. Da 1.x a 2.x converte la configurazione e cambia
+  # l'API MQTT (disponibilita', payload legacy) che usano i thing di OpenHAB: su un
+  # impianto girava la 1.41 e il template ha la 2.x. Il salto si fa dalla release,
+  # dopo aver letto le note di rilascio e provato i thing.
+  local Z2M_KEEP=""
+  if [[ -n "${CT_OF[zigbee2mqtt]:-}" ]]; then
+    local zv zt
+    zv=$(docker exec "${CT_OF[zigbee2mqtt]}" sh -c 'grep -m1 "\"version\"" /app/package.json' 2>/dev/null | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' || true)
+    zt=$(tar -xJOf "$TARBALL_PATH" arfea-controller/config/arfea.yml 2>/dev/null | template_image_of /dev/stdin zigbee2mqtt || true)
+    zt="${zt##*:}"
+    if [[ -n "$zv" && -n "$zt" && "${zv%%.*}" != "${zt%%.*}" ]]; then
+      Z2M_KEEP="koenkk/zigbee2mqtt:$zv"
+      echo "zigbee2mqtt $zv: resta alla sua versione ($Z2M_KEEP), il template ha la $zt"
+    fi
+  fi
   if [[ -n "${CT_OF[node-red]:-}" && "$(docker inspect -f '{{.HostConfig.NetworkMode}}' "${CT_OF[node-red]}" 2>/dev/null)" == host ]]; then
     NODERED_WAS_HOST=1
   fi
@@ -1482,6 +1515,9 @@ except Exception as e:
   if ! $OH_UPGRADE; then DOCKER_IMG_SVCS="${DOCKER_IMG_SVCS/ openhab/}"; fi
   if [[ -n "$NODERED_KEEP" ]] && docker image inspect "$NODERED_KEEP" &>/dev/null; then
     DOCKER_IMG_SVCS="${DOCKER_IMG_SVCS/ node-red/}"
+  fi
+  if [[ -n "$Z2M_KEEP" ]] && docker image inspect "$Z2M_KEEP" &>/dev/null; then
+    DOCKER_IMG_SVCS="${DOCKER_IMG_SVCS/ zigbee2mqtt/}"
   fi
   check_disk_space docker
 
@@ -1600,6 +1636,13 @@ except Exception as e:
       UPGRADE_NOTES+=("Node-RED resta a $NODERED_KEEP: l'aggiornamento del template si fa dalla release, dopo aver provato i flow")
     else
       warn "immagine di Node-RED non scritta in arfea.yml: controlla il blocco node-red"
+    fi
+  fi
+  if [[ -n "$Z2M_KEEP" ]]; then
+    if set_service_image "$YML" zigbee2mqtt "$Z2M_KEEP"; then
+      UPGRADE_NOTES+=("zigbee2mqtt resta a $Z2M_KEEP: il passaggio alla major del template si fa dalla release, dopo le note di rilascio e una prova dei thing")
+    else
+      warn "immagine di zigbee2mqtt non scritta in arfea.yml: controlla il blocco zigbee2mqtt"
     fi
   fi
   log "arfea.yml configurato (API key: $ARFEA_API_KEY)"
