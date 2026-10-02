@@ -827,6 +827,49 @@ Trappole viste sullo stesso impianto, prima di approvare i thing Home Assistant:
 > se lo lanci dalla directory del repo/`script/` con il tarball accanto lo usa
 > direttamente, altrimenti lo rigenera al volo con `build-update-tarball.sh`.
 
+### 4.8 Raspberry con OpenHAB nativo (senza controller)
+
+Le Raspberry Pi 3 con Raspbian 9/10 a 32 bit e OpenHAB 2.x nativo restano fuori dal
+controller: le immagini OpenHAB 5.x escono solo per arm64 e amd64 (servirebbe
+reinstallare il sistema a 64 bit), 1 GB di RAM è poco per OpenHAB 5 con Java 21, docker
+e controller, una SD da 8 GB non regge il pacchetto addon (~600 MB più l'estrazione) e
+HABApp (~1,2 GB), e da OpenHAB 2.x le regole che chiamano script dell'host con `sudo`
+(access point, LCD) vanno riscritte. Si passano al controller cambiando la centralina.
+
+**Pulizia:** [script/pulizia-raspberry.sh](script/pulizia-raspberry.sh) (Redmine #325),
+dal PC o dallo Script Hub con `--centralina <alias>` (ripetibile), oppure sulla Raspberry
+da root. Per default è una prova a vuoto; `--apply` toglie:
+
+- il **desktop** (LXDE/PIXEL, lightdm, Xorg, Chromium e le applicazioni delle immagini
+  «with desktop», con i pacchetti che ne dipendono), che gira anche senza schermo. Resta
+  se c'è uno schermo collegato (EDID sull'HDMI, display DSI, touch), se un browser è in
+  esecuzione, se un crontab o un servizio usa il display, o con `--tieni-desktop`. Senza
+  HDMI la Raspberry risponde «Unk-Composite» (uscita composita): non è uno schermo.
+  L'avvio passa a `multi-user.target`, e se ne vanno cache e profili di Chromium degli
+  utenti. Le librerie X che servono alla Zulu 8 di OpenHAB (`libx11-6`, `libxtst6`, …)
+  restano;
+- `oracle-java8-jdk`, se il java di sistema è un altro e nessuno lo usa;
+- i pacchetti che apt dà già per inutili, compresi i kernel vecchi;
+- cache apt, journal oltre 200 MB, log ruotati. I log grandi ancora in uso li segnala
+  soltanto.
+
+Restano OpenHAB, il Java in uso, la rete (dhcpcd, wpa_supplicant, hostapd, dnsmasq,
+NetworkManager), openvpn, ssh, samba, nginx, ser2net, nodejs, mosquitto, docker, kernel e
+firmware, le chiavi dei repository e i pacchetti dei servizi in esecuzione (eseguibile e
+librerie caricate). La simulazione segna questi pacchetti come installati a mano in una
+copia dello stato di apt: con `nome+` apt li porterebbe alla versione candidata, e su una
+Raspberry con pacchetti più nuovi della candidata non trovava soluzione; con
+`nome=versione` per l'autoremove non contano, e la simulazione arrivava a togliere un
+migliaio di pacchetti (fermata dal controllo sugli essenziali). Se apt volesse togliere
+altro, o installare e aggiornare qualcosa, la rimozione non parte. Su una Raspberry 3 con
+il desktop se ne vanno circa 210 pacchetti (450-770 MB): con cache apt e log ruotati la SD
+da 8 GB ha recuperato da 0,9 a 1,9 GB. Togliendo lo splash di avvio, da `cmdline.txt`
+spariscono `quiet splash plymouth.ignore-serial-consoles`: è atteso, e lo script lo dice;
+ogni altro cambio a `cmdline.txt` o `config.txt` lo segnala da controllare prima di
+riavviare. Con `--apply` dal PC lo script gira sulla Raspberry in un'unità
+`systemd-run` (log in `/var/tmp/pulizia-raspberry.log`): se la VPN cade, apt non resta a
+metà.
+
 ---
 
 ## 5. Comandi Docker comuni
