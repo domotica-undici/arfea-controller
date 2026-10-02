@@ -72,6 +72,19 @@ def main():
     if ferme:
         c, r = http("PUT", C + f"/services/{ferme[0]}/enable", timeout=600)
         print("servizi fermi", ferme, "->", c, (r or {}).get("details") if isinstance(r, dict) else r)
+        # La risposta dell'enable non basta: su un impianto diceva «started» per un
+        # HABApp mai creato («Conflict + cleanup failed», Redmine #331). Si guarda
+        # lo stato vero, si riprova una volta e si dice chi non e' partito.
+        time.sleep(10)
+        for name in ferme:
+            c, s = http("GET", C + f"/services/{name}")
+            if isinstance(s, dict) and s.get("state") == "running":
+                continue
+            c, r = http("POST", C + f"/services/{name}/start", timeout=600)
+            time.sleep(10)
+            c, s = http("GET", C + f"/services/{name}")
+            stato = s.get("state") if isinstance(s, dict) else s
+            print(f"{name}: {'avviato al secondo tentativo' if stato == 'running' else f'NON PARTITO ({stato}): {r}'}")
     else:
         print("servizi: tutti in esecuzione")
 

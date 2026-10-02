@@ -26,6 +26,7 @@ import shutil
 import tarfile
 import time
 from pathlib import Path
+from urllib.parse import urlparse
 from typing import TYPE_CHECKING
 
 import httpx
@@ -100,6 +101,37 @@ _OBSOLETE_RULE_FILES = {
     "aasystem/time.py": "automation/js/arfea_system.js",
 }
 _OBSOLETE_SUFFIX = ".obsoleto"
+
+# Regola legacy aasystem/arfea.py (codice ARFEA 3.0.2): il controller non la
+# porta, la trova sugli impianti migrati. Crea i suoi item con
+# self.openhab.create_item, ma dopo la migrazione una parte sta in arfea.items
+# (file) e via REST non si ricrea: ItemNotEditableError al primo, e la regola si
+# ferma li' (HABApp_Ping, uuid, utenti mai valorizzati). Le chiamate passano da
+# un _create_item che ignora quell'errore (Redmine #335).
+_LEGACY_ARFEA_RULE = "aasystem/arfea.py"
+_LEGACY_HELPER = """
+    # Dalla migrazione al controller alcuni item stanno in arfea.items (file):
+    # via REST non si possono ricreare, e l'errore fermava tutta la regola.
+    # Aggiunto dal controller (Redmine #335).
+    def _create_item(self, *args, **kwargs):
+        try:
+            return self.openhab.create_item(*args, **kwargs)
+        except ItemNotEditableError:
+            return False
+"""
+
+# Prova dall'interno del container HABApp: l'url di OpenHAB risponde? Un errore
+# HTTP (401, 404) vuol dire che qualcuno risponde, quindi va bene.
+_URL_PROBE = (
+    "import sys, urllib.request, urllib.error\n"
+    "try:\n"
+    "    urllib.request.urlopen(sys.argv[1] + '/rest/', timeout=5)\n"
+    "except urllib.error.HTTPError:\n"
+    "    pass\n"
+    "except Exception:\n"
+    "    sys.exit(1)\n"
+)
+_URL_LINE_RE = re.compile(r"(?m)^(\s+url:\s*['\"]?)(https?://[^\s'\"]+)")
 _ROOT_FILES = ["config.yml", "logging.yml"]
 
 # Marker con la versione del codice effettivamente deployata in
@@ -457,6 +489,85 @@ class HABAppManager:
         funziona solo per il caso fortuito che l'host abbia anche quell'IP).
         """
         return f"http://{self.cfg.config.network.gateway}:8080"
+
+    def fix_openhab_url(self, openhab_up: bool) -> str:
+        """Riporta al gateway un url di OpenHAB che dal container non risponde.
+
+        HABApp sta sulla rete del controller e OpenHAB in rete host: localhost,
+        127.0.0.1 e il nome "openhab" (il vecchio HABApp in rete host, o il
+        container di un vecchio stack) li' dentro non sono OpenHAB, e nemmeno
+        l'IP fisso del vecchio container. HABApp non si collega e, coi log a
+        WARNING, non lo scrive: su tre impianti la termoregolazione e' rimasta
+        ferma cosi' (Redmine #330). Un altro indirizzo (LAN, nome dell'host) puo'
+        andare benissimo: si cambia solo se dal container non risponde e il
+        gateway si'. Ritorna "vecchio -> nuovo", vuoto se non c'era niente da fare."""
+        svc = self.cfg.config.services.get("habapp")
+        if svc is None or svc.network_mode == "host":
+            return ""
+        cfg_file = self.config_dir() / "config.yml"
+        if not cfg_file.is_file():
+            return ""
+        text = cfg_file.read_text()
+        m = _URL_LINE_RE.search(text)
+        if not m:
+            return ""
+        current = m.group(2).rstrip("/")
+        wanted = self._openhab_url()
+        if current == wanted:
+            return ""
+        host = (urlparse(current).hostname or "").lower()
+        wrong = host in ("localhost", "openhab", "::1") or host.startswith("127.")
+        if not wrong:
+            if not openhab_up or self.docker is None:
+                return ""
+            if self._probe(current) is not False or not self._probe(wanted):
+                return ""
+        backup = cfg_file.with_name(f"config.yml.bak-{int(time.time())}")
+        shutil.copy2(cfg_file, backup)
+        st = cfg_file.stat()
+        os.chown(backup, st.st_uid, st.st_gid)
+        cfg_file.write_text(text[:m.start(2)] + wanted + text[m.end(2):])
+        return f"{current} -> {wanted}"
+
+    def _probe(self, url: str) -> bool | None:
+        """True/False: l'url risponde dal container HABApp. None: non si sa
+        (container fermo, exec fallito)."""
+        rc, _ = self.docker.service_exec("habapp", ["python3", "-c", _URL_PROBE, url])
+        if rc == -1:
+            return None
+        return rc == 0
+
+    def patch_legacy_rules(self) -> bool:
+        """Corregge la regola legacy aasystem/arfea.py (vedi _LEGACY_ARFEA_RULE).
+        HABApp ricarica da solo un file di regole cambiato. Copia
+        dell'originale in arfea-controller/backups. True se l'ha corretta."""
+        path = self.config_dir() / "rules" / _LEGACY_ARFEA_RULE
+        if not path.is_file():
+            return False
+        text = path.read_text()
+        if "self.openhab.create_item(" not in text or "def _create_item(" in text:
+            return False
+        anchor = "from system.utils import Utils"
+        new = text.replace("self.openhab.create_item(", "self._create_item(")
+        if anchor not in new:
+            logger.warning("HABApp: rules/%s di forma inattesa, non corretta", _LEGACY_ARFEA_RULE)
+            return False
+        new = new.replace(anchor, anchor + "\nfrom HABApp.openhab.errors import ItemNotEditableError", 1)
+        new, n = re.subn(r"(\n    def load_configuration\(self\):)",
+                         lambda mm: _LEGACY_HELPER + mm.group(1), new, count=1)
+        if n != 1:
+            logger.warning("HABApp: rules/%s senza load_configuration, non corretta", _LEGACY_ARFEA_RULE)
+            return False
+        try:
+            compile(new, str(path), "exec")
+        except SyntaxError as exc:
+            logger.warning("HABApp: correzione di rules/%s non valida: %s", _LEGACY_ARFEA_RULE, exc)
+            return False
+        backups = self._data_path / "arfea-controller" / "backups"
+        backups.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(path, backups / f"aasystem-arfea.py.prima-{time.strftime('%Y%m%d_%H%M%S')}")
+        path.write_text(new)
+        return True
 
     def _read_token(self, cfg_file: Path) -> str:
         if not cfg_file.is_file():

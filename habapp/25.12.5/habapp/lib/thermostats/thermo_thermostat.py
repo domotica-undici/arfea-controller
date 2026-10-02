@@ -128,6 +128,7 @@ class Thermostat(HABApp.Rule):
 
         self._tRanges = json.loads(myItem)
 
+        self._legacy_override()
         self._override = float(self.utils.bindItem(f'{str(self.name)}_override', 
                                     self.override_changed, 
                                     ValueChangeEventFilter(),  0.0))
@@ -532,6 +533,35 @@ class Thermostat(HABApp.Rule):
 
         except ValueError as e:
             self.utils.sendCommandToItem(f'{str(self.name)}_override', 0)
+
+    def _legacy_override(self):
+        """Il codice ARFEA vecchio salvava l'override come JSON in un item String
+        ({"status": 0, "setpoint": 20.0, ...}): float() falliva e non si caricava
+        nessun termostato. L'item torna Number a 0 (nessun override) e si crea la
+        scadenza che col codice vecchio mancava (Redmine #266)."""
+        itemName = f'{str(self.name)}_override'
+        if not self.openhab.item_exists(itemName):
+            return
+        item = self.openhab.get_item(itemName)
+        try:
+            float(item.state if item.state not in (None, 'NULL', 'UNDEF') else 0)
+            return
+        except (TypeError, ValueError):
+            pass
+        log.warning(f'{itemName}: override nel formato vecchio ({item.state}), riportato a Number 0')
+        groups = list(item.groups or [])
+        for g in ("gPersistence", str(self.name)):
+            if g not in groups:
+                groups.append(g)
+        try:
+            self.openhab.create_item('Number', itemName, label=item.label or 'Gestione prioritaria',
+                                     tags=list(item.tags or []), groups=groups)
+            if not self.openhab.item_exists(f'{itemName}Expire'):
+                self.openhab.create_item('String', f'{itemName}Expire', label='Scadenza gestione prioritaria',
+                                         tags=[], groups=[str(self.name)])
+            self.openhab.post_update(itemName, 0)
+        except Exception as e:
+            log.error(f'{itemName}: conversione non riuscita ({e}), va corretto a mano')
 
     def restore_after_override(self):
         self.utils.sendCommandToItem(f'{str(self.name)}_internalManagement', self.states.internalManagements()["AUTO"])

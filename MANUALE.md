@@ -1460,6 +1460,40 @@ bridge trusted; reboot da remoto via OpenHAB Cloud → regola JS → localhost.
 - **Un servizio non si avvia** → `curl localhost:8888/api/services/<nome>`,
   controlla `state`. Se un **device USB mappato non è presente sull'host**, la
   creazione del container fallisce.
+- **Servizio abilitato ma senza container** (`docker ps -a` non lo elenca) → fino al
+  controller 1.8.13 succedeva quando due operazioni sullo stesso servizio si
+  sovrapponevano (all'avvio il controller ricreava HABApp mentre un'altra chiamata lo
+  avviava): «Conflitto nome», poi «Cleanup fallito ... 404», e nessuno lo ricreava,
+  nemmeno l'aggiornamento di versione. Rimedio: `curl -X POST
+  localhost:8888/api/services/<nome>/start`. Dal 1.8.14 le operazioni sullo stesso
+  servizio si mettono in fila e un container già sparito non ferma la creazione
+  (Redmine #331).
+- **Riparazioni automatiche** (dal controller 1.8.14, Redmine #335) → a ogni avvio,
+  quindi già alla prima applicazione dell'OTA, il controller cerca e corregge da solo
+  i guasti visti nelle migrazioni, solo dove li trova:
+  - HABApp con l'url di OpenHAB su `localhost`, `127.0.0.1`, `openhab` o un indirizzo
+    che dal container non risponde → gateway della rete del controller, e HABApp
+    ricreato (#330);
+  - regola legacy `rules/aasystem/arfea.py` ferma su `ItemNotEditableError` → corretta,
+    copia dell'originale in `arfea-controller/backups`;
+  - `listener <porta> <IP>` di mosquitto su un IP fisso → `0.0.0.0` (#324);
+  - zwave-js-ui e zigbee2mqtt col broker su un IP di container che non risponde →
+    `mosquitto`; zwave-js-ui senza «retain» → acceso (senza, dopo un riavvio di OpenHAB
+    gli item MQTT restano `NULL`). Il container si ferma, si corregge il file (copia
+    `.bak-<ora>`) e riparte;
+  - indirizzo primario di OpenHAB vuoto o su un bridge docker → la scheda della route
+    di default (#317), poi HABApp riavviato;
+  - thing `ipcamera` senza ffmpeg nel container → installato, e
+    `cont-init.d/30-arfea-ffmpeg` per i prossimi avvii (#322);
+  - OpenHAB acceso da 15 minuti ma bloccato da 9 (REST che non risponde, binding
+    ufficiali non caricati, regole JS ARFEA assenti) → un riavvio, poi HABApp. Al
+    massimo uno ogni 6 ore, mai fuori da backup e aggiornamenti, e se gli stessi
+    sintomi restano dopo il riavvio non si riprova: nel log «il riavvio non ha
+    risolto», da guardare a mano.
+
+  Cosa ha fatto: `curl localhost:8888/api/system/repairs` (ultime 50) e nel log del
+  controller le righe «Riparazione automatica». Il pacchetto addon dal 1.8.14 parte 10
+  minuti dopo l'avvio e vuole 1 GB libero oltre al doppio del kar (#323).
 - **OpenHAB non comunica col controller** →
   `docker exec openhab grep ARFEA /openhab/userdata/logs/openhab.log`.
 - **Modifiche a `arfea.yml` ignorate** → hai fatto un `restart` invece di un

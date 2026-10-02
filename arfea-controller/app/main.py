@@ -30,7 +30,7 @@ from .download_links import DownloadLinks
 from .habapp_manager import HABAppManager, last_provision as habapp_last_provision
 from .host_network import HostNetworkManager, ap_lan_conflict
 from .release_manager import ReleaseManager
-from . import semantic_cards
+from . import heal, semantic_cards
 from .models import (
     AccessPointUpdate,
     AddonsKarStatus,
@@ -46,6 +46,7 @@ from .models import (
     OperationResponse,
     ReleaseCheckResult,
     ReleaseUpdateStatus,
+    ReleaseUpdateState,
     SelfUpdateState,
     SelfUpdateStatus,
     SerialDevice,
@@ -449,7 +450,27 @@ logger = logging.getLogger(__name__)
 #          link a tempo (POST /api/backup/download-link/<nome>, 5 minuti, solo
 #          per quel file), perche' un link non puo' portare X-API-Key e la chiave
 #          in un URL finirebbe nei log. Esito ed errori scritti sotto l'elenco.
-VERSION = "1.8.13"
+#   1.8.14 FIX servizio rimasto senza container (Redmine #331): all'avvio il
+#          controller ricreava HABApp (_heal_habapp) mentre un'altra chiamata lo
+#          creava; una andava in «Conflitto nome», l'altra trovava il container
+#          gia' tolto (cleanup 404) e rinunciava, e su un impianto HABApp e' rimasto
+#          spento senza che nulla lo ricreasse, nemmeno l'aggiornamento di
+#          versione. Ora le operazioni sullo stesso servizio (crea, ferma,
+#          riavvia, ricrea) si mettono in fila, e nel conflitto un container gia'
+#          sparito non e' un errore: si riprova la creazione, e se nel frattempo
+#          un'altra operazione l'ha avviato va bene cosi'.
+#          NEW riparazioni automatiche (app/heal.py, Redmine #335): a ogni avvio,
+#          quindi gia' alla prima applicazione di questo OTA, il controller cerca
+#          e corregge i guasti visti nelle migrazioni: url di OpenHAB in HABApp
+#          (#330), regola legacy aasystem/arfea.py, listener di mosquitto su un IP
+#          fisso (#324), broker di zwave-js-ui/zigbee2mqtt su un IP di container,
+#          zwave-js-ui senza retain, indirizzo primario di OpenHAB su un bridge
+#          docker (#317), ffmpeg per ipcamera (#322), OpenHAB bloccato dopo il
+#          pacchetto addon (REST 404, binding non caricati, regole JS assenti:
+#          un riavvio, al massimo ogni 6 ore e mai due volte per gli stessi
+#          sintomi). Storico in GET /api/system/repairs. Pacchetto addon: margine
+#          di disco 1 GB e download 10 minuti dopo l'avvio (#323).
+VERSION = "1.8.14"
 
 # -- Globals initialised at startup -----------------------------------------
 
@@ -540,6 +561,13 @@ async def lifespan(app: FastAPI):
     # #275): la start qui sotto non ricrea un mosquitto gia' esistente.
     docker_manager.ensure_mosquitto_persistence()
 
+    # Config dei servizi rotte dalle migrazioni (Redmine #335): prima dell'avvio,
+    # cosi' un container che manca nasce gia' con la config giusta.
+    try:
+        heal.repair_configs(config_manager, docker_manager)
+    except Exception as exc:
+        logger.warning("Riparazioni delle config fallite: %s", exc)
+
     logger.info("Starting all enabled services...")
     results = docker_manager.start_all_enabled()
     for r in results:
@@ -560,6 +588,11 @@ async def lifespan(app: FastAPI):
     # startup, ma in sequenza fra loro — aprono entrambi la console Karaf, che
     # non va usata da due parti insieme.
     threading.Thread(target=_startup_background, daemon=True).start()
+
+    # Controlli su OpenHAB ogni 5 minuti: indirizzo primario, ffmpeg per
+    # ipcamera, OpenHAB bloccato dopo il pacchetto addon (Redmine #335).
+    heal.OpenHABWatch(config_manager, docker_manager, _oh_rest_auth, _oh_rest_ready,
+                      _maintenance_busy).start()
 
     # Rete: password dell'AP al primo avvio e watchdog wifi/access point. Il
     # watchdog parte anche se NetworkManager non c'e' (lo segnala nello stato):
@@ -600,6 +633,28 @@ def _heal_habapp() -> None:
     if svc is None or not svc.enabled:
         return
 
+    # Regola legacy aasystem/arfea.py ferma su ItemNotEditableError dopo la
+    # migrazione (Redmine #335): HABApp ricarica da solo il file corretto.
+    try:
+        if habapp_manager.patch_legacy_rules():
+            heal.record(config_manager, "habapp", "regola legacy aasystem/arfea.py: gli item "
+                        "di arfea.items non la fermano piu' (copia in arfea-controller/backups)")
+    except OSError as exc:
+        logger.warning("HABApp: regola legacy non corretta: %s", exc)
+
+    # url di OpenHAB che dal container non risponde (Redmine #330): la prova
+    # dall'interno del container vuole OpenHAB su.
+    url_fixed = ""
+    try:
+        deadline = time.monotonic() + 600
+        while time.monotonic() < deadline and not _oh_rest_ready():
+            time.sleep(15)
+        url_fixed = habapp_manager.fix_openhab_url(_oh_rest_ready())
+        if url_fixed:
+            heal.record(config_manager, "habapp", f"url di OpenHAB {url_fixed}")
+    except Exception as exc:
+        logger.warning("HABApp: controllo dell'url di OpenHAB fallito: %s", exc)
+
     # Regole superate rimaste a bordo (aasystem/time.py, Redmine #241): vanno
     # tolte anche quando il codice e' gia' allineato e il provisioning non riparte.
     try:
@@ -618,6 +673,10 @@ def _heal_habapp() -> None:
     elif habapp_manager.needs_deploy():
         motivo = (f"gira con il codice {habapp_manager.deployed_version()} "
                   f"mentre a bordo c'e' il {habapp_manager.source_version()}")
+    elif url_fixed:
+        res = docker_manager.recreate_service("habapp")
+        logger.info("HABApp: url di OpenHAB corretto, %s", res.message)
+        return
     else:
         return
 
@@ -812,6 +871,13 @@ def set_service_devices(name: str, body: ServiceDevicesUpdate):
 def list_serial_devices():
     """Elenca le porte seriali rilevate sull'host (sorgenti per un mapping device)."""
     return docker_manager.list_host_serial_devices()
+
+
+@app.get("/api/system/repairs", dependencies=[Depends(verify_api_key)])
+def system_repairs():
+    """Riparazioni automatiche fatte dal controller (Redmine #335), la piu'
+    recente per prima: at, area, message."""
+    return heal.repairs(config_manager)
 
 
 @app.get("/api/system/serial-devices/warnings", dependencies=[Depends(verify_api_key)])
@@ -1511,6 +1577,9 @@ def _maybe_import_ui() -> None:
 
 _SEMANTIC_INTERVAL = 600
 _semantic_token = ""
+# Il token si conia dalla console Karaf, che non va usata da due parti insieme:
+# _oh_rest_auth la chiamano le card semantiche e le riparazioni, da due thread.
+_semantic_token_lock = threading.Lock()
 
 
 def _oh_rest(method: str, path: str, token: str = "", body: dict | None = None) -> tuple[str, str]:
@@ -1539,14 +1608,31 @@ def _oh_rest_auth(method: str, path: str, body: dict | None = None) -> tuple[str
     """Come _oh_rest, con il token admin coniato solo alla prima risposta
     401/403 e poi riusato: un token per avvio del controller, non per giro."""
     global _semantic_token
-    code, text = _oh_rest(method, path, _semantic_token, body)
+    used = _semantic_token
+    code, text = _oh_rest(method, path, used, body)
     if code in ("401", "403"):
-        token, err = docker_manager.mint_oh_token("SEMANTIC")
-        if not token:
-            return code, err
-        _semantic_token = token
+        with _semantic_token_lock:
+            if _semantic_token == used:
+                token, err = docker_manager.mint_oh_token("SEMANTIC")
+                if not token:
+                    return code, err
+                _semantic_token = token
         code, text = _oh_rest(method, path, _semantic_token, body)
     return code, text
+
+
+def _maintenance_busy() -> str:
+    """Perche' non toccare i container adesso ("" se si puo'): backup,
+    aggiornamento di versione o del controller in corso."""
+    if backup_manager.status.state not in (BackupState.IDLE, BackupState.COMPLETED, BackupState.FAILED):
+        return "backup in corso"
+    if release_manager.status.state not in (ReleaseUpdateState.IDLE, ReleaseUpdateState.COMPLETED,
+                                            ReleaseUpdateState.FAILED, ReleaseUpdateState.ROLLED_BACK):
+        return "aggiornamento di versione in corso"
+    if _update_status.state in (SelfUpdateState.DOWNLOADING, SelfUpdateState.INSTALLING,
+                                SelfUpdateState.REBUILDING):
+        return "aggiornamento del controller in corso"
+    return ""
 
 
 def _sync_semantic_cards() -> str:

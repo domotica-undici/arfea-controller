@@ -42,8 +42,17 @@ _VERSION_RE = re.compile(r"^(\d+\.\d+\.\d+(?:\.M\d+)?)")
 _KAR_GLOB = "openhab-addons-*.kar"
 
 # Karaf estrae il kar in userdata/tmp/kar, quindi a regime occupa il doppio del
-# file scaricato; il margine sopra il doppio e' per il resto dell'impianto.
-_DISK_MARGIN = 500 * 1024 * 1024
+# file scaricato; il margine sopra il doppio e' per il resto dell'impianto. 500 MB
+# non bastavano a una centralina appena migrata: col backup dell'userdata che
+# l'immagine OpenHAB scrive al primo avvio di una versione nuova, HABApp e i log,
+# il disco e' arrivato a 100 MB liberi (Redmine #323).
+_DISK_MARGIN = 1024 * 1024 * 1024
+
+# Il download automatico parte 10 minuti dopo la richiesta: all'avvio del
+# controller o del container openhab il disco si sta ancora riempiendo (backup
+# dell'upgrade di OpenHAB, migrazione appena finita) e lo spazio misurato
+# subito non e' quello vero (Redmine #323). Il pulsante della Web UI non aspetta.
+_SETTLE_SECONDS = 600
 
 _MB = 1024 * 1024
 
@@ -68,6 +77,7 @@ class AddonsKarManager:
         self._downloaded = 0
         self._total = 0
         self._error = ""
+        self._waiting_until = 0.0
         self._watch: Optional[threading.Thread] = None
 
     def start_watch(self, interval: int = _WATCH_SECONDS) -> None:
@@ -150,6 +160,13 @@ class AddonsKarManager:
             running = self._thread is not None and self._thread.is_alive()
             downloaded, total, error = self._downloaded, self._total, self._error
 
+        waiting = self._waiting_until - time.time()
+        if running and waiting > 0:
+            st.state = AddonsKarState.DOWNLOADING
+            st.message = (f"Scaricamento addon {version} fra {int(waiting // 60) + 1} minuti "
+                          f"(si lascia finire l'avvio di OpenHAB)")
+            return st
+
         if running:
             st.state = AddonsKarState.DOWNLOADING
             st.size_mb = round(downloaded / _MB, 1)
@@ -204,15 +221,26 @@ class AddonsKarManager:
             self._total = 0
             self._error = ""
             self._thread = threading.Thread(
-                target=self._download, args=(version,), daemon=True
+                target=self._download, args=(version, 0 if force else _SETTLE_SECONDS),
+                daemon=True,
             )
             self._thread.start()
 
-        logger.info("Addon OpenHAB %s: download avviato in background", version)
-        return (True, f"Scaricamento del pacchetto addon {version} avviato "
-                      f"(~600 MB, prosegue in background)")
+        if force:
+            logger.info("Addon OpenHAB %s: download avviato in background", version)
+            return (True, f"Scaricamento del pacchetto addon {version} avviato "
+                          f"(~600 MB, prosegue in background)")
+        logger.info("Addon OpenHAB %s: download fra %d minuti", version, _SETTLE_SECONDS // 60)
+        return (True, f"Scaricamento del pacchetto addon {version} fra "
+                      f"{_SETTLE_SECONDS // 60} minuti (~600 MB, in background)")
 
-    def _download(self, version: str) -> None:
+    def _download(self, version: str, delay: int = 0) -> None:
+        if delay:
+            self._waiting_until = time.time() + delay
+            time.sleep(delay)
+            self._waiting_until = 0.0
+            if self.kar_path(version).is_file() or version != self.wanted_version():
+                return
         url = self._url(version)
         dest = self.kar_path(version)
         # Il file di lavoro e' nascosto e non finisce in .kar: Karaf guarda la

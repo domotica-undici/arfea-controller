@@ -4,6 +4,7 @@ import logging
 import os
 import re
 import shutil
+import threading
 import time
 from pathlib import Path
 from typing import Optional
@@ -61,6 +62,17 @@ class DockerManager:
     def __init__(self, config_manager: ConfigManager):
         self.cfg = config_manager
         self.client = docker.DockerClient(base_url="unix:///var/run/docker.sock")
+        # Un'operazione alla volta per servizio (Redmine #331): all'avvio il
+        # controller ricreava HABApp (_heal_habapp) mentre un'altra chiamata lo
+        # creava; una andava in conflitto di nome, l'altra trovava il container
+        # gia' tolto, e il servizio restava senza container. RLock perche'
+        # recreate_service passa da stop_service e create_and_start.
+        self._svc_locks: dict[str, threading.RLock] = {}
+        self._svc_locks_guard = threading.Lock()
+
+    def _svc_lock(self, name: str) -> threading.RLock:
+        with self._svc_locks_guard:
+            return self._svc_locks.setdefault(name, threading.RLock())
 
     # ------------------------------------------------------------------
     # Network
@@ -134,6 +146,10 @@ class DockerManager:
     # ------------------------------------------------------------------
 
     def create_and_start(self, name: str) -> OperationResponse:
+        with self._svc_lock(name):
+            return self._create_and_start(name)
+
+    def _create_and_start(self, name: str) -> OperationResponse:
         services = self.cfg.config.services
         if name not in services:
             return OperationResponse(success=False, message=f"Unknown service: {name}")
@@ -191,8 +207,20 @@ class DockerManager:
                     svc.container_name,
                 )
                 try:
-                    stale = self.client.containers.get(svc.container_name)
-                    stale.remove(force=True)
+                    try:
+                        stale = self.client.containers.get(svc.container_name)
+                    except NotFound:
+                        # gia' tolto da un'altra operazione: il nome e' libero,
+                        # si riprova (prima qui si rinunciava, Redmine #331)
+                        stale = None
+                    if stale is not None:
+                        stale.reload()
+                        if stale.status == "running":
+                            # creato nel frattempo da un'altra operazione
+                            return OperationResponse(
+                                success=True, message=f"'{name}' is already running"
+                            )
+                        stale.remove(force=True)
                     self.client.containers.run(**kwargs)
                     logger.info("Service '%s' started after cleanup", name)
                     return OperationResponse(success=True, message=f"'{name}' started (after cleanup)")
@@ -311,6 +339,10 @@ class DockerManager:
             logger.warning("mosquitto: persistenza non aggiunta a %s: %s", conf, exc)
 
     def stop_service(self, name: str) -> OperationResponse:
+        with self._svc_lock(name):
+            return self._stop_service(name)
+
+    def _stop_service(self, name: str) -> OperationResponse:
         svc = self.cfg.config.services.get(name)
         if svc is None:
             return OperationResponse(success=False, message=f"Unknown service: {name}")
@@ -330,6 +362,10 @@ class DockerManager:
             return OperationResponse(success=False, message=str(exc))
 
     def restart_service(self, name: str) -> OperationResponse:
+        with self._svc_lock(name):
+            return self._restart_service(name)
+
+    def _restart_service(self, name: str) -> OperationResponse:
         svc = self.cfg.config.services.get(name)
         if svc is None:
             return OperationResponse(success=False, message=f"Unknown service: {name}")
@@ -348,6 +384,27 @@ class DockerManager:
     # ------------------------------------------------------------------
     # Aggiornamento immagini (release certificate)
     # ------------------------------------------------------------------
+
+    def container_of(self, name: str):
+        """Il container del servizio, o None se non esiste."""
+        svc = self.cfg.config.services.get(name)
+        return self._get_container(svc.container_name if svc else name)
+
+    def service_exec(self, name: str, cmd: list[str]) -> tuple[int, str]:
+        """Esegue un comando DENTRO il container di un servizio avviato.
+        (-1, msg) se il container non c'e', e' fermo o l'exec fallisce."""
+        container = self.container_of(name)
+        if container is None:
+            return (-1, f"container {name} non trovato")
+        try:
+            container.reload()
+            if container.status != "running":
+                return (-1, f"container {name} {container.status}")
+            res = container.exec_run(cmd, demux=False)
+            out = res.output.decode("utf-8", "replace") if res.output else ""
+            return (res.exit_code, out)
+        except APIError as exc:
+            return (-1, f"exec fallito: {exc}")
 
     def openhab_exec(self, cmd: list[str], timeout: int = 60) -> tuple[int, str]:
         """Esegue un comando DENTRO il container openhab. Ritorna (exit_code, output).
@@ -465,6 +522,10 @@ class DockerManager:
         diventare healthy: trattarlo come fallimento farebbe scattare un rollback
         e quindi un DOWNGRADE, che è peggio di un'attesa. Quindi un container che
         gira ma non è ancora healthy viene considerato OK (con warning)."""
+        with self._svc_lock(name):
+            return self._recreate_service(name, health_timeout)
+
+    def _recreate_service(self, name: str, health_timeout: int) -> OperationResponse:
         svc = self.cfg.config.services.get(name)
         if svc is None:
             return OperationResponse(success=False, message=f"Unknown service: {name}")

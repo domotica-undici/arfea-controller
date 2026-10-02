@@ -114,7 +114,9 @@ class Setpoint(HABApp.Rule):
     """
     def updateOHsetpoint(self, new_value, whoUpdate):
         if whoUpdate == "device":
-            self.utils.sendCommandToItem(f'{str(self.name)}_internalManagement', "1.0")
+            # numero, non stringa: HABApp rifiuta "1.0" per un NumberItem e il
+            # setpoint arrivato dal dispositivo non raggiungeva OpenHAB (Redmine #332)
+            self.utils.sendCommandToItem(f'{str(self.name)}_internalManagement', 1.0)
 
         self.utils.sendCommandToItem(f'{str(self.name)}_setpoint', new_value)
 

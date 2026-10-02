@@ -1,7 +1,7 @@
 {
   "_commento": "Manifest delle versioni CERTIFICATE per le centraline ARFEA. Va pubblicato su controller.releases_url (es. https://cloud.domoticaundici.it/ota/releases.json). 'releases' è ordinato dalla più vecchia alla più recente: l'ordine definisce il percorso di upgrade attraversato dall'apply. 'latest' indica la versione bersaglio. Ogni release elenca i tag immagine certificati, sempre esatti (mai :latest o una major mobile come :11: l'apply scarica solo quando il tag cambia, quindi un tag mobile resta per sempre all'immagine del giorno dell'installazione); l'apply scrive SOLO questi tag in arfea.yml. Dal controller 1.8.8 i servizi spenti ricevono solo il tag, senza download: l'immagine arriva quando vengono accesi. 'controller_min' (opzionale) blocca l'upgrade se il controller è troppo vecchio. 'migrations' (opzionale) elenca le versioni che hanno script migrations/<versione>/pre.sh|post.sh bundlati nel tarball OTA. 'habapp_code' (opzionale) è il CODICE HABApp (regole+librerie) versionato a parte dall'immagine: {version, url, sha256} del tarball prodotto da script/build-habapp-tarball.sh. version = engine+revisione (es. 25.12.0 -> 25.12.1) e può avanzare anche a immagine habapp invariata. L'apply lo scarica, verifica lo sha256, lo spacchetta e ri-provisiona; nel diff/UI compare come pseudo-servizio 'habapp-code'. Assente = nessun aggiornamento di codice per quella release.",
   "channel": "stable",
-  "latest": "2026.09.02",
+  "latest": "2026.10.01",
   "releases": [
     {
       "version": "2026.07.03",
@@ -99,6 +99,26 @@
         "version": "25.12.4",
         "url": "https://cloud.domoticaundici.it/ota/habapp-25.12.4.tar.xz",
         "sha256": "e3cf63012d447930f13618d9842c9f60a860b569ecb6a563f36ca1cae139e467"
+      }
+    },
+    {
+      "version": "2026.10.01",
+      "date": "2026-10-02",
+      "notes": "Immagini invariate rispetto alla 2026.09.02. Codice HABApp 25.12.5: quando un termostato cambia setpoint dal dispositivo (e non da OpenHAB), il codice segnava la gestione manuale scrivendo «1.0» come testo su <termostato>_internalManagement; HABApp lo rifiuta per un item numerico e l'aggiornamento si fermava, cosi' il setpoint del dispositivo non arrivava a OpenHAB (Redmine #332). Nessuna immagine cambia: nessuna nota di rilascio da leggere, nessuna migrazione. Lo stesso codice riporta a Number 0 l'item <termostato>_override salvato in JSON dal codice ARFEA vecchio, che fermava tutta la termoregolazione (Redmine #266). Esce insieme al controller 1.8.14, che non lascia piu' un servizio senza container dopo un conflitto di nome (Redmine #331) e al primo avvio cerca e corregge da solo i guasti visti nelle migrazioni (Redmine #335).",
+      "controller_min": "1.8.8",
+      "images": {
+        "openhab": "openhab/openhab:5.2.1",
+        "habapp": "spacemanspiff2007/habapp:25.12.0",
+        "zwave-js-ui": "zwavejs/zwave-js-ui:11.24.1",
+        "mosquitto": "eclipse-mosquitto:2.1.2-alpine",
+        "zigbee2mqtt": "koenkk/zigbee2mqtt:2.14.1",
+        "node-red": "nodered/node-red:5.0.7-24-minimal",
+        "otbr": "openthread/border-router:sha-9802eb8"
+      },
+      "habapp_code": {
+        "version": "25.12.5",
+        "url": "https://cloud.domoticaundici.it/ota/habapp-25.12.5.tar.xz",
+        "sha256": "a2e01bb03f091732938c7c3478905d7bd3ca123d2b7ac883bd620c4b7e676a34"
       }
     },
     {

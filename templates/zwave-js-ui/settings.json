@@ -4,6 +4,7 @@
     "host": "mosquitto",
     "port": 1883,
     "qos": 1,
+    "retain": true,
     "prefix": "zwave",
     "reconnectPeriod": 3000,
     "store": true,
