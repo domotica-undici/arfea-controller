@@ -442,9 +442,17 @@ da solo il punto di partenza e agisce di conseguenza:
   - fino alla 2.5.x: `/etc/openhab2`, `/var/lib/openhab2`, `/usr/share/openhab2/addons`
   - dalla 3.x in poi: `/etc/openhab`, `/var/lib/openhab`, `/usr/share/openhab/addons`
 
+Se c'è un container OpenHAB, anche col nome di uno stack di Portainer
+(`arfea-openhab-1`), vince il flusso docker: su un impianto passato dal nativo a
+Portainer il vecchio OpenHAB nativo è ancora a bordo, spento, e lo script lo sceglieva
+al posto dell'impianto in esercizio (Redmine #314). La prova a vuoto si fa rispondendo
+`n` alla conferma: rilevamento, piano e controllo dello spazio si vedono prima di
+toccare qualunque cosa.
+
 ```bash
 # sulla board (da eseguire come root)
 sudo bash migrate-to-controller.sh                    # rileva da solo la sorgente
+echo n | sudo bash migrate-to-controller.sh           # solo il piano, non tocca nulla
 sudo bash migrate-to-controller.sh /path/old-compose.yml /path/tarball.tar.xz
 sudo MIGRATE_MODE=native bash migrate-to-controller.sh   # forza la modalità
 sudo MIGRATE_SKIP_SPACE_CHECK=1 bash migrate-to-controller.sh   # salta il controllo dello spazio
@@ -457,6 +465,22 @@ OpenHAB abbia finito di partire (al primo avvio è lento), avvia i servizi rimas
 vecchia `page_amministrazione` e riavvia Node-RED, i cui nodi openHAB non riprovano dopo
 un 401 preso durante l'avvio.
 
+**Indirizzo primario di OpenHAB** (Redmine #317): col controller OpenHAB sta in rete host,
+e sull'host ci sono anche i bridge docker (`domotica` 172.11.0.1, quello del controller,
+docker0). Senza `primaryAddress` OpenHAB prende il primo indirizzo privato che trova e
+scarta gli altri (nel log: `Found multiple local interfaces - ignoring 192.168.x.x`): su
+un impianto migrato dal nativo ha preso 172.11.0.1, che dalla LAN non si raggiunge, e gli
+Shelly mandano gli eventi a quell'indirizzo. Si imposta l'indirizzo della LAN
+(Impostazioni › Rete, oppure da Karaf `config:edit org.openhab.network`,
+`config:property-set primaryAddress <ip>/<prefisso>`, `config:update`). Il cambio
+riavvia per un attimo i servizi REST: HABApp, se in quel momento sincronizza i thing,
+va riavviato.
+
+**Dopo l'arrivo del pacchetto addon** Karaf ricarica i bundle (2-3 minuti). Se dopo
+qualche minuto la REST risponde ancora 404 a tutto (nel log `Can't find the request for
+... Observer`), si riavvia il container openhab: su un impianto è rimasta rotta finché
+non lo si è fatto.
+
 **Pulizia, a impianto confermato in esercizio:**
 [script/pulizia-post-migrazione.sh](script/pulizia-post-migrazione.sh) (Redmine #305), dal PC
 o dallo Script Hub con `--centralina <alias>` (ripetibile: lo script va da solo via ssh a
@@ -464,11 +488,36 @@ ognuna), oppure sulla centralina da root. Per default è una prova a vuoto che e
 toglierebbe; `--apply` toglie il backup
 pre-migrazione `/opt/docker_store-backup-*.tar.gz`, le immagini docker che nessun container
 usa e che `arfea.yml` non nomina (restano `arfea-controller` e `python:3.11-slim`, che serve
-al rebuild OTA), la cache apt, il journal oltre 200 MB e i log ruotati. Con `--nativo` toglie
-anche l'OpenHAB nativo, mount `/srv/openhab-*` di openHABian compresi: dopo non si torna più
-al nativo. Non tocca `/root`, dove restano i dump del database di deasy (escluso dal backup
-del controller), né deasy, i backup del controller e i volumi docker, e non parte durante un
-backup o un aggiornamento di versione.
+al rebuild OTA), sorgenti e initrd di kernel non più installati che nessun pacchetto possiede
+(il kernel Hardkernel 4.9 ne lascia 71 MB in `/usr/src` a ogni aggiornamento), le cache di
+root e degli utenti e glmark2 (benchmark della GPU compilato quando le ODROID sono state
+preparate: per lui c'erano i compilatori), la vecchia *execpipe* (`/opt/mypipe` + `/opt/execpipe.sh` @reboot: il
+vecchio OpenHAB in docker ci scriveva comandi che un ciclo eseguiva da root) se nessun
+container la monta più, la cache apt, il journal oltre 200 MB e i log ruotati. Con `--nativo`
+toglie anche l'OpenHAB nativo, mount `/srv/openhab-*` di openHABian compresi: dopo non si
+torna più al nativo. Con `--pacchetti` toglie i pacchetti che al controller non servono,
+ognuno solo se regge la sua condizione: OpenJDK se niente di nativo usa Java (Undici,
+OpenHAB, un altro servizio), `linux-firmware` col kernel Hardkernel 4.9 e nessun dispositivo
+wifi o bluetooth (da `/media/boot` si avvia senza, e il pacchetto non ha script di rimozione),
+nodejs se nessun servizio lo usa, samba nativo con `smbd` spento, ModemManager se non vede un
+modem (sonda le seriali di Z-Wave e Zigbee), compilatori, tutti i pacchetti `-dev` e attrezzi per costruire
+pacchetti (`debhelper`, `devscripts`, `lintian`, `libtool`, `cmake`, ...) se non c'è `dkms`, nginx
+spento; con loro le dipendenze rimaste orfane. Restano quello che serve al controller e agli
+script (docker, openvpn, NetworkManager, `python3-yaml`, curl, git, rsync, ...), le chiavi dei repository apt, le librerie
+dei programmi compilati a mano in `/usr/local` e `/opt` e quello che apt già prima dava per
+inutile; se apt volesse togliere altro la rimozione non parte. Su un
+impianto ha liberato 2,2 GB (177 pacchetti). Con `--undici-nativo`, solo se il container
+`deasy` è sano, toglie Undici nativo: lighttpd, PHP, RXTX, la Java Zulu (le sue librerie armhf
+restano: apt rifiuta di toglierle come essenziali), `/opt/undici`, `/etc/undici`, `/var/www` (le copie stanno in
+`/opt/docker_store/deasy`), `undici.service`, i dati della vecchia MariaDB in container
+rimasti fuori da deasy, i pacchetti di una MariaDB nativa (i dati in `/var/lib/mysql`
+restano). Non tocca `/root`, dove restano i dump del database di deasy (escluso dal backup
+del controller), né deasy in docker, i backup del controller e i volumi docker, e non parte
+durante un backup o un aggiornamento di versione.
+
+Per far posto non si usa `docker system prune -a`: toglie anche i container fermi con le loro
+immagini (su un impianto la MariaDB di Undici) e i tag esatti di `arfea.yml` quando un
+`:latest` punta alla stessa immagine.
 
 **Docker deve funzionare davvero:** prima di fermare qualunque cosa lo script avvia un
 container di prova. Su un kernel 4.9 (ODROID-C4 con Ubuntu 22.04) coi cgroup v2 nessun
@@ -508,7 +557,13 @@ dello stack.
   demone. Resta quello vecchio (API 1.41), che il client nuovo rifiuta («client version
   is too new»), e lo script si sarebbe fermato a metà: ora lo riavvia, e i container
   ripartono da soli. Con Docker 29 le versioni vecchie di Portainer non partono più
-  (API minima 1.44).
+  (API minima 1.44). L'installazione è non interattiva (Redmine #315): il postinst di
+  `docker.io` chiede «Automatically restart Docker daemon?» sul terminale di dpkg, e
+  con lo script in un'unità systemd nessuno rispondeva (due impianti fermi lì, prima
+  di toccare i servizi). Passando a mano da `docker.io` a `docker-ce`, dopo il cambio
+  `docker.socket` può restare non funzionante e il demone non parte: `systemctl
+  daemon-reload`, `systemctl reset-failed docker.socket docker.service`, `systemctl
+  restart docker.socket`, `systemctl start docker`.
 - **Portainer si toglie** dove si trova, con immagine e dati: nel mondo controller non
   serve, e un «Start» dello stack da Portainer rimetterebbe in piedi il vecchio
   impianto accanto al controller, con le stesse porte. I dati restano nel backup, e un
@@ -567,6 +622,14 @@ del template, cioè quelle della release certificata.
   **con il percorso interno**: se zigbee2mqtt vedeva la chiavetta come
   `/dev/ttyUSB0` resta `/dev/ttyUSB0`, perché è quello scritto nella sua
   `configuration.yaml` (prima si forzava `/dev/zigbee` e Zigbee non partiva).
+- **Script `cont-init.d` dell'host** (Redmine #322): se il vecchio compose montava una
+  cartella dell'host su `/etc/cont-init.d` (su un impianto `/etc/cont-init.d` con lo
+  script che installava `ffmpeg`, che serve al binding ipcamera per le istantanee), il
+  controller monta la sua `openhab/cont-init.d` e quegli script restano fuori: le
+  telecamere vanno OFFLINE («FFmpeg Snapshots Stopped»). Oggi si copiano a mano in
+  `/opt/docker_store/openhab/cont-init.d` con un nome diverso da `20-arfea-custom` (il
+  controller copia solo i suoi file e non toglie gli altri), resi non fatali senza
+  rete: l'entrypoint li esegue sotto `set -e`.
 - Lo skeleton OpenHAB (`arfea.items`, regole JS ARFEA, script, `cont-init.d`) si
   installa subito, senza sovrascrivere file già presenti: prima arrivava solo col
   primo OTA di versione, e nel frattempo mancavano item e regole ARFEA.
@@ -610,7 +673,11 @@ del template, cioè quelle della release certificata.
      del controller se stavano altrove. Prima dell'avvio chiude il loro compose
      (`down`, che toglie anche la rete: spesso ha la stessa subnet di `domotica` e il
      controller non riuscirebbe a crearla); se il compose ha anche altri container,
-     toglie solo i compagni e lo segnala.
+     toglie solo i compagni e lo segnala. Un Node-RED compagno resta alla sua versione,
+     come quello nativo. Un compagno con un altro nome (su un impianto `nodered`, un
+     container sciolto) si rinomina prima di lanciare lo script
+     (`docker rename nodered node-red`), altrimenti resta fuori dal controller e si
+     tiene la porta 1880.
 4. **Porte seriali USB** (zwave/modbus): rilevate da `EXTRA_JAVA_OPTS` (solo le righe
    attive: il file del pacchetto ha un esempio commentato con `/dev/ttyS0`, che sulla
    C4 è la console seriale), dalle `things`/jsondb e dai nodi presenti. Una seriale già
@@ -680,6 +747,42 @@ avvia i container, installa il watchdog col log del container ed esclude il data
 backup. Undici resta fermo un minuto o due; niente si cancella, e alla fine lo script
 stampa come tornare indietro. Comandi per copiare kit e immagine nel catalogo dello
 Script Hub.
+
+Casi visti sugli impianti (Redmine #316):
+- il vecchio container della MariaDB si chiama già `mariadb`, come quello del kit: lo
+  script lo ferma e lo rinomina `mariadb-prima-deasy` prima di avviare il compose;
+- MariaDB in un container in rete host, con `db.host` a un indirizzo dell'host (per
+  esempio `172.17.0.1`, il gateway di docker0): si prende il container in rete host che
+  monta `/var/lib/mysql`;
+- il cron che riaccende Undici nativo può chiamarsi `check_undici.sh` o
+  `undici_whatchdog.sh`: si commentano entrambi, altrimenti riaccenderebbe il nativo e
+  si prenderebbe la seriale della XBee;
+- dati della MariaDB già in `/opt/docker_store/deasy/mariadb` (uno stack di Portainer
+  «deasy» con la sola MariaDB): restano dove sono, e lo script non si ferma su «esiste
+  già» se la cartella contiene solo quelli;
+- MariaDB con un IP fisso fra i primi della rete del controller (`db.host=172.11.0.2`):
+  il controller crea `domotica` senza riservare indirizzi, e al riavvio quell'IP può
+  prenderlo un altro container (su un impianto mosquitto). La MariaDB non riparte
+  («Address already in use», e `restart: always` non riprova un avvio fallito), Undici
+  nativo muore sulla connessione al database. Lo script riconosce il container anche
+  fermo, per l'IP fisso, e solo se monta `/var/lib/mysql`;
+- container della MariaDB tolto (per esempio da `docker system prune -a`, che toglie i
+  container fermi e le loro immagini) ma dati rimasti nella cartella montata: si passa
+  la cartella con `--db-data` (e la sua `/home/store` con `--db-store`);
+- un servizio del compose senza rete (`autoheal` nel kit) farebbe creare a compose la
+  rete `deasy_default`: sul kernel 4.9 con `iptables-nft` la creazione fallisce
+  (`RULE_INSERT failed`) e deasy non parte col nativo già fermo (su un impianto 2
+  minuti di fermo). Lo script mette ogni servizio senza rete su quella del controller.
+
+Con poco spazio (l'immagine deasy pesa 1,9 GB) si può migrare prima il controller e
+Undici dopo la pulizia: la MariaDB in un container sciolto resta accesa, e Node-RED, che
+raggiungeva Undici su `172.17.0.1`, lo raggiunge ancora dalla rete del controller. Non
+se la MariaDB ha un IP fisso fra i primi della rete (vedi sopra): al primo riavvio
+Undici si ferma, quindi lì Undici va in docker subito. Per far posto non serve
+`docker system prune -a`: toglie anche i container fermi, le loro immagini e i tag
+esatti di `arfea.yml` quando un `:latest` punta alla stessa immagine.
+Quando Undici passa in docker, nel flow «Deasy Connection Parameters» l'indirizzo va
+cambiato a mano in `deasy`.
 
 Undici usa la porta 80 e la seriale della XBee: nessun conflitto col controller.
 Sull'host possono restare il watchdog `undici-watchdog.service`, che serve, e avanzi del

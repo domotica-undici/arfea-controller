@@ -21,6 +21,10 @@
 #   --serial  seriale della XBee sull'host (default: spider.port di
 #             /opt/undici/undici.properties). Un ttyUSB/ttyACM si mappa per
 #             /dev/serial/by-id, col nome di undici.properties dentro il container.
+#   --db-data cartella dati (/var/lib/mysql) di una MariaDB in container che non
+#             c'e' piu' (tolta per esempio da "docker system prune -a"): si usa
+#             quella al posto del container di db.host. --db-store: la sua
+#             /home/store, se c'era.
 #
 # L'immagine deasy-deasy va caricata prima (docker load da un impianto di
 # riferimento); senza, "docker compose up" la costruisce dal Dockerfile del kit
@@ -35,13 +39,16 @@ set -euo pipefail
 
 KIT=/root/deasy-kit
 SERIAL=""
+DB_DATA="" DB_STORE=""
 APPLY=false
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --kit) KIT="$2"; shift 2 ;;
     --serial) SERIAL="$2"; shift 2 ;;
+    --db-data) DB_DATA="$2"; shift 2 ;;
+    --db-store) DB_STORE="$2"; shift 2 ;;
     --apply) APPLY=true; shift ;;
-    -h|--help) sed -n '2,33p' "$0"; exit 0 ;;
+    -h|--help) sed -n '2,37p' "$0"; exit 0 ;;
     *) echo "argomento sconosciuto: $1" >&2; exit 2 ;;
   esac
 done
@@ -68,7 +75,8 @@ docker compose version >/dev/null 2>&1 || die "manca docker compose"
 python3 -c "import yaml" 2>/dev/null || die "manca python3-yaml"
 [[ -f "$PROPS" ]] || die "$PROPS non trovato: Undici nativo non c'e'"
 [[ -d /etc/undici && -d /var/www ]] || die "/etc/undici o /var/www mancanti"
-[[ ! -e "$D" ]] || die "$D esiste gia': Undici e' gia' in docker?"
+# $D che esiste gia': il controllo e' piu' sotto, dopo il database (ammessi solo
+# i dati della MariaDB di Undici lasciati li' da uno stack di Portainer, #316)
 for f in Dockerfile docker-compose.yml lighttpd.conf librxtxSerial-2.2pre1.so serial_write_9600.py watchdog.py undici-watchdog.service; do
   [[ -f "$KIT/$f" ]] || die "kit incompleto: manca $KIT/$f"
 done
@@ -88,21 +96,67 @@ DB_HOST=$(prop db.host); DB_NAME=$(prop db.name); DB_USER=$(prop db.user); DB_PW
 [[ -n "$DB_NAME" && -n "$DB_PW" ]] || die "db.name o db.password mancanti in $PROPS"
 [[ "${DB_USER:-root}" == root ]] || die "Undici usa l'utente $DB_USER e non root: adatta a mano"
 
-# Database: MariaDB nativa, oppure il container con quell'IP o quel nome
-DB_MODE="" OLD_CT="" OLD_DATA=""
-if [[ "$DB_HOST" == localhost || "$DB_HOST" == 127.0.0.1 ]]; then
-  DB_MODE=native
-  systemctl is-active --quiet mariadb || systemctl is-active --quiet mysql || die "MariaDB nativa non attiva"
-else
-  for c in $(docker ps -a --format '{{.Names}}'); do
-    ips=$(docker inspect -f '{{range .NetworkSettings.Networks}}{{.IPAddress}} {{end}}' "$c" 2>/dev/null || true)
-    if [[ "$c" == "$DB_HOST" || " $ips " == *" $DB_HOST "* ]]; then OLD_CT="$c"; break; fi
+# Database: MariaDB nativa, oppure il container con quell'IP o quel nome, oppure
+# un container in rete host raggiunto a un indirizzo dell'host (su un impianto
+# db.host=172.17.0.1, il gateway di docker0, con MariaDB in rete host)
+DB_MODE="" OLD_CT="" OLD_DATA="" OLD_STORE=""
+host_ip() { [[ "$1" == localhost || "$1" == 127.0.0.1 ]] || ip -o addr show 2>/dev/null | grep -q " inet $1/"; }
+mysql_host_ct() {
+  local c
+  for c in $(docker ps --format '{{.Names}}'); do
+    [[ "$(docker inspect -f '{{.HostConfig.NetworkMode}}' "$c")" == host ]] || continue
+    docker inspect -f '{{range .Mounts}}{{println .Destination}}{{end}}' "$c" | grep -qx /var/lib/mysql && { echo "$c"; return 0; }
   done
-  [[ -n "$OLD_CT" ]] || die "db.host=$DB_HOST: nessun container con quel nome o IP"
+  return 0
+}
+if [[ -n "$DB_DATA" ]]; then
+  # il container non c'e' piu': restano i suoi dati, che nessun container deve usare
+  [[ -d "$DB_DATA/mysql" ]] || die "--db-data $DB_DATA: non e' una cartella dati di MariaDB (manca mysql/)"
+  [[ -z "$DB_STORE" || -d "$DB_STORE" ]] || die "--db-store $DB_STORE non c'e'"
+  for c in $(docker ps -aq); do
+    docker inspect -f '{{range .Mounts}}{{println .Source}}{{end}}' "$c" | grep -qx "$(readlink -f "$DB_DATA")" \
+      && die "--db-data: $DB_DATA e' montata dal container $(docker inspect -f '{{.Name}}' "$c")"
+  done
+  OLD_DATA=$(readlink -f "$DB_DATA") OLD_STORE=${DB_STORE:+$(readlink -f "$DB_STORE")}
+  DB_MODE=container
+elif [[ "$DB_HOST" == localhost || "$DB_HOST" == 127.0.0.1 ]] \
+   && { systemctl is-active --quiet mariadb || systemctl is-active --quiet mysql; }; then
+  DB_MODE=native
+else
+  # Anche per l'IP fisso di un container fermo, e solo se monta /var/lib/mysql: su un
+  # impianto la MariaDB (172.11.0.2 fisso) non era ripartita dopo un riavvio perche'
+  # quell'IP l'aveva preso mosquitto, che qui sarebbe passato per il database
+  for c in $(docker ps -a --format '{{.Names}}'); do
+    ips=$(docker inspect -f '{{range .NetworkSettings.Networks}}{{.IPAddress}} {{with .IPAMConfig}}{{.IPv4Address}}{{end}} {{end}}' "$c" 2>/dev/null || true)
+    [[ "$c" == "$DB_HOST" || " $ips " == *" $DB_HOST "* ]] || continue
+    docker inspect -f '{{range .Mounts}}{{println .Destination}}{{end}}' "$c" | grep -qx /var/lib/mysql || continue
+    OLD_CT="$c"; break
+  done
+  if [[ -z "$OLD_CT" ]] && host_ip "$DB_HOST"; then OLD_CT=$(mysql_host_ct); fi
+  [[ -n "$OLD_CT" ]] || die "db.host=$DB_HOST: nessun container con quel nome o IP, ne' MariaDB nativa attiva (container tolto? --db-data)"
   OLD_DATA=$(docker inspect -f '{{range .Mounts}}{{if eq .Destination "/var/lib/mysql"}}{{.Source}}{{end}}{{end}}' "$OLD_CT")
   [[ -n "$OLD_DATA" && -d "$OLD_DATA" ]] || die "cartella dati di $OLD_CT non trovata (mount di /var/lib/mysql)"
+  OLD_STORE=$(docker inspect -f '{{range .Mounts}}{{if eq .Destination "/home/store"}}{{.Source}}{{end}}{{end}}' "$OLD_CT")
   DB_MODE=container
 fi
+
+# $D non deve esistere, tranne quando contiene solo i dati del container MariaDB
+# di Undici (su un impianto uno stack di Portainer li teneva gia' in
+# $D/mariadb/database): restano dove sono
+DATA_IN_PLACE=false
+if [[ -e "$D" ]]; then
+  [[ "$(ls -A "$D")" == mariadb && "$(readlink -f "$OLD_DATA" 2>/dev/null)" == "$D/mariadb/database" ]] \
+    || die "$D esiste gia': Undici e' gia' in docker?"
+  DATA_IN_PLACE=true
+fi
+# Il compose del kit chiama i suoi container deasy, mariadb e autoheal: un
+# container vecchio con lo stesso nome (la MariaDB di Undici si chiamava spesso
+# "mariadb") si rinomina, e resta fermo per tornare indietro
+OLD_CT_KEEP="$OLD_CT"
+[[ "$OLD_CT" =~ ^(deasy|mariadb|autoheal)$ ]] && OLD_CT_KEEP="$OLD_CT-prima-deasy"
+for c in deasy autoheal; do
+  docker inspect "$c" >/dev/null 2>&1 && die "c'e' gia' un container $c: Undici e' gia' in docker?"
+done
 
 NET=domotica
 [[ -f "$YML" ]] && NET=$(awk '/^network:/ {f=1; next} f && /^[^[:space:]]/ {f=0}
@@ -115,10 +169,11 @@ echo "   Undici nativo → docker ($D)"
 echo "════════════════════════════════════════════════════════════"
 echo "  kit:        $KIT"
 echo "  XBee:       $HOST_DEV → $IN_CT (nel container)"
-echo "  database:   $DB_NAME, $( [[ $DB_MODE == native ]] && echo "MariaDB nativa: dump e import" || echo "container $OLD_CT, dati in $OLD_DATA: spostati" )"
+echo "  database:   $DB_NAME, $( [[ $DB_MODE == native ]] && echo "MariaDB nativa: dump e import" || echo "${OLD_CT:+container $OLD_CT, }dati in $OLD_DATA: $($DATA_IN_PLACE && echo "restano dove sono" || echo spostati)" )"
+[[ "$OLD_CT_KEEP" != "$OLD_CT" ]] && echo "              $OLD_CT fermato e rinominato $OLD_CT_KEEP (il kit usa lo stesso nome)"
 echo "  rete:       $NET $(docker network inspect "$NET" >/dev/null 2>&1 && echo "(esiste)" || echo "(da creare, 172.11.0.0/24)")"
 echo "  immagine:   deasy-deasy $($IMG_OK && echo "presente" || echo "ASSENTE: verra' costruita dal Dockerfile (internet, tempo)")"
-echo "  nativo:     undici e lighttpd fermati e disabilitati$( [[ $DB_MODE == native ]] && echo ", MariaDB nativa anche" ); cron check_undici commentato"
+echo "  nativo:     undici e lighttpd fermati e disabilitati$( [[ $DB_MODE == native ]] && echo ", MariaDB nativa anche" ); cron che riaccendono Undici nativo commentati"
 echo "  watchdog:   undici-watchdog.service col log del container"
 [[ -f "$YML" ]] && echo "  backup:     $D/mariadb/database escluso dal backup del controller"
 echo ""
@@ -174,6 +229,17 @@ for e in ext:
     if e != net:
         s = re.sub(rf"(^|[^A-Za-z0-9_-]){re.escape(e)}([^A-Za-z0-9_-]|$)", rf"\g<1>{net}\g<2>", s, flags=re.M)
 d = yaml.safe_load(s)
+# Un servizio senza rete (autoheal nel kit) farebbe creare a compose la rete
+# deasy_default: sul kernel 4.9 con iptables-nft la creazione fallisce
+# (RULE_INSERT failed) e deasy non parte, col nativo gia' fermo (#316). Va
+# anche lui sulla rete del controller, che esiste gia'.
+for name, svc in (d.get("services") or {}).items():
+    if not svc.get("networks") and not svc.get("network_mode"):
+        s, k = re.subn(rf"(?m)^(  {re.escape(name)}:\n(?:    .*\n|\s*\n)*?)(    volumes:\n)",
+                       rf"\g<1>    networks:\n      - {net}\n\g<2>", s)
+        assert k == 1, f"servizio {name} senza rete e senza volumes: mettilo a mano sulla rete {net}"
+d = yaml.safe_load(s)
+assert all(v.get("networks") or v.get("network_mode") for v in d["services"].values()), "un servizio e' senza rete"
 assert d["services"]["deasy"]["devices"][0] == f"{host_dev}:{in_ct}"
 assert d["services"]["mariadb"]["environment"]["MARIADB_ROOT_PASSWORD"] == pw
 assert (d.get("networks") or {}).get(net, {}).get("external") is True, f"il compose non usa la rete {net}"
@@ -186,10 +252,13 @@ docker network inspect "$NET" >/dev/null 2>&1 \
 
 # ── 2. Stop del nativo ───────────────────────────────────────────────────────
 log "[2/6] stop di Undici nativo"
-if crontab -l 2>/dev/null | grep -qE '^[^#].*check_undici'; then
+# check_undici.sh o undici_whatchdog.sh (a seconda dell'impianto): riaccendono
+# undici.service, che col container si prenderebbe la seriale della XBee
+CRON_RE='check_undici|undici_wh?atchdog'
+if crontab -l 2>/dev/null | grep -qE "^[^#].*($CRON_RE)"; then
   crontab -l > "/root/crontab-prima-deasy-$ts"
-  crontab -l | sed -E 's|^([^#].*check_undici.*)$|#\1  # Undici in docker (deasy)|' | crontab -
-  log "  cron check_undici commentato (copia in /root/crontab-prima-deasy-$ts)"
+  crontab -l | sed -E "s@^([^#].*($CRON_RE).*)\$@#\\1  # Undici in docker (deasy)@" | crontab -
+  log "  cron di Undici nativo commentati (copia in /root/crontab-prima-deasy-$ts)"
 fi
 systemctl stop undici lighttpd 2>/dev/null || true
 systemctl disable undici lighttpd >/dev/null 2>&1 || true
@@ -206,14 +275,21 @@ if [[ $DB_MODE == native ]]; then
   for u in mariadb mysql; do systemctl stop "$u" 2>/dev/null || true; systemctl disable "$u" >/dev/null 2>&1 || true; done
   log "  MariaDB nativa fermata e disabilitata (i dati restano in /var/lib/mysql)"
 else
-  docker update --restart=no "$OLD_CT" >/dev/null
-  docker stop "$OLD_CT" >/dev/null
+  if [[ -n "$OLD_CT" ]]; then
+    docker update --restart=no "$OLD_CT" >/dev/null
+    docker stop "$OLD_CT" >/dev/null
+  fi
+  if [[ "$OLD_CT_KEEP" != "$OLD_CT" ]]; then
+    docker rename "$OLD_CT" "$OLD_CT_KEEP"
+    log "  $OLD_CT rinominato $OLD_CT_KEEP (il compose del kit usa lo stesso nome)"
+  fi
   tar -czf "/root/mariadb-prima-deasy-$ts.tar.gz" -C "$(dirname "$OLD_DATA")" "$(basename "$OLD_DATA")"
   # la cartella intera (stesso disco: proprietari e file nascosti restano)
-  mv "$OLD_DATA" "$D/mariadb/database"
-  OLD_STORE=$(docker inspect -f '{{range .Mounts}}{{if eq .Destination "/home/store"}}{{.Source}}{{end}}{{end}}' "$OLD_CT")
-  if [[ -n "$OLD_STORE" && -d "$OLD_STORE" ]]; then cp -a "$OLD_STORE"/. "$D/mariadb/store"/; fi
-  log "  $OLD_CT fermato, dati spostati (copia in /root/mariadb-prima-deasy-$ts.tar.gz)"
+  $DATA_IN_PLACE || mv "$OLD_DATA" "$D/mariadb/database"
+  if [[ -n "$OLD_STORE" && -d "$OLD_STORE" && "$(readlink -f "$OLD_STORE")" != "$D/mariadb/store" ]]; then
+    cp -a "$OLD_STORE"/. "$D/mariadb/store"/
+  fi
+  log "  ${OLD_CT:+$OLD_CT fermato, }dati $($DATA_IN_PLACE && echo "lasciati in $OLD_DATA" || echo spostati) (copia in /root/mariadb-prima-deasy-$ts.tar.gz)"
 fi
 
 # ── 4. Container ─────────────────────────────────────────────────────────────
@@ -234,7 +310,7 @@ fi
 n=$(docker exec -e MYSQL_PWD="$DB_PW" mariadb mysql -uroot -N -e "select count(*) from information_schema.tables where table_schema='$DB_NAME'")
 log "  database $DB_NAME: $n tabelle"
 docker compose up -d 2>&1 | tail -3
-if [[ -n "$OLD_CT" ]]; then docker rm "$OLD_CT" >/dev/null 2>&1 && log "  container $OLD_CT tolto" || true; fi
+if [[ -n "$OLD_CT" ]]; then docker rm "$OLD_CT_KEEP" >/dev/null 2>&1 && log "  container $OLD_CT_KEEP tolto" || true; fi
 
 # ── 5. Watchdog e backup ─────────────────────────────────────────────────────
 log "[5/6] watchdog e backup"
@@ -281,7 +357,8 @@ EOF
 if [[ $DB_MODE == native ]]; then
   echo "  systemctl enable --now mariadb undici lighttpd"
 else
-  echo "  mv $D/mariadb/database $OLD_DATA  # e ricrea $OLD_CT dal suo compose"
+  $DATA_IN_PLACE || echo "  mv $D/mariadb/database $OLD_DATA"
+  echo "  # e ricrea ${OLD_CT:-la MariaDB} come prima (dal suo compose, o con docker run)"
   echo "  systemctl enable --now undici lighttpd"
 fi
 [[ -f "/root/crontab-prima-deasy-$ts" ]] && echo "  crontab /root/crontab-prima-deasy-$ts"

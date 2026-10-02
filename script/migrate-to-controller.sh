@@ -378,10 +378,14 @@ ensure_compose_buildx() {
   fi
   log "Installazione di docker compose e buildx..."
   apt-get update -qq || true
+  # Non interattivo: aggiornando docker.io il postinst chiede «Automatically
+  # restart Docker daemon?» sul terminale che apt apre per dpkg, non sullo stdin
+  # dello script. Lanciato in un'unita' systemd nessuno risponde e resta fermo li'
+  # per sempre, col lock di apt (Redmine #315). Il demone lo riavvia lo script qui sotto.
   if dpkg -s docker.io &>/dev/null; then
-    apt-get install -y -qq docker.io docker-compose-v2 docker-buildx || true
+    DEBIAN_FRONTEND=noninteractive apt-get install -y -qq docker.io docker-compose-v2 docker-buildx </dev/null || true
   else
-    apt-get install -y -qq docker-compose-plugin docker-buildx-plugin || true
+    DEBIAN_FRONTEND=noninteractive apt-get install -y -qq docker-compose-plugin docker-buildx-plugin </dev/null || true
   fi
   # Il docker.io di Ubuntu, senza terminale, NON riavvia il demone: resta quello
   # vecchio (API 1.41) e il client nuovo non ci parla piu' ("client version is
@@ -613,6 +617,13 @@ detect_foreign_containers() {
       if [[ -n "$m" ]]; then COMPANION_MOUNT["$name|$dev"]="$m"; fi
     done < <(docker inspect -f '{{range .Mounts}}{{.Source}}|{{.Destination}}{{println}}{{end}}' "$name" 2>/dev/null || true)
     if [[ "$name" == habapp ]]; then COMPANION_HABAPP_CFG="${COMPANION_MOUNT[habapp|/habapp/config]:-}"; fi
+    # Node-RED compagno: resta alla sua versione come quello nativo (i nodi in
+    # /data sono installati per il suo Node); configure_yml_native la scrive se
+    # la major e' diversa dal template
+    if [[ "$name" == node-red && -z "$NODERED_NATIVE_VER" ]]; then
+      NODERED_NATIVE_VER=$(docker exec node-red sh -c 'grep -m1 "\"version\"" /usr/src/node-red/node_modules/node-red/package.json' 2>/dev/null \
+                           | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' || true)
+    fi
   done < <(docker ps --format '{{.Names}} {{.Image}}')
 
   # I container compagni sono quelli che girano davvero: si accendono sul
@@ -2221,9 +2232,15 @@ run_native_migration() {
 main() {
   detect_native_layout
 
-  local DOCKER_OH=false
+  # OpenHAB in un container, anche col nome di uno stack di Portainer
+  # (arfea-openhab-1): su un impianto passato dal nativo a Portainer il vecchio
+  # nativo, spento, e' ancora a bordo, e col solo nome "openhab" lo script
+  # sceglieva il flusso nativo e migrava quello
+  local DOCKER_OH=false n
   if command -v docker &>/dev/null && docker info &>/dev/null; then
-    docker ps -a --format '{{.Names}}' 2>/dev/null | grep -qx openhab && DOCKER_OH=true
+    while IFS= read -r n; do
+      [[ -n "$n" && "$(ctrl_service_of "$n")" == openhab ]] && DOCKER_OH=true
+    done < <(docker ps -a --format '{{.Names}}' 2>/dev/null)
   fi
 
   local MODE=""
