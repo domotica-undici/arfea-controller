@@ -1392,6 +1392,52 @@ ripristino lo riporta a bordo il controller al primo avvio con la linea attiva:
 fino a quel momento la centralina e' come una senza pacchetto, gli addon si
 installano solo online.
 
+**Backup dal PC, anche senza controller** (Redmine #338):
+[script/backup-centralina.sh](script/backup-centralina.sh) `--centralina <alias>` si
+collega via ssh e porta l'archivio sul PC, in `~/Scaricati/arfea-backup` (o `--dest`).
+Dallo Script Hub (*Scaricare il backup di una centralina*) a fine esecuzione il browser
+lo scarica da solo, e il link resta nella pagina per 7 giorni. Riconosce da solo la
+centralina:
+
+- **col controller** l'archivio è quello del controller, stesso contenuto e stesso
+  formato (`/opt/docker_store` senza kar, tmp e cache di OpenHAB, backup locali ed
+  `exclude_paths`). Per ripristinarlo dalla Web UI lo si copia in
+  `/opt/docker_store/arfea-controller/backups/` togliendo dal nome il prefisso con
+  l'alias;
+- **OpenHAB nativo** (openHABian sulle Raspberry, 2.x e successivi) e **vecchio
+  docker-compose**: un `tar.gz` coi percorsi assoluti (senza la `/` iniziale) di `/etc`,
+  userdata di OpenHAB senza tmp, cache, kar e i backup vecchi di `openhab-cli`
+  (`/var/lib/openhab2/backups`, 40-160 MB), i jar manuali degli addon, `/opt` (con
+  `/opt/docker_store`), home e `/root` senza cache, `/usr/local`, `/var/www`, i
+  retained di mosquitto, i crontab, `config.txt`/`cmdline.txt` o `boot.ini`. I database
+  MariaDB/MySQL in esecuzione, nativi o in container, ci vanno come dump
+  (`arfea-backup/db-*.sql.gz`), e i loro file restano fuori. In `arfea-backup/` ci sono
+  anche `LEGGIMI.txt` con il ripristino, l'elenco dei pacchetti
+  (`pacchetti-manuali.txt`), servizi, rete e dischi. Restano fuori, perché si
+  reinstallano, il Java di openHABian (`/opt/jdk`), `/opt/openhabian`, il venv di
+  HABApp e `/opt/vc`, e i log. Su una Raspberry sono 10-20 MB e un minuto.
+
+Per default è **a caldo**: non si ferma niente, e l'archivio passa direttamente
+nell'ssh senza occupare spazio sulla SD (come `openhab-cli backup`, che non ferma
+OpenHAB). Con `--ferma` fa come il controller: OpenHAB nativo e i container restano
+fermi mentre l'archivio si crea sulla centralina, poi ripartono e l'archivio si
+scarica; sulle centraline col controller lo chiede al controller stesso, via API (e
+il controller prova anche il caricamento su WebDAV, se impostato). Se sulla centralina
+manca lo spazio per l'archivio, `--ferma` non ferma niente. Lo script ignora la
+connessione che cade: i servizi fermati ripartono comunque.
+
+Ripristino di OpenHAB su una centralina nativa:
+
+```bash
+sudo systemctl stop openhab2
+sudo tar -xzpf <archivio> -C / etc/openhab2 var/lib/openhab2 usr/share/openhab2/addons
+sudo systemctl start openhab2
+```
+
+Su un sistema nuovo `/etc` non si ripristina intero: si prendono i file che servono
+(rete, VPN, samba, crontab) e si reinstallano i pacchetti di `pacchetti-manuali.txt`.
+L'archivio contiene segreti (chiavi della VPN, `/etc/shadow`, chiavi ssh).
+
 ---
 
 ## 9. Sicurezza
