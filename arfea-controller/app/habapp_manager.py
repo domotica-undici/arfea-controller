@@ -132,6 +132,22 @@ _URL_PROBE = (
     "    sys.exit(1)\n"
 )
 _URL_LINE_RE = re.compile(r"(?m)^(\s+url:\s*['\"]?)(https?://[^\s'\"]+)")
+# Sezione mqtt di config.yml e la sua riga host (Redmine #339).
+_MQTT_SECTION_RE = re.compile(r"(?ms)^mqtt:[ \t]*\n(.*?)(?=^\S|\Z)")
+_MQTT_HOST_RE = re.compile(r"""(?m)^(\s+host:[ \t]*)(['"]?)([^'"\s#]*)\2""")
+_LOOPBACK_HOSTS = ("localhost", "127.0.0.1", "::1")
+
+
+def _mqtt_host(text: str) -> tuple[str, int, int]:
+    """(host, inizio, fine) del broker MQTT in un config.yml; ("", -1, -1) se
+    la sezione o la riga non ci sono."""
+    sec = _MQTT_SECTION_RE.search(text)
+    if not sec:
+        return ("", -1, -1)
+    m = _MQTT_HOST_RE.search(sec.group(1))
+    if not m:
+        return ("", -1, -1)
+    return (m.group(3), sec.start(1) + m.start(3), sec.start(1) + m.end(3))
 _ROOT_FILES = ["config.yml", "logging.yml"]
 
 # Marker con la versione del codice effettivamente deployata in
@@ -468,6 +484,19 @@ class HABAppManager:
                 .replace(_URL_PLACEHOLDER, self._openhab_url())
                 .replace(_TOKEN_PLACEHOLDER, token))
 
+        # Il broker MQTT della config precedente non va perso: il template lo ha
+        # vuoto (MQTT spento) e i fancoil broadlink_ir di un impianto migrato,
+        # che pubblicano su MQTT, restavano muti (Redmine #339). localhost era il
+        # broker nativo: nel container e' mosquitto.
+        if dst.exists():
+            old_host, _, _ = _mqtt_host(dst.read_text())
+            if old_host:
+                new_host = "mosquitto" if old_host in _LOOPBACK_HOSTS else old_host
+                _, a, b = _mqtt_host(text)
+                if a >= 0:
+                    text = text[:a] + new_host + text[b:]
+                    logger.info("HABApp: broker MQTT della config precedente tenuto (%s)", new_host)
+
         if dst.exists():
             backup = dst.with_name(f"config.yml.bak-{int(time.time())}")
             shutil.copy2(dst, backup)
@@ -528,6 +557,27 @@ class HABAppManager:
         os.chown(backup, st.st_uid, st.st_gid)
         cfg_file.write_text(text[:m.start(2)] + wanted + text[m.end(2):])
         return f"{current} -> {wanted}"
+
+    def fix_mqtt_host(self) -> str:
+        """Broker MQTT su localhost: era quello nativo, nel container localhost e'
+        HABApp stesso e il broker e' mosquitto (Redmine #339). Ritorna
+        "vecchio -> nuovo", vuoto se non c'era niente da fare."""
+        svc = self.cfg.config.services.get("habapp")
+        if svc is None or svc.network_mode == "host":
+            return ""
+        cfg_file = self.config_dir() / "config.yml"
+        if not cfg_file.is_file():
+            return ""
+        text = cfg_file.read_text()
+        host, a, b = _mqtt_host(text)
+        if host not in _LOOPBACK_HOSTS:
+            return ""
+        backup = cfg_file.with_name(f"config.yml.bak-{int(time.time())}")
+        shutil.copy2(cfg_file, backup)
+        st = cfg_file.stat()
+        os.chown(backup, st.st_uid, st.st_gid)
+        cfg_file.write_text(text[:a] + "mosquitto" + text[b:])
+        return f"{host} -> mosquitto"
 
     def _probe(self, url: str) -> bool | None:
         """True/False: l'url risponde dal container HABApp. None: non si sa

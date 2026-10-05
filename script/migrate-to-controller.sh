@@ -491,14 +491,23 @@ svc_active()  { systemctl is-active --quiet "$1" 2>/dev/null; }
 NATIVE_OH=false
 CONF=""; USERDATA=""; ADDONS=""; OH_SUFFIX=""; NAT_OPENHAB_UNIT=""; OH_VERSION=""
 detect_native_layout() {
-  if [[ -d /etc/openhab2 ]]; then
-    OH_SUFFIX="2"; CONF="/etc/openhab2"; USERDATA="/var/lib/openhab2"; ADDONS="/usr/share/openhab2/addons"
-  elif [[ -d /etc/openhab ]]; then
+  # Decide il pacchetto installato: dopo un upgrade da 2.5 /etc/openhab2 resta
+  # (pacchetto openhab2 in stato rc) accanto a /etc/openhab, e la cartella
+  # vecchia vinceva: su un impianto col 5.0.3 lo script vedeva un 2.5.12 e
+  # avrebbe copiato la config di cinque anni prima (Redmine #342).
+  local inst=""
+  if dpkg-query -W -f '${Status}' openhab 2>/dev/null | grep -q "ok installed"; then inst="openhab"
+  elif dpkg-query -W -f '${Status}' openhab2 2>/dev/null | grep -q "ok installed"; then inst="openhab2"
+  fi
+  if [[ -d /etc/openhab && ( "$inst" == openhab || ! -d /etc/openhab2 ) ]]; then
     OH_SUFFIX="";  CONF="/etc/openhab";  USERDATA="/var/lib/openhab";  ADDONS="/usr/share/openhab/addons"
+  elif [[ -d /etc/openhab2 ]]; then
+    OH_SUFFIX="2"; CONF="/etc/openhab2"; USERDATA="/var/lib/openhab2"; ADDONS="/usr/share/openhab2/addons"
   fi
   # Unità systemd (conferma ulteriore anche se le cartelle sono state spostate)
-  if svc_present openhab2;   then NAT_OPENHAB_UNIT="openhab2"; [[ -z "$CONF" ]] && OH_SUFFIX="2"
-  elif svc_present openhab;  then NAT_OPENHAB_UNIT="openhab";  [[ -z "$CONF" ]] && OH_SUFFIX=""
+  if [[ "$OH_SUFFIX" == 2 ]] && svc_present openhab2; then NAT_OPENHAB_UNIT="openhab2"
+  elif svc_present openhab;  then NAT_OPENHAB_UNIT="openhab"
+  elif svc_present openhab2; then NAT_OPENHAB_UNIT="openhab2"; [[ -z "$CONF" ]] && OH_SUFFIX="2"
   fi
   if [[ -n "$CONF" || -n "$NAT_OPENHAB_UNIT" ]]; then
     NATIVE_OH=true
@@ -530,7 +539,14 @@ detect_native_services() {
   # HABApp -> abilitato sul controller
   if svc_present habapp; then
     NAT_HABAPP=true; NAT_HABAPP_UNIT="habapp"; STOP_UNITS+=("habapp")
-    if svc_wanted habapp; then ENABLE_CTRL+=("habapp"); else NAT_OFF+=("habapp"); fi
+    local hcfg; hcfg=$(detect_habapp_config)
+    # Unita' abilitata ma senza config ne' regole (un HABApp nativo rotto,
+    # ModuleNotFoundError in loop): sul controller sarebbero 1,2 GB per niente (#339).
+    if svc_wanted habapp && [[ -f "$hcfg/config.yml" || -d "$hcfg/rules" ]]; then
+      ENABLE_CTRL+=("habapp")
+    else
+      NAT_OFF+=("habapp")
+    fi
   elif pgrep -f 'HABApp' >/dev/null 2>&1; then
     NAT_HABAPP=true; KILL_PROCS+=("HABApp"); ENABLE_CTRL+=("habapp")
   fi
@@ -862,7 +878,8 @@ detect_native_serial() {
   #    Solo righe attive: il file del pacchetto ha un esempio commentato con
   #    /dev/ttyS0, che su una ODROID-C4 esiste (console seriale, gruppo tty) e
   #    finiva mappata in openhab al posto del gruppo dialout (Redmine #235).
-  for f in /etc/default/openhab /etc/default/openhab2; do
+  # Solo quello della versione in uso: l'altro e' di un pacchetto tolto (#342).
+  for f in "/etc/default/openhab${OH_SUFFIX}"; do
     [[ -f "$f" ]] || continue
     local v
     v=$(grep -hvE '^[[:space:]]*#' "$f" 2>/dev/null \
@@ -1172,6 +1189,29 @@ fix_habapp_config() {
   if [[ -f "$h/logging.yml" ]] && grep -qE "^[[:space:]]*filename:[[:space:]]*['\"]?/" "$h/logging.yml"; then
     sed -i -E "s#^([[:space:]]*filename:[[:space:]]*['\"]?)/[^'\"[:space:]]*/#\1#" "$h/logging.yml"
     log "  habapp:   logging.yml, file di log relativi (in conf/habapp/log)"
+  fi
+  # config.yml: cartella dei log assoluta dell'host (/var/log/openhab) e broker
+  # MQTT su localhost. Nel container la prima non c'e', e localhost e' il
+  # container stesso: il broker e' mosquitto (Redmine #339). Un config.yml del
+  # formato vecchio (senza token) lo rigenera comunque il controller.
+  if [[ -f "$h/config.yml" ]]; then
+    python3 - "$h/config.yml" <<'PY' || warn "config.yml di HABApp non ritoccato: controlla log e broker MQTT"
+import re, sys
+p = sys.argv[1]; src = open(p).read(); done = []
+new, n = re.subn(r"""(?m)^(\s+logging:\s*)(['"]?)/[^'"\s#]*\2""", r"\1log", src, count=1)
+if n:
+    done.append("cartella dei log -> log")
+sec = re.search(r"(?ms)^mqtt:[ \t]*\n(.*?)(?=^\S|\Z)", new)
+if sec:
+    body = sec.group(1)
+    b2 = re.sub(r"""(?m)^(\s+host:\s*)(['"]?)(localhost|127\.0\.0\.1)\2""", r"\1mosquitto", body, count=1)
+    if b2 != body:
+        new = new[:sec.start(1)] + b2 + new[sec.end(1):]
+        done.append("broker MQTT localhost -> mosquitto")
+if new != src:
+    open(p + ".prima-della-migrazione", "w").write(src); open(p, "w").write(new)
+    print("  habapp:   config.yml, " + ", ".join(done))
+PY
   fi
   # Regole di sistema del vecchio HABApp ARFEA: nel mondo controller le fanno
   # arfea_system.js + arfea.items e aasystem/tools.py, e tenerle vuol dire
@@ -2210,6 +2250,9 @@ run_native_migration() {
   echo ""; log "[5/7] Estrazione tarball + configurazione arfea.yml..."
   extract_tarball
   deploy_arfea_skeleton
+  # Config HABApp nativa (arrivata con conf/): gli stessi ritocchi del container
+  # compagno, prima mancavano nel flusso nativo (Redmine #339).
+  if $NAT_HABAPP; then fix_habapp_config; fi
   dedupe_managed_items
   ensure_jsscripting_addon
   fix_persist_default

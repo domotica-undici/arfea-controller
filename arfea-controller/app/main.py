@@ -470,7 +470,13 @@ logger = logging.getLogger(__name__)
 #          un riavvio, al massimo ogni 6 ore e mai due volte per gli stessi
 #          sintomi). Storico in GET /api/system/repairs. Pacchetto addon: margine
 #          di disco 1 GB e download 10 minuti dopo l'avvio (#323).
-VERSION = "1.8.14"
+#   1.8.15 FIX HABApp di un impianto nativo migrato senza broker MQTT (Redmine
+#          #339): rigenerando un config.yml del formato vecchio (senza token) il
+#          controller prendeva il broker vuoto del template, e i fancoil
+#          broadlink_ir, che pubblicano su MQTT, restavano muti. Ora tiene il broker
+#          della config precedente (localhost diventa mosquitto), e all'avvio
+#          porta a mosquitto un broker rimasto su localhost.
+VERSION = "1.8.15"
 
 # -- Globals initialised at startup -----------------------------------------
 
@@ -652,6 +658,11 @@ def _heal_habapp() -> None:
         url_fixed = habapp_manager.fix_openhab_url(_oh_rest_ready())
         if url_fixed:
             heal.record(config_manager, "habapp", f"url di OpenHAB {url_fixed}")
+        if config_manager.resolve_effective_enabled().get("mosquitto"):
+            mqtt_fixed = habapp_manager.fix_mqtt_host()
+            if mqtt_fixed:
+                heal.record(config_manager, "habapp", f"broker MQTT {mqtt_fixed}")
+                url_fixed = url_fixed or mqtt_fixed
     except Exception as exc:
         logger.warning("HABApp: controllo dell'url di OpenHAB fallito: %s", exc)
 

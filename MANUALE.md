@@ -671,7 +671,13 @@ del template, cioè quelle della release certificata.
      `localhost` diventa il gateway della rete del controller, e con deasy a bordo
      l'indirizzo di Undici diventa `deasy`;
    - la config HABApp viene individuata (da `ExecStart --config` o path comuni) e copiata
-     in `openhab/conf/habapp`.
+     in `openhab/conf/habapp`, con gli stessi ritocchi del container compagno (vecchie
+     regole di sistema, `logging.yml`, `thermo.yml`, carichi NC; dal 05/10 anche nel
+     flusso nativo, Redmine #339). Nel `config.yml` la cartella dei log assoluta
+     diventa `log` e un broker MQTT su `localhost` diventa `mosquitto`. Un `config.yml`
+     del formato vecchio (senza token) lo rigenera il controller, che dal 1.8.15 tiene
+     il broker MQTT di quello precedente. Un'unità `habapp` abilitata ma senza config
+     né regole (un HABApp nativo rotto) non accende HABApp sul controller.
    - **mosquitto**: si porta il suo `mosquitto.db` (i retained: il pacchetto Debian ha
      la persistenza accesa), solo se il controller estratto è almeno il 1.8.11. Con
      uno più vecchio il broker partirebbe senza leggerlo, e al primo avvio con la
@@ -1520,6 +1526,8 @@ bridge trusted; reboot da remoto via OpenHAB Cloud → regola JS → localhost.
   - HABApp con l'url di OpenHAB su `localhost`, `127.0.0.1`, `openhab` o un indirizzo
     che dal container non risponde → gateway della rete del controller, e HABApp
     ricreato (#330);
+  - HABApp col broker MQTT su `localhost` (era quello nativo) → `mosquitto`, dal 1.8.15
+    (#339);
   - regola legacy `rules/aasystem/arfea.py` ferma su `ItemNotEditableError` → corretta,
     copia dell'originale in `arfea-controller/backups`;
   - `listener <porta> <IP>` di mosquitto su un IP fisso → `0.0.0.0` (#324);
