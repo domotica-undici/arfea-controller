@@ -667,7 +667,10 @@ del template, cioè quelle della release certificata.
    - `nodered` (Node-RED nativo) → **servizio node-red del controller**. La cartella
      utente (flow, credenziali, nodi aggiunti; `~<utente>/.node-red` o quella di
      `--userDir`) passa in `/opt/docker_store/node-red` con owner 1000, e l'immagine
-     resta alla versione nativa se la major è diversa dal template. Nei flow
+     resta alla versione nativa se la major è diversa dal template. Il container usa
+     sempre `flows.json`: il flow attivo del nativo (`flowFile` di `settings.js`, o il
+     `flows_<hostname>.json` dei `settings.js` vecchi) viene copiato con quel nome,
+     credenziali comprese (prima Node-RED partiva col flow vuoto, Redmine #349). Nei flow
      `localhost` diventa il gateway della rete del controller, e con deasy a bordo
      l'indirizzo di Undici diventa `deasy`;
    - la config HABApp viene individuata (da `ExecStart --config` o path comuni) e copiata

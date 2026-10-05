@@ -1950,6 +1950,24 @@ copy_native_data() {
       mkdir -p "$DATA_PATH/node-red"
       if $have_rsync; then rsync -a "$nrdir"/ "$DATA_PATH/node-red"/
       else cp -a "$nrdir"/. "$DATA_PATH/node-red"/; fi
+      # Il container usa sempre /data/flows.json (FLOWS dell'immagine), il nativo
+      # con un settings.js vecchio usava flows_<hostname>.json: Node-RED partiva
+      # col flow vuoto, e i localhost dei flow restavano (Redmine #349).
+      local nrflow nrcred
+      nrflow=$(grep -oE "^[[:space:]]*flowFile:[[:space:]]*['\"][^'\"/]+['\"]" "$nrdir/settings.js" 2>/dev/null \
+               | grep -oE "['\"][^'\"]+['\"]" | tr -d "'\"" | head -1 || true)
+      if [[ -z "$nrflow" && -f "$nrdir/flows_$(hostname).json" ]]; then nrflow="flows_$(hostname).json"; fi
+      if [[ -n "$nrflow" && "$nrflow" != flows.json && -f "$DATA_PATH/node-red/$nrflow" ]]; then
+        if [[ -f "$DATA_PATH/node-red/flows.json" ]]; then
+          mv "$DATA_PATH/node-red/flows.json" "$DATA_PATH/node-red/flows.json.non-usato"
+        fi
+        cp -p "$DATA_PATH/node-red/$nrflow" "$DATA_PATH/node-red/flows.json"
+        nrcred="${nrflow%.json}_cred.json"
+        if [[ -f "$DATA_PATH/node-red/$nrcred" ]]; then
+          cp -p "$DATA_PATH/node-red/$nrcred" "$DATA_PATH/node-red/flows_cred.json"
+        fi
+        log "  node-red: $nrflow -> flows.json (il container usa sempre flows.json)"
+      fi
       chown -R 1000:1000 "$DATA_PATH/node-red"
       NODERED_NATIVE_VER=$(grep -m1 '"version"' /usr/lib/node_modules/node-red/package.json /usr/local/lib/node_modules/node-red/package.json 2>/dev/null \
                            | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' | head -1 || true)
