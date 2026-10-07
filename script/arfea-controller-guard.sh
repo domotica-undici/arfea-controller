@@ -14,11 +14,11 @@
 #   arfea-controller-guard check     controllo periodico (timer ogni 5 minuti)
 #   arfea-controller-guard status    stato, senza toccare nulla
 #
-# rebuild: sync; controlla i file installati col MANIFEST.sha256 del tarball;
-#   tiene l'immagine in uso come arfea-controller:prev (solo se il controller
-#   in esecuzione e' sano); build e recreate; sync; controlla che nell'immagine
-#   nuova app/main.py sia quello del MANIFEST (se no, build senza cache); aspetta
-#   /api/health fino a 10 minuti. Sano: toglie immagini e cache orfane. In crash
+# rebuild: sync; controlla i file installati col MANIFEST.sha256 del tarball e
+#   lo spazio (1500 MB, se no pulisce o non parte); tiene l'immagine del
+#   controller in esecuzione come arfea-controller:prev (se e' sano); build e
+#   recreate; sync; controlla che nell'immagine nuova app/main.py sia quello del
+#   MANIFEST (se no, build senza cache); aspetta /api/health fino a 10 minuti. Sano: toglie immagini e cache orfane. In crash
 #   loop: torna a :prev. Ancora in avvio: lascia stare, :prev resta.
 # check: se il container manca, o resta "created", lo ricrea dall'immagine (da
 #   :prev se l'immagine e' vuota; con una build se i file su disco sono quelli
@@ -46,6 +46,7 @@ IMG=${ARFEA_GUARD_IMAGE:-arfea-controller}
 NAME=${ARFEA_GUARD_NAME:-arfea-controller}
 HEALTH=${ARFEA_GUARD_HEALTH:-http://127.0.0.1:8888/api/health}
 RUNSTATE=${ARFEA_GUARD_RUN:-/run/arfea-controller-guard}
+SPACE_MB=${ARFEA_GUARD_SPACE_MB:-1500}
 EVENTS=$DIR/.guard-events
 
 log() { echo "$*"; logger -t arfea-guard -- "$*" 2>/dev/null || true; }
@@ -94,6 +95,36 @@ image_ok() {
   [[ -z "$want" || "$got" == "$want" ]]
 }
 
+# Spazio per una build da zero (Redmine #365): sulla centralina di test, con 762
+# MB liberi, l'esportazione dell'immagine e' morta con «no space left on
+# device». Se manca si tolgono immagini orfane e cache di build; se ancora non
+# basta la build non parte, e il controller che gira resta acceso.
+free_mb() {
+  local m="" v p
+  for p in "$DIR" "$(docker info -f '{{.DockerRootDir}}' 2>/dev/null)" /var/lib/docker /var/lib/containerd; do
+    [[ -n "$p" && -d "$p" ]] || continue
+    v=$(df -Pm "$p" 2>/dev/null | awk 'NR == 2 {print $4}')
+    [[ -n "$v" ]] && { [[ -z "$m" || "$v" -lt "$m" ]] && m=$v; }
+  done
+  echo "${m:-0}"
+}
+
+space_ok() {
+  local f
+  f=$(free_mb); [[ "$f" -ge "$SPACE_MB" ]] && return 0
+  log "spazio per la build: $f MB liberi, ne servono $SPACE_MB: tolgo immagini orfane e cache di build"
+  # a gradini: la cache ancora valida fa una build di pochi secondi, e si toglie
+  # solo se senza non c'e' posto
+  local step
+  for step in "image prune -f" "builder prune -f" "builder prune -af"; do
+    # shellcheck disable=SC2086
+    docker $step 2>&1 | logger -t arfea-update
+    f=$(free_mb); [[ "$f" -ge "$SPACE_MB" ]] && return 0
+  done
+  event "build del controller non avviata: $f MB liberi anche dopo la pulizia, ne servono $SPACE_MB (resta acceso quello di prima)"
+  return 1
+}
+
 compose() { (cd "$DIR" && docker compose "$@" 2>&1 | logger -t arfea-update; exit "${PIPESTATUS[0]}"); }
 
 restarts() { container_field '{{.RestartCount}}'; }
@@ -113,6 +144,8 @@ rollback() {
   # gira gia' lei e qui ci si ferma.
   docker tag "$IMG:prev" "$IMG:latest" || return 1
   compose up -d --no-build --force-recreate
+  # l'immagine rotta ora e' orfana: sulla centralina di test erano 1,1 GB
+  docker image prune -f 2>&1 | logger -t arfea-update
   sync
   event "$why: tornato all'immagine precedente ($IMG:prev)"
 }
@@ -126,11 +159,18 @@ do_rebuild() {
     event "aggiornamento fermato prima della build: i file installati non sono interi (il controller attuale resta acceso)"
     exit 1
   fi
-  local cur lat
-  cur=$(container_field '{{.Image}}'); lat=$(image_id "$IMG:latest")
-  if [[ -n "$lat" && "$cur" == "$lat" ]] && healthy; then
-    docker tag "$IMG:latest" "$IMG:prev" && log "immagine in uso tenuta come $IMG:prev"
+  # :prev e' l'immagine del controller che gira adesso, se e' sano: non per
+  # forza :latest, che puo' essere una build fallita a meta' (Redmine #365). Va
+  # etichettata PRIMA della pulizia dello spazio: rimasta senza nome (dopo una
+  # build fallita :latest punta altrove) image prune la toglie anche se il
+  # container la sta usando, e poi non si torna piu' indietro.
+  local cur
+  cur=$(container_field '{{.Image}}')
+  if [[ -n "$cur" ]] && healthy; then
+    if docker tag "$cur" "$IMG:prev" 2>/dev/null; then log "immagine in uso tenuta come $IMG:prev"
+    else log "immagine in uso ($cur) non etichettabile come $IMG:prev: niente ritorno indietro"; fi
   fi
+  space_ok || exit 1
 
   compose up -d --build --force-recreate
   local rc=$?
@@ -188,7 +228,7 @@ recreate() {
     docker tag "$IMG:prev" "$IMG:latest" && compose up -d --no-build --force-recreate \
       && { sync; event "$why e immagine attuale rotta: ricreato dall'immagine precedente ($IMG:prev)"; return 0; }
   fi
-  if files_ok; then
+  if files_ok && space_ok; then
     compose up -d --build && { sync; event "$why e nessuna immagine buona: ricostruito dai file su disco"; return 0; }
   fi
   event "$why e niente da cui ricrearlo (immagini e file rotti): serve script/ripara-controller.sh"

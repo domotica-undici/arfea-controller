@@ -13,13 +13,17 @@
 #
 # Toglie:
 #   - i backup pre-migrazione /opt/docker_store-backup-*.tar.gz;
+#   - con OpenHAB sano, le copie tar dell'userdata che l'immagine OpenHAB scrive in
+#     userdata/backup a ogni cambio di versione (300-620 MB);
 #   - le immagini docker che nessun container usa e che arfea.yml non nomina
-#     (restano arfea-controller e python:3.11-slim, che serve al rebuild OTA);
+#     (restano arfea-controller e python:3.11-slim, che serve al rebuild OTA) e la
+#     cache di build del controller;
 #   - sorgenti (/usr/src/linux-*) e initrd (/boot) di kernel non piu' installati
 #     che nessun pacchetto possiede, cache di root e degli utenti;
 #   - la vecchia "execpipe" (/opt/mypipe: esegue da root quello che ci si scrive)
 #     se nessun container la monta piu';
-#   - cache apt, journal oltre 200 MB, log ruotati;
+#   - cache apt, journal oltre 200 MB (e un tetto fisso di 200 MB, se nessuno ne
+#     ha messo uno), log ruotati;
 #   - con --nativo: OpenHAB/HABApp/frontail nativi (pacchetti senza purge,
 #     /etc/openhab, /var/lib/openhab, /usr/share/openhab, /var/log/openhab,
 #     /opt/habapp) e i mount /srv/openhab-* di openHABian. Dopo, tornare al
@@ -32,10 +36,15 @@
 #   - con --undici-nativo, solo se il container deasy gira ed e' sano: Undici
 #     nativo (lighttpd, PHP, RXTX, Java Zulu, /opt/undici,
 #     /etc/undici, /var/www, undici.service, i dati della vecchia MariaDB in
-#     container rimasti fuori da deasy).
-# Non tocca: /root (dump del database di deasy, che il backup del controller
-# esclude, e archivi di Undici), deasy in docker, i backup del controller, i
-# volumi docker. Non parte durante un backup o un aggiornamento di versione.
+#     container rimasti fuori da deasy, i volumi docker e /var/lib/mysql delle
+#     MariaDB di prima, la copia del kit in /root/deasy-kit);
+#   - con --pacchetti o --undici-nativo, se niente sull'host usa Java: la Java
+#     scompattata a mano (/opt/jdk di openHABian o di Undici, una JDK sciolta in
+#     /usr/lib/jvm, /root/zulu*), con le sue alternative.
+# Non tocca: in /root i dump del database di deasy (che il backup del controller
+# esclude) e gli archivi di Undici; deasy in docker con la sua Zulu (il kit si
+# copia da li'), i backup del controller, i volumi docker di servizi in uso. Non
+# parte durante un backup, un aggiornamento di versione o del controller.
 ###############################################################################
 set -u
 
@@ -88,12 +97,51 @@ unit_uses() {
   return 1
 }
 size_of() { du -sh "$1" 2>/dev/null | cut -f1; }
+# un processo dell'host (non di un container: hanno un altro mount namespace, e i
+# loro percorsi sono quelli interni) il cui eseguibile sta sotto $1, oppure il cui
+# nome e' esattamente $2 (regex)
+host_ns=$(readlink /proc/1/ns/mnt)
+host_proc() {
+  local p e
+  for p in /proc/[0-9]*; do
+    [[ "$(readlink "$p/ns/mnt" 2>/dev/null)" == "$host_ns" ]] || continue
+    e=$(readlink "$p/exe" 2>/dev/null) || continue
+    [[ -n "$1" && "$e" == "$1"/* ]] && return 0
+    [[ -n "${2:-}" ]] && grep -qxE "$2" "$p/comm" 2>/dev/null && return 0
+  done
+  return 1
+}
+# un container (anche fermo) che monta $1 o qualcosa sotto
+mounted_by_container() {
+  docker ps -aq </dev/null | xargs -r docker inspect -f '{{range .Mounts}}{{println .Source}}{{end}}' 2>/dev/null \
+    | grep -qE "^$1(/|$)"
+}
+# i database in una cartella dati di MariaDB/MySQL (senza quelli di sistema)
+dbs_in() {
+  find "$1" -mindepth 1 -maxdepth 1 -type d ! -name mysql ! -name performance_schema \
+    ! -name sys ! -name '#*' -printf '%f ' 2>/dev/null
+}
+# toglie dalle alternative di Debian quelle che puntano dentro $1
+drop_alternatives() {
+  local n a
+  for n in $(ls /var/lib/dpkg/alternatives 2>/dev/null); do
+    for a in $(update-alternatives --query "$n" 2>/dev/null | awk '/^Alternative: /{print $2}'); do
+      [[ "$a" == "$1" || "$a" == "$1"/* ]] && update-alternatives --remove "$n" "$a" >/dev/null 2>&1
+    done
+  done
+  return 0
+}
 
 before=$(df -h / | tail -1 | awk '{print $5" ("$4" liberi)"}')
 
-# Mai durante un backup (ferma i container) o un aggiornamento di versione
+# Mai durante un backup (ferma i container), un aggiornamento di versione o del
+# controller (il rebuild gira in arfea-selfupdate e usa la cache di build)
 case "$(state_of backup/status)" in idle|completed|failed|"") ;; *) echo "backup in corso: riprova quando ha finito"; exit 0 ;; esac
 case "$(state_of system/releases/status)" in idle|completed|failed|done|"") ;; *) echo "aggiornamento in corso: riprova quando ha finito"; exit 0 ;; esac
+case "$(state_of system/update/status)" in idle|completed|failed|"") ;; *) echo "aggiornamento del controller in corso: riprova quando ha finito"; exit 0 ;; esac
+if systemctl is-active --quiet arfea-selfupdate 2>/dev/null || systemctl is-active --quiet arfea-controller-guard 2>/dev/null; then
+  echo "rebuild del controller in corso: riprova quando ha finito"; exit 0
+fi
 
 # 1. Backup pre-migrazione di /opt/docker_store
 for f in /opt/docker_store-backup-*.tar.gz; do
@@ -101,6 +149,21 @@ for f in /opt/docker_store-backup-*.tar.gz; do
   echo "backup pre-migrazione: $f ($(size_of "$f"))"
   run rm -f "$f"
 done
+
+# 1b. La copia tar dell'userdata che l'immagine OpenHAB scrive a ogni cambio di
+#     versione (300-620 MB sulle C4): con OpenHAB sano non serve piu', e il
+#     controller fa un backup suo prima di ogni aggiornamento (Redmine #366)
+UB=/opt/docker_store/openhab/userdata/backup
+if compgen -G "$UB/*.tar" >/dev/null; then
+  if [[ "$(docker inspect -f '{{.State.Health.Status}}' openhab 2>/dev/null </dev/null)" == healthy ]]; then
+    for f in "$UB"/*.tar; do
+      echo "copia dell'userdata di OpenHAB: $f ($(size_of "$f"))"
+      run rm -f "$f"
+    done
+  else
+    echo "copie dell'userdata di OpenHAB in $UB: restano, il container openhab non e' sano"
+  fi
+fi
 
 # 2. OpenHAB nativo
 if $NATIVO; then
@@ -148,6 +211,11 @@ while read -r id tag size; do
   if $APPLY; then docker rmi "$tag" </dev/null >/dev/null 2>&1 || echo "  non tolta: $tag"; fi
 done < <(docker image ls --no-trunc --format '{{.ID}} {{.Repository}}:{{.Tag}} {{.Size}}' </dev/null)
 run docker image prune -f </dev/null >/dev/null 2>&1 || true
+# la cache di build del rebuild del controller (~475 MB): dalla 1.8.16 la toglie il
+# guardiano dopo ogni rebuild, prima restava
+bc=$(docker builder du </dev/null 2>/dev/null | awk '/^Reclaimable:/{print $2}')
+[[ -n "$bc" && "$bc" != 0B ]] && echo "cache di build di docker: $bc"
+run docker builder prune -af </dev/null >/dev/null 2>&1 || true
 
 # 4. Kernel non piu' installati (niente /usr/lib/modules/<versione>): sorgenti e
 #    initrd che nessun pacchetto possiede. Il kernel Hardkernel 4.9 ne lascia uno
@@ -220,6 +288,35 @@ if $UNDICI; then
     echo "Undici nativo: /opt/docker_store/mariadb ($(size_of /opt/docker_store/mariadb)), il database sta in $D/mariadb"
     run rm -rf /opt/docker_store/mariadb
   fi
+  # le MariaDB di prima di deasy: volumi docker che nessun container usa con dentro
+  # un database (i container della MariaDB di Undici), e /var/lib/mysql di una
+  # MariaDB nativa gia' tolta (pacchetto non installato, nessun mysqld sull'host,
+  # nessun container che la monta). Su un impianto erano 600 MB (Redmine #305)
+  if [[ -d "$D/mariadb/database" ]]; then
+    for v in $(docker volume ls -qf dangling=true </dev/null 2>/dev/null); do
+      p=$(docker volume inspect -f '{{.Mountpoint}}' "$v" </dev/null 2>/dev/null)
+      [[ -n "$p" && ( -e "$p/ibdata1" || -e "$p/aria_log_control" || -d "$p/mysql" ) ]] || continue
+      echo "Undici nativo: volume di una vecchia MariaDB $v ($(size_of "$p"); database: $(dbs_in "$p")), il database sta in $D/mariadb"
+      run docker volume rm "$v" </dev/null >/dev/null
+    done
+    if [[ -d /var/lib/mysql ]]; then
+      if dpkg-query -W -f='${Status}\n' 'mariadb-server*' 'mysql-server*' 2>/dev/null | grep -q "install ok installed"; then
+        echo "Undici nativo: /var/lib/mysql resta, il pacchetto del server e' installato (si toglie al giro dopo la sua rimozione)"
+      elif systemctl is-active --quiet mariadb || systemctl is-active --quiet mysql || host_proc "" 'mysqld|mariadbd'; then
+        echo "Undici nativo: /var/lib/mysql resta, c'e' un server MariaDB/MySQL in esecuzione sull'host"
+      elif mounted_by_container /var/lib/mysql; then
+        echo "Undici nativo: /var/lib/mysql resta, un container la monta"
+      else
+        echo "Undici nativo: /var/lib/mysql di una MariaDB nativa tolta ($(size_of /var/lib/mysql); database: $(dbs_in /var/lib/mysql)), il database sta in $D/mariadb"
+        run rm -rf /var/lib/mysql
+      fi
+    fi
+  fi
+  # la copia del kit che deasy-to-docker ha usato: la sorgente e' $D di un impianto con deasy
+  if [[ -d /root/deasy-kit ]] && docker image inspect deasy-deasy >/dev/null 2>&1 </dev/null; then
+    echo "Undici nativo: copia del kit /root/deasy-kit ($(size_of /root/deasy-kit))"
+    run rm -rf /root/deasy-kit
+  fi
   # le librerie armhf della Zulu restano (17 MB): per apt libc6:armhf e' essenziale
   for x in $(dpkg-query -W -f='${Package}\n' 'lighttpd*' 'php*' librxtx-java 2>/dev/null); do
     installed "$x" && UNDICI_PKGS+=("$x")
@@ -232,13 +329,55 @@ if $UNDICI; then
   fi
 fi
 
+# Chi usa Java sull'host (i container hanno la loro): Undici o OpenHAB nativi, un servizio
+java_user=""
+if $PACCHETTI || $UNDICI; then
+  $undici_native && ! $UNDICI && java_user="undici (nativo)"
+  for s in openhab openhab2; do
+    [[ -z "$java_user" ]] && systemctl is-enabled --quiet "$s" 2>/dev/null && java_user="$s (nativo)"
+  done
+  [[ -z "$java_user" ]] && java_user=$(unit_uses '(/|[[:space:]])java([[:space:]]|;)' || true)
+fi
+
+# 7b. Java scompattata a mano, fuori dai pacchetti: /opt/jdk (openHABian e Undici
+#     nativo), una JDK sciolta direttamente in /usr/lib/jvm, le Zulu in /root. Solo se
+#     niente sull'host usa Java; con lei le alternative (/usr/bin/java) che puntano li'
+if $PACCHETTI || $UNDICI; then
+  J=()
+  for p in /opt/jdk/* /root/zulu*; do
+    [[ -e "$p" ]] && ! dpkg -S "$p" >/dev/null 2>&1 && J+=("$p")
+  done
+  # una JDK scompattata in /usr/lib/jvm stessa (release e bin/java al primo livello):
+  # solo le sue voci, mai le cartelle dei pacchetti (java-*-openjdk-*, .jinfo)
+  if [[ -f /usr/lib/jvm/release && -e /usr/lib/jvm/bin/java ]] && ! dpkg -S /usr/lib/jvm/release >/dev/null 2>&1; then
+    for n in bin conf demo include jmods legal lib man sample jre src.zip release readme.txt \
+             README.html Welcome.html DISCLAIMER ASSEMBLY_EXCEPTION THIRD_PARTY_README LICENSE COPYRIGHT; do
+      p=/usr/lib/jvm/$n
+      [[ -e "$p" ]] && ! dpkg -S "$p" >/dev/null 2>&1 && J+=("$p")
+    done
+  fi
+  if [[ ${#J[@]} -gt 0 ]]; then
+    users="$java_user"
+    if [[ -z "$users" ]]; then
+      for p in "${J[@]}"; do
+        [[ -d "$p" ]] && host_proc "$p" && { users="un processo dell'host ($p)"; break; }
+      done
+    fi
+    if [[ -n "$users" ]]; then
+      echo "Java scompattata a mano: resta, la usa $users"
+    else
+      for p in "${J[@]}"; do
+        echo "Java scompattata a mano: $p ($(size_of "$p"))"
+        if $APPLY; then drop_alternatives "$p"; rm -rf "$p"; fi
+      done
+      run rmdir /opt/jdk 2>/dev/null || true
+    fi
+  fi
+fi
+
 # 8. Pacchetti che a una centralina col controller non servono, ognuno con la sua condizione
 ROOTS=()
 if $PACCHETTI; then
-  java_user=""
-  $undici_native && ! $UNDICI && java_user="undici (nativo)"
-  [[ -z "$java_user" ]] && systemctl is-enabled --quiet openhab 2>/dev/null && java_user="openhab (nativo)"
-  [[ -z "$java_user" ]] && java_user=$(unit_uses '(/|[[:space:]])java([[:space:]]|;)' || true)
   jdk=()
   for x in $(dpkg-query -W -f='${Package}\n' 'openjdk-*' 'default-jre*' 'default-jdk*' ca-certificates-java 2>/dev/null); do
     installed "$x" && jdk+=("$x")
@@ -390,6 +529,17 @@ fi
 # 9. Cache apt, journal, log ruotati
 echo "cache apt: $(size_of /var/cache/apt), journal: $(size_of /var/log/journal)"
 run apt-get clean </dev/null 2>&1 | grep -v apt-fast
+# Tetto fisso al journal: il vacuum da solo non basta, un servizio in ciclo lo riporta a
+# 1 GB in pochi giorni (Redmine #367). Solo se nessuno ne ha gia' messo uno
+JC=/etc/systemd/journald.conf.d/arfea.conf
+if ! grep -qsE '^[[:space:]]*SystemMaxUse=' /etc/systemd/journald.conf /etc/systemd/journald.conf.d/*.conf; then
+  echo "journal: tetto fisso a 200 MB ($JC)"
+  if $APPLY; then
+    mkdir -p "${JC%/*}"
+    printf '[Journal]\n# pulizia-post-migrazione.sh: il journal non supera i 200 MB\nSystemMaxUse=200M\n' > "$JC"
+    systemctl restart systemd-journald
+  fi
+fi
 run journalctl --vacuum-size=200M >/dev/null 2>&1 || true
 run find /var/log -type f \( -name "*.gz" -o -name "*.[0-9]" -o -name "*.old" \) -delete 2>/dev/null || true
 

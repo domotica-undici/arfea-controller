@@ -138,8 +138,19 @@ diagnose() {
   else
     log "MANIFEST:   assente (controller fino alla 1.8.15)"
   fi
-  if health; then log "health:     ok, versione $(version)"
-  else log "health:     non risponde"; PROBLEMS+=("il controller non risponde su 127.0.0.1:8888"); fi
+  local run disk
+  disk=$(sed -n 's/^VERSION = "\(.*\)"/\1/p' "$D/app/main.py" 2>/dev/null | head -1)
+  if health; then
+    run=$(version)
+    log "health:     ok, versione $run (su disco ${disk:-?})"
+    # file nuovi e container vecchio: un aggiornamento che non e' arrivato in
+    # fondo, per esempio a disco pieno (Redmine #365)
+    [[ -n "$run" && -n "$disk" && "$run" != "$disk" ]] \
+      && PROBLEMS+=("gira la $run ma su disco c'e' la $disk: aggiornamento non arrivato in fondo")
+  else
+    log "health:     non risponde (su disco ${disk:-?})"; PROBLEMS+=("il controller non risponde su 127.0.0.1:8888")
+  fi
+  log "spazio:     $(df -Pm "$D" | awk 'NR == 2 {print $4}') MB liberi (per una build da zero ne servono 1500)"
   local ge ga
   ge=$(systemctl is-enabled arfea-controller-guard.timer 2>/dev/null); ga=$(systemctl is-active arfea-controller-guard.timer 2>/dev/null)
   log "guardiano:  timer ${ge:-assente}${ge:+, $ga} (dal controller 1.8.16)"

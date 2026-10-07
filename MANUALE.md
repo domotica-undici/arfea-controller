@@ -323,11 +323,12 @@ file vuoti.
 - **Il guardiano** (`/usr/local/sbin/arfea-controller-guard`, unità
   `arfea-controller-guard.service` e `.timer`). Lo installa il controller a ogni
   avvio, solo se è cambiato, da `script/arfea-controller-guard.sh`.
-  - **Nel rebuild** tiene l'immagine in uso come `arfea-controller:prev`, fa
-    `sync` dopo la build e controlla che nell'immagine nuova `app/main.py` sia
+  - **Nel rebuild** tiene l'immagine del controller che gira (se è sano) come
+    `arfea-controller:prev` (fino alla 1.8.16 solo se coincideva con `:latest`), fa `sync` dopo la build e controlla che nell'immagine nuova `app/main.py` sia
     quello del MANIFEST (se no rifà la build senza cache). Poi aspetta
     `/api/health` fino a 10 minuti. Se il nuovo va in crash loop torna a `:prev`
-    da solo. Immagini e cache orfane si tolgono solo a controller nuovo sano.
+    da solo, e toglie l'immagine rotta. Immagini e cache orfane si tolgono a
+    controller nuovo sano.
   - **Ogni 5 minuti** ricrea il container se manca o resta `created` (da
     `:prev` se l'immagine attuale è vuota, con una build se i file su disco
     tornano col MANIFEST). Da un crash loop torna a `:prev`. Un container
@@ -339,6 +340,16 @@ file vuoti.
     `systemctl stop arfea-controller-guard.timer` (fino al riavvio della
     centralina) oppure `systemctl disable --now arfea-controller-guard.timer`
     (sempre: il controller non lo riaccende finché le unità non cambiano).
+- **Spazio** (dal **1.8.17**). Prima di installare (controller) e prima della
+  build (guardiano) servono **1500 MB liberi** su `/opt/docker_store`, `/var/lib/docker` e
+  `/var/lib/containerd`. Una build da zero, che parte quando cambia l'immagine
+  base `python:3.11-slim`, con l'image store di containerd ne usa più di 700: sulla
+  centralina di test è morta con «no space left on device» (Redmine #365). Se
+  mancano, il controller toglie immagini orfane, poi la cache di build orfana, e
+  solo per ultima quella ancora valida (senza, la build riparte da zero). Se ancora
+  non bastano, l'aggiornamento non parte, i file restano quelli di prima e lo stato
+  (`/api/system/update/status`, widget) dice quanti MB mancano: si libera spazio
+  (backup locali vecchi, immagini di versioni non più usate) e si riprova.
 - **All'avvio** il controller controlla i suoi file col `MANIFEST.sha256`. Se
   qualcuno è rotto, riscarica il tarball e, se è della versione che gira, lo
   reinstalla (riparazione in `/api/system/repairs`).
@@ -546,14 +557,19 @@ persi, e un suo riavvio li ripubblica.
 o dallo Script Hub con `--centralina <alias>` (ripetibile: lo script va da solo via ssh a
 ognuna), oppure sulla centralina da root. Per default è una prova a vuoto che elenca cosa
 toglierebbe; `--apply` toglie il backup
-pre-migrazione `/opt/docker_store-backup-*.tar.gz`, le immagini docker che nessun container
+pre-migrazione `/opt/docker_store-backup-*.tar.gz`, con OpenHAB sano le copie tar
+dell'userdata che l'immagine OpenHAB scrive in `openhab/userdata/backup` a ogni cambio di
+versione (300-620 MB), le immagini docker che nessun container
 usa e che `arfea.yml` non nomina (restano `arfea-controller` e `python:3.11-slim`, che serve
-al rebuild OTA), sorgenti e initrd di kernel non più installati che nessun pacchetto possiede
+al rebuild OTA) e la cache di build del controller (~475 MB fino alla 1.8.15), sorgenti e initrd di kernel non più installati che nessun pacchetto possiede
 (il kernel Hardkernel 4.9 ne lascia 71 MB in `/usr/src` a ogni aggiornamento), le cache di
 root e degli utenti e glmark2 (benchmark della GPU compilato quando le ODROID sono state
 preparate: per lui c'erano i compilatori), la vecchia *execpipe* (`/opt/mypipe` + `/opt/execpipe.sh` @reboot: il
 vecchio OpenHAB in docker ci scriveva comandi che un ciclo eseguiva da root) se nessun
-container la monta più, la cache apt, il journal oltre 200 MB e i log ruotati. Con `--nativo`
+container la monta più, la cache apt, il journal oltre 200 MB e i log ruotati. Al journal
+mette anche un tetto fisso di 200 MB (`/etc/systemd/journald.conf.d/arfea.conf`), se nessuno
+ne ha già messo uno: ridurlo una volta non basta, perché un servizio che riparte in ciclo lo
+riporta a 1 GB in pochi giorni (Redmine #367). Con `--nativo`
 toglie anche l'OpenHAB nativo, mount `/srv/openhab-*` di openHABian compresi: dopo non si
 torna più al nativo. Con `--pacchetti` toglie i pacchetti che al controller non servono,
 ognuno solo se regge la sua condizione: OpenJDK se niente di nativo usa Java (Undici,
@@ -570,10 +586,21 @@ impianto ha liberato 2,2 GB (177 pacchetti). Con `--undici-nativo`, solo se il c
 `deasy` è sano, toglie Undici nativo: lighttpd, PHP, RXTX, la Java Zulu (le sue librerie armhf
 restano: apt rifiuta di toglierle come essenziali), `/opt/undici`, `/etc/undici`, `/var/www` (le copie stanno in
 `/opt/docker_store/deasy`), `undici.service`, i dati della vecchia MariaDB in container
-rimasti fuori da deasy, i pacchetti di una MariaDB nativa (i dati in `/var/lib/mysql`
-restano). Non tocca `/root`, dove restano i dump del database di deasy (escluso dal backup
-del controller), né deasy in docker, i backup del controller e i volumi docker, e non parte
-durante un backup o un aggiornamento di versione.
+rimasti fuori da deasy, i pacchetti di una MariaDB nativa, i dati delle MariaDB di prima
+di deasy (i volumi docker che nessun container usa con dentro un database, e
+`/var/lib/mysql` quando il pacchetto del server non c'è più, nessun mysqld gira sull'host e
+nessun container la monta: al primo giro, se il pacchetto c'è ancora, resta) e la copia del
+kit in `/root/deasy-kit`. Su un impianto le MariaDB di prima erano 600 MB. Con `--pacchetti`
+o `--undici-nativo`, se niente sull'host usa Java (Undici o OpenHAB nativi, un servizio, un
+processo), toglie anche la Java scompattata a mano: `/opt/jdk` (openHABian e Undici
+nativo), una JDK sciolta direttamente in `/usr/lib/jvm` (solo le sue voci, mai le cartelle
+dei pacchetti), le Zulu in `/root`, con le alternative che puntano lì. Lo script prima
+toglieva solo `/usr/lib/jvm/zulu*`, e su due impianti erano rimasti 270-820 MB di Java.
+In `/root` non tocca i dump del database di deasy (escluso dal backup del controller) né
+gli archivi di Undici; non tocca deasy in docker con la sua Zulu
+(`/opt/docker_store/deasy/zulu*.tar.gz`: il kit si copia da lì, e il backup la esclude), i
+backup del controller e i volumi docker di servizi in uso. Non parte durante un backup, un
+aggiornamento di versione o un aggiornamento del controller.
 
 Per far posto non si usa `docker system prune -a`: toglie anche i container fermi con le loro
 immagini (su un impianto la MariaDB di Undici) e i tag esatti di `arfea.yml` quando un
@@ -1448,7 +1475,11 @@ sue copie estratte da Karaf (`openhab/userdata/kar`, `openhab/userdata/tmp/kar`)
 la cache di OpenHAB (`userdata/cache`, `userdata/tmp`: si rigenerano, e una cache
 ripristinata da un altro momento non combacerebbe coi bundle installati). Con le
 copie dentro, un backup era passato da ~460 MB a
-2,15 GB e aveva riempito il disco. Il pacchetto addon è fatto di
+2,15 GB e aveva riempito il disco. Dalla 1.8.17 restano fuori anche le copie tar
+dell'userdata che l'immagine OpenHAB scrive in `openhab/userdata/backup` a ogni cambio di
+versione (il controller fa già un backup suo prima di un aggiornamento) e la Java del kit
+di deasy, `deasy/zulu*.tar.gz` (170 MB, serve solo a ricostruire l'immagine): su un
+impianto erano gran parte di un backup da 654 MB (Redmine #366). Il pacchetto addon è fatto di
 ~600 MB ri-scaricabili in qualsiasi momento, non dati dell'impianto. Tenerli
 dentro raddoppierebbe l'archivio e il tempo di trasmissione, mandando l'upload
 oltre il tetto dei 30 minuti — cioe' facendo fallire i backup su linea lenta. Al

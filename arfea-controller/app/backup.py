@@ -41,6 +41,11 @@ UPLOAD_MAX_SECONDS = 1800
 # ~460 MB a 2,15 GB e aveva riempito una eMMC da 16 GB (Redmine #202). cache e tmp
 # di userdata si rigenerano, e una cache ripristinata da un altro momento non
 # combacerebbe coi bundle installati.
+# userdata/backup e' la copia tar dell'userdata che l'immagine OpenHAB scrive a ogni
+# cambio di versione (300-620 MB): il controller fa gia' un backup suo prima di un
+# aggiornamento. deasy/zulu*.tar.gz e' la Java del kit di deasy (170 MB), che serve
+# solo a ricostruire l'immagine e resta su disco perche' il kit si copia da li'.
+# Con tutti e due dentro, su un impianto il backup pesava 654 MB (Redmine #366).
 # Un pattern che combacia con una cartella la esclude con tutto il contenuto;
 # "…/*" lascia la cartella (vuota) e toglie cio' che c'e' dentro.
 _EXCLUDE_GLOBS = (
@@ -49,6 +54,8 @@ _EXCLUDE_GLOBS = (
     "openhab/userdata/kar/*",
     "openhab/userdata/tmp/*",
     "openhab/userdata/cache/*",
+    "openhab/userdata/backup/*",
+    "deasy/zulu*.tar.gz",
 )
 
 _BACKUP_GLOB = "arfea-backup-*.tar.gz"

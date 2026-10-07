@@ -239,6 +239,51 @@ def install(tarball: Path, dest: Path, deploy_skeleton: Callable[[Path], None]) 
 
 
 # ---------------------------------------------------------------------------
+# Spazio per la build (Redmine #365)
+# ---------------------------------------------------------------------------
+
+# Una build da zero (cambia l'immagine base python:3.11-slim, e la cache non vale
+# piu') con l'image store di containerd tiene insieme cache, contenuto e
+# snapshot: sulla centralina di test 762 MB liberi non sono bastati e
+# l'esportazione e' morta con «no space left on device».
+BUILD_SPACE_MB = 1500
+
+
+def _free_mb(path: Path) -> int | None:
+    try:
+        st = os.statvfs(path)
+    except OSError:
+        return None
+    return st.f_bavail * st.f_frsize // (1024 * 1024)
+
+
+def build_free_mb(paths: list[Path]) -> int | None:
+    """Il minimo dello spazio libero fra i percorsi che esistono."""
+    values = [v for v in (_free_mb(p) for p in paths) if v is not None]
+    return min(values) if values else None
+
+
+def ensure_build_space(paths: list[Path]) -> str:
+    """'' se c'e' spazio per ricostruire l'immagine, altrimenti il motivo. Se
+    manca, prima toglie le immagini orfane e la cache di build (sull'host)."""
+    free = build_free_mb(paths)
+    if free is None or free >= BUILD_SPACE_MB:
+        return ""
+    logger.warning("Spazio per la build: %d MB liberi, ne servono %d: tolgo immagini "
+                   "orfane e cache di build", free, BUILD_SPACE_MB)
+    # A gradini: la cache ancora valida rende la build questione di secondi, e
+    # va tolta solo se senza non c'e' posto.
+    for cmd in (["docker", "image", "prune", "-f"], ["docker", "builder", "prune", "-f"],
+                ["docker", "builder", "prune", "-af"]):
+        _host(cmd, timeout=600)
+        free = build_free_mb(paths)
+        if free is None or free >= BUILD_SPACE_MB:
+            return ""
+    return (f"spazio insufficiente per ricostruire il controller: {free} MB liberi anche dopo "
+            f"aver tolto immagini orfane e cache di build, ne servono {BUILD_SPACE_MB}")
+
+
+# ---------------------------------------------------------------------------
 # Aggiornamento in sospeso
 # ---------------------------------------------------------------------------
 

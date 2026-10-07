@@ -25,7 +25,7 @@ from fastapi.staticfiles import StaticFiles
 from .addons import manager as addons_kar_manager
 from .backup import BackupManager
 from .config import ConfigManager
-from .docker_manager import DockerManager
+from .docker_manager import DockerManager, _host_root
 from .download_links import DownloadLinks
 from .habapp_manager import HABAppManager, last_provision as habapp_last_provision
 from .host_network import HostNetworkManager, ap_lan_conflict
@@ -497,7 +497,26 @@ logger = logging.getLogger(__name__)
 #          Quello che fa finisce in GET /api/system/repairs. All'avvio il
 #          controller controlla i suoi file col MANIFEST e, se qualcuno e' rotto,
 #          li reinstalla dal tarball della stessa versione.
-VERSION = "1.8.16"
+#   1.8.17 FIX self-update a disco pieno (Redmine #365): sulla centralina di test
+#          la build e' ripartita da zero (nuova python:3.11-slim) ed e' morta
+#          all'esportazione con «no space left on device»; restavano i file nuovi
+#          col container vecchio e l'hash gia' scritto, quindi nessun nuovo
+#          tentativo. Ora prima di installare (controller) e prima della build
+#          (guardiano) servono 1500 MB liberi: se mancano si tolgono immagini
+#          orfane e cache di build, se no l'aggiornamento non parte e lo stato
+#          dice perche'; la pulizia va a gradini (la cache valida si toglie per
+#          ultima). :prev e' l'immagine del controller che gira sano, non
+#          :latest, che puo' essere una build fallita a meta', e si etichetta
+#          prima della pulizia: senza nome, image prune la toglieva anche col
+#          container acceso. ripara-controller.sh segnala un controller che gira
+#          con una versione diversa da quella dei suoi file.
+#          FIX backup (Redmine #366): fuori dall'archivio anche le copie tar che
+#          l'immagine OpenHAB scrive in userdata/backup a ogni cambio di versione
+#          e la Zulu del kit di deasy (deasy/zulu*.tar.gz). Su un impianto erano
+#          gran parte dei 654 MB del backup.
+#          Guardiano: dopo il ritorno a :prev toglie l'immagine rotta, rimasta
+#          orfana (sulla centralina di test 1,1 GB di disco).
+VERSION = "1.8.17"
 
 # -- Globals initialised at startup -----------------------------------------
 
@@ -1720,6 +1739,19 @@ def _install_dir() -> Path:
     return Path(config_manager.config.controller.data_path) / "arfea-controller"
 
 
+def _build_space_problem() -> str:
+    """'' se c'e' spazio per ricostruire l'immagine (Redmine #365), altrimenti il
+    motivo: data_path, e la radice di Docker e di containerd sull'host."""
+    host = _host_root()
+    paths = [Path(config_manager.config.controller.data_path),
+             host / "var/lib/docker", host / "var/lib/containerd"]
+    try:
+        paths.append(host / docker_manager.client.info()["DockerRootDir"].lstrip("/"))
+    except Exception:
+        pass
+    return ota_install.ensure_build_space(paths)
+
+
 def _startup_ota_housekeeping() -> None:
     """All'avvio, prima del controllo aggiornamenti (Redmine #355): conferma
     l'aggiornamento in sospeso verso questa versione, porta nelle riparazioni
@@ -1849,6 +1881,17 @@ def _check_startup_update() -> bool:
             _UPDATE_TARBALL.unlink(missing_ok=True)
             return False
 
+        # Prima di toccare i file: a disco pieno la build muore a meta' e resta
+        # tutto mescolato (Redmine #365). Cosi' i file restano quelli di prima.
+        why = _build_space_problem()
+        if why:
+            logger.warning("Aggiornamento alla %s non avviato: %s", tarball_ver or "?", why)
+            _set_update_status(SelfUpdateState.FAILED, f"Aggiornamento alla {tarball_ver} non avviato: {why}",
+                               from_version=VERSION, to_version=tarball_ver,
+                               started_at=datetime.now(), completed_at=datetime.now())
+            _UPDATE_TARBALL.unlink(missing_ok=True)
+            return False
+
         logger.info("Nuovo aggiornamento trovato, applicazione in corso...")
         # L'hash va in .update_hash solo quando la versione nuova e' partita
         # (ota_install.confirm): un'installazione interrotta si riprende.
@@ -1880,6 +1923,10 @@ def _do_self_update() -> None:
     global _update_in_progress
     try:
         dest = _install_dir()
+        why = _build_space_problem()
+        if why:
+            _UPDATE_TARBALL.unlink(missing_ok=True)
+            raise RuntimeError(why)
         logger.info("Update: estrazione e installazione...")
         _set_update_status(SelfUpdateState.INSTALLING, "Installazione dei file...")
         _extract_and_install(_UPDATE_TARBALL, dest)
