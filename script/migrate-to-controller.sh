@@ -1724,6 +1724,7 @@ except Exception as e:
   fi
   if [[ -n "$BACKUP_FILE" ]]; then
     echo "  In caso di problemi, ripristina con:"
+    echo "    sudo systemctl disable --now arfea-controller-guard.timer   # se no ricrea il controller"
     echo "    cd $DATA_PATH/arfea-controller && docker compose down"
     echo "    sudo rm -rf $DATA_PATH"
     echo "    sudo tar -xzf $BACKUP_FILE -C /opt"
@@ -2292,7 +2293,8 @@ run_native_migration() {
     echo ""
     warn "openhab non risulta in esecuzione: NON disabilito i servizi nativi."
     echo "  Controlla:  cd $DATA_PATH/arfea-controller && docker compose logs -f openhab"
-    echo "  Rollback:   docker compose down; poi riavvia i servizi nativi con"
+    echo "  Rollback:   systemctl disable --now arfea-controller-guard.timer; docker compose down;"
+    echo "              poi riavvia i servizi nativi con"
     echo "              systemctl start ${NAT_OPENHAB_UNIT:-openhab}"
     exit 1
   fi

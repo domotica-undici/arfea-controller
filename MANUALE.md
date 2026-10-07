@@ -299,10 +299,53 @@ vuoto e all'avvio torna al default; prima va corretto a mano.
   journalctl -t arfea-update -f          # segui il rebuild
   ```
 
-**Processo:** download → confronto hash → estrazione **saltando `config/`** →
-copia file → salva hash → `docker compose up -d --build --force-recreate` via
-`nsenter` (in unità **systemd transitoria**, così il rebuild sopravvive al
-riavvio del container stesso) → riavvio col nuovo codice.
+**Processo** (dal controller **1.8.16**, Redmine #355): download → confronto hash →
+estrazione **saltando `config/`** in una cartella di appoggio accanto al controller
+(`.update-staging/`) → `sync` e controllo di ogni file col `MANIFEST.sha256` del
+tarball → skeleton in OpenHAB, file per file con un rename e solo se cambia → le
+cartelle si scambiano con un rename (le vecchie in `.update-prev/`) → `sync` →
+rebuild fatto dal **guardiano** sull'host (`arfea-controller-guard rebuild`, in
+un'unità **systemd transitoria**, così sopravvive al riavvio del container
+stesso) → riavvio col nuovo codice → solo allora l'hash va in `.update_hash`.
+
+Perché così: su un impianto la corrente è mancata pochi secondi dopo un
+self-update (Redmine #354). ext4 teneva ancora in memoria i file appena scritti:
+`app/`, `habapp/`, `templates/` e l'immagine appena costruita sono rimasti a 0
+byte, e Docker ha scartato il container nuovo («failed to load container mount»
+nel journal di docker). Niente controller, e nessuno che lo ricreasse. Ora
+un'interruzione in qualunque punto lascia la versione vecchia o la nuova, mai
+file vuoti.
+
+- **Tentativi.** Il tarball in corso d'installazione sta in `.update-pending.json`.
+  Se il controller nuovo non arriva a partire, al riavvio successivo lo si
+  riprova, al massimo **due volte** per tarball; poi si aspetta il prossimo (o
+  l'aggiornamento a mano).
+- **Il guardiano** (`/usr/local/sbin/arfea-controller-guard`, unità
+  `arfea-controller-guard.service` e `.timer`). Lo installa il controller a ogni
+  avvio, solo se è cambiato, da `script/arfea-controller-guard.sh`.
+  - **Nel rebuild** tiene l'immagine in uso come `arfea-controller:prev`, fa
+    `sync` dopo la build e controlla che nell'immagine nuova `app/main.py` sia
+    quello del MANIFEST (se no rifà la build senza cache). Poi aspetta
+    `/api/health` fino a 10 minuti. Se il nuovo va in crash loop torna a `:prev`
+    da solo. Immagini e cache orfane si tolgono solo a controller nuovo sano.
+  - **Ogni 5 minuti** ricrea il container se manca o resta `created` (da
+    `:prev` se l'immagine attuale è vuota, con una build se i file su disco
+    tornano col MANIFEST). Da un crash loop torna a `:prev`. Un container
+    fermato a mano (`docker stop`) non lo tocca.
+  - Quello che fa va nel journal (`journalctl -t arfea-guard`) e, al primo avvio
+    del controller, in `GET /api/system/repairs`. Lo stato:
+    `sudo arfea-controller-guard status`.
+  - **Per tenere giù il controller durante una manutenzione:**
+    `systemctl stop arfea-controller-guard.timer` (fino al riavvio della
+    centralina) oppure `systemctl disable --now arfea-controller-guard.timer`
+    (sempre: il controller non lo riaccende finché le unità non cambiano).
+- **All'avvio** il controller controlla i suoi file col `MANIFEST.sha256`. Se
+  qualcuno è rotto, riscarica il tarball e, se è della versione che gira, lo
+  reinstalla (riparazione in `/api/system/repairs`).
+
+L'aggiornamento **verso** la 1.8.16 lo esegue ancora il codice della versione
+precedente, senza queste protezioni: valgono dall'aggiornamento successivo, e il
+guardiano c'è dal primo avvio della 1.8.16.
 
 ### 4.3 Aggiornamento manuale via tar sull'host (procedura affidabile)
 
@@ -340,11 +383,23 @@ chown -R 9001:9001 /opt/docker_store/openhab/conf /opt/docker_store/openhab/cont
 # 5. allinea l'hash così l'auto-update non ritenta inutilmente
 sha256sum /tmp/new.tar.xz | awk '{print $1}' > .update_hash
 
-# 6. rebuild e restart, in un'unità systemd: sopravvive a una sessione SSH che cade
+# 6. sync (i file appena scritti devono arrivare su disco PRIMA della build:
+#    un'interruzione di corrente li lascerebbe vuoti, Redmine #354), poi rebuild
+#    e restart in un'unità systemd, che sopravvive a una sessione SSH che cade.
+#    systemd-run NON eredita la cartella corrente: il cd va DENTRO il comando.
+sync
 systemd-run --unit=arfea-selfupdate --collect bash -c \
-  "cd /opt/docker_store/arfea-controller && docker compose up -d --build --force-recreate 2>&1 | logger -t arfea-update; docker image prune -f"
-journalctl -t arfea-update -f
+  "cd /opt/docker_store/arfea-controller && docker compose up -d --build --force-recreate 2>&1 | logger -t arfea-update; sync; docker image prune -f"
+journalctl -t arfea-update -f      # aspetta "Container arfea-controller Started"
 ```
+
+Con un tarball **≥ 1.8.16** il passo 6 lo fa meglio il guardiano (tiene
+`:prev`, controlla l'immagine, aspetta health e torna indietro se serve):
+`sync; systemd-run --unit=arfea-selfupdate --collect --wait /bin/bash
+/opt/docker_store/arfea-controller/script/arfea-controller-guard.sh rebuild`.
+Più semplice ancora, dal PC: `./script/ripara-controller.sh --centralina <alias>
+--apply --forza --tarball <tarball>` fa tutta la procedura, passi 1-6 compresi
+([§10.1](#101-aggiornamenti--controller)).
 
 > ⚠️ **Differenza cruciale:** l'estrazione manuale sovrascrive **tutto, `config/`
 > compresa**; l'auto-update invece salta `config/`. Per questo il passo 1 e 3
@@ -1488,6 +1543,27 @@ bridge trusted; reboot da remoto via OpenHAB Cloud → regola JS → localhost.
 - **Immagine con tag inesistente** → il pull fallisce *prima* di toccare i
   container: il servizio resta sulla versione precedente.
 
+- **Il container del controller non c'è più (OpenHAB gira, il widget no),
+  soprattutto dopo un'interruzione di corrente durante o subito dopo un
+  aggiornamento** (Redmine #354). Segni: `docker ps -a` senza `arfea-controller`,
+  `journalctl -u docker | grep 'failed to load container mount'`, file a 0 byte in
+  `/opt/docker_store/arfea-controller/app/`, più avvii ravvicinati in
+  `journalctl --list-boots` senza spegnimento nel log. Da un controller ≥ 1.8.16 ci
+  pensa il guardiano entro 10 minuti; altrimenti, dal PC:
+  ```bash
+  ./script/ripara-controller.sh --centralina <alias>            # diagnosi, non tocca nulla
+  ./script/ripara-controller.sh --centralina <alias> --apply    # ripristino
+  # centralina senza linea: --tarball ota/arfea-controller.tar.xz
+  # sulla centralina, senza PC: sudo bash ripara-controller.sh --qui [--apply]
+  ```
+  Riscarica il tarball, lo controlla, rimette file e skeleton senza toccare
+  `config/`, ricostruisce in un'unità systemd e verifica immagine, health e
+  versione. Il container perso resta come cartella in `/var/lib/docker/containers`:
+  Docker la ignora. **Dopo ogni aggiornamento** (e dopo un blackout lì vicino) la
+  prova a vuoto dice in un colpo se è tutto a posto. Una centralina che si spegne
+  da sola va prima sistemata nell'alimentazione: prima di un aggiornamento,
+  `journalctl --list-boots | tail`.
+
 - **Controller resta a una versione vecchia dopo l'update / config sparita.**
   Sintomo tipico di un OTA morto a metà (rebuild fuori da systemd nelle versioni
   vecchie): restano **due container**, il vecchio `Exited` e uno nuovo `Created`
@@ -1617,9 +1693,14 @@ all'hardware:
 ### 10.5 Self-update
 
 - Verifica che `update_url` sia raggiungibile: `curl -fsSL <URL> -o /dev/null`.
-- Log: `docker compose logs arfea-controller | grep -i update` e
-  `journalctl -t arfea-update -f`.
+- Log: `docker compose logs arfea-controller | grep -i update`,
+  `journalctl -t arfea-update -f` (build) e `journalctl -t arfea-guard` (guardiano,
+  dal 1.8.16).
 - Cause comuni: URL non raggiungibile, tarball malformato, spazio disco insufficiente.
+- «Tarball OTA … gia' tentato 2 volte» nel log: il controller nuovo non è mai
+  partito (build fallita o crash loop, e il guardiano è tornato a `:prev`). Si
+  guarda `journalctl -t arfea-update -t arfea-guard`, si corregge e si pubblica un
+  tarball nuovo (hash diverso), oppure si aggiorna a mano.
 
 ---
 
@@ -1634,7 +1715,13 @@ all'hardware:
 ├── config/
 │   └── arfea.yml          # config principale (persistente, non toccata dall'OTA)
 ├── .arfea.yml.bak         # backup off-config (auto-restore, controller ≥1.4.0)
-├── .update_hash           # hash ultimo OTA applicato
+├── .update_hash           # hash ultimo OTA applicato (dal 1.8.16: a controller nuovo partito)
+├── .update-pending.json   # OTA in corso: hash, versione, tentativi (1.8.16)
+├── .update-prev/          # le cartelle della versione prima dell'ultimo OTA (1.8.16)
+├── .guard-events          # cosa ha fatto il guardiano, finisce in /api/system/repairs
+├── MANIFEST.sha256        # sha256 di ogni file del tarball (1.8.16)
+├── script/arfea-controller-guard.sh  # guardiano: il controller lo installa in
+│                                     # /usr/local/sbin con un timer ogni 5 minuti
 ├── backups/               # archivi backup tar.gz
 ├── migrations/            # script di migrazione per versione
 └── app/
@@ -1643,6 +1730,7 @@ all'hardware:
     ├── config.py          # load YAML + dipendenze + ordine avvio
     ├── docker_manager.py  # lifecycle container Docker
     ├── backup.py          # backup/restore + WebDAV
+    ├── ota_install.py     # installazione OTA che regge un'interruzione di corrente, guardiano
     ├── download_links.py  # link a tempo per i download dal browser
     └── static/index.html  # web UI
 ```
@@ -1653,7 +1741,9 @@ all'hardware:
 |---|---|
 | [script/install.sh](script/install.sh) | Installer autonomo del controller (host già preparato) |
 | [script/migrate-to-controller.sh](script/migrate-to-controller.sh) | Migra una centralina esistente (docker-compose o OpenHAB nativo) → controller |
-| [script/build-update-tarball.sh](script/build-update-tarball.sh) | Genera `arfea-controller.tar.xz` |
+| [script/build-update-tarball.sh](script/build-update-tarball.sh) | Genera `arfea-controller.tar.xz` (con `MANIFEST.sha256`) |
+| [script/ripara-controller.sh](script/ripara-controller.sh) | Diagnosi e ripristino del controller su una centralina, dal PC |
+| [script/arfea-controller-guard.sh](script/arfea-controller-guard.sh) | Guardiano del controller sull'host (rebuild del self-update, controllo ogni 5 minuti) |
 | [ota/releases.json](ota/releases.json) | Template manifest versioni certificate |
 | [migrations/README.md](migrations/README.md) | Contratto script di migrazione |
 | [arfea-controller/config/arfea.yml](arfea-controller/config/arfea.yml) | Config centrale (protetta dall'OTA) |

@@ -30,7 +30,7 @@ from .download_links import DownloadLinks
 from .habapp_manager import HABAppManager, last_provision as habapp_last_provision
 from .host_network import HostNetworkManager, ap_lan_conflict
 from .release_manager import ReleaseManager
-from . import heal, semantic_cards
+from . import heal, ota_install, semantic_cards
 from .models import (
     AccessPointUpdate,
     AddonsKarStatus,
@@ -476,7 +476,28 @@ logger = logging.getLogger(__name__)
 #          broadlink_ir, che pubblicano su MQTT, restavano muti. Ora tiene il broker
 #          della config precedente (localhost diventa mosquitto), e all'avvio
 #          porta a mosquitto un broker rimasto su localhost.
-VERSION = "1.8.15"
+#   1.8.16 FIX self-update che non reggeva un'interruzione di corrente (Redmine
+#          #355): su un impianto (#354) la corrente e' mancata pochi secondi
+#          dopo l'installazione, e i file nuovi (app/, habapp/, templates/...),
+#          l'immagine appena costruita e il container sono andati persi: ext4 li
+#          teneva ancora in memoria. Docker ha scartato il container in silenzio
+#          e nessuno lo ha ricreato. Ora (app/ota_install.py) il tarball si
+#          estrae in una cartella di appoggio, si fa sync, si controlla ogni file
+#          col MANIFEST.sha256 del tarball e solo dopo le cartelle si scambiano
+#          con un rename (le vecchie in .update-prev/); lo skeleton va in OpenHAB
+#          file per file con un rename, e solo se cambia. .update_hash si scrive
+#          quando il controller nuovo e' partito, non prima: un aggiornamento
+#          interrotto si riprova, al massimo due volte per tarball.
+#          NEW guardiano sull'host (script/arfea-controller-guard.sh, installato
+#          dal controller in /usr/local/sbin con un timer ogni 5 minuti): fa il
+#          rebuild tenendo l'immagine di prima come arfea-controller:prev, sync,
+#          controlla il codice nell'immagine nuova e aspetta /api/health; torna a
+#          :prev se il nuovo non parte. Fuori dagli aggiornamenti ricrea il
+#          container se manca o resta 'created', e torna a :prev da un crash loop.
+#          Quello che fa finisce in GET /api/system/repairs. All'avvio il
+#          controller controlla i suoi file col MANIFEST e, se qualcuno e' rotto,
+#          li reinstalla dal tarball della stessa versione.
+VERSION = "1.8.16"
 
 # -- Globals initialised at startup -----------------------------------------
 
@@ -556,12 +577,18 @@ async def lifespan(app: FastAPI):
 
     # Esito dell'eventuale aggiornamento avviato dal controller precedente
     _load_update_status()
+    _startup_ota_housekeeping()
 
     # Check for updates at startup (before starting services)
     if _check_startup_update():
         logger.info("Aggiornamento in corso, il controller si riavvierà...")
         yield
         return
+
+    # File del controller rotti (interruzione di corrente durante un
+    # aggiornamento, Redmine #355): si reinstallano dal tarball della stessa
+    # versione, prima che servano (templates/, codice HABApp).
+    _repair_install()
 
     # Broker con i retained su disco anche sugli impianti nati prima (Redmine
     # #275): la start qui sotto non ricrea un mosquitto gia' esistente.
@@ -1303,63 +1330,21 @@ def _get_hash_file() -> Path:
 
 
 def _extract_and_install(tarball: Path, dest: Path) -> None:
-    """Estrai il tarball e copia i file nella destinazione, saltando config/.
-
-    Se il tarball contiene skeleton-openhab/, i file vengono copiati
-    anche nelle directory di OpenHAB (items, regole JS, script, cont-init.d).
+    """Installa il tarball in dest saltando config/, in modo che un'interruzione
+    di corrente lasci la versione vecchia o la nuova, mai file vuoti
+    (ota_install.install, Redmine #355). Lo skeleton-openhab/ va anche nelle
+    directory di OpenHAB (items, regole JS, script, cont-init.d).
     """
-    tmpdir = Path("/tmp/arfea-update")
-    if tmpdir.exists():
-        shutil.rmtree(tmpdir)
-    tmpdir.mkdir()
-
-    with tarfile.open(tarball, "r:xz") as tar:
-        for member in tar.getmembers():
-            parts = member.name.split("/", 1)
-            if len(parts) < 2 or not parts[1]:
-                continue
-            relative = parts[1]
-            if relative.startswith("config/"):
-                continue
-            member.name = relative
-            tar.extract(member, tmpdir)
-
-    tarball.unlink(missing_ok=True)
-
     # Rete di sicurezza: arfea.yml NON deve MAI essere toccato da un update.
     # Lo teniamo in memoria e lo ripristiniamo a fine procedura se sparisse,
     # qualunque sia la causa (skip filter bypassato, copia anomala, ecc.).
     config_file = dest / "config" / "arfea.yml"
     config_backup = config_file.read_bytes() if config_file.exists() else None
 
-    # Deploy skeleton-openhab files to OpenHAB directories
-    skeleton_dir = tmpdir / "skeleton-openhab"
-    if skeleton_dir.is_dir():
-        _deploy_openhab_files(skeleton_dir)
-        # Persisti la ui/ nell'install dir del controller: i widget/pagine si
-        # importano via REST (serve OpenHAB su), cosa che facciamo al prossimo
-        # avvio del controller (_maybe_import_ui) o via endpoint /system/import-ui.
-        ui_src = skeleton_dir / "ui"
-        if ui_src.is_dir():
-            ui_dst = dest / "skeleton-openhab" / "ui"
-            if ui_dst.exists():
-                shutil.rmtree(ui_dst)
-            ui_dst.parent.mkdir(parents=True, exist_ok=True)
-            shutil.copytree(ui_src, ui_dst)
-        shutil.rmtree(skeleton_dir)
-
-    # Copy remaining files to controller destination
-    for item in os.listdir(tmpdir):
-        if item == "config":
-            continue  # config/ è protetto: mai sovrascritto/rimosso da un update
-        src = tmpdir / item
-        dst = dest / item
-        if src.is_dir():
-            if dst.exists():
-                shutil.rmtree(dst)
-            shutil.copytree(src, dst)
-        else:
-            shutil.copy2(src, dst)
+    try:
+        ota_install.install(tarball, dest, _deploy_openhab_files)
+    finally:
+        tarball.unlink(missing_ok=True)
 
     # Ripristina arfea.yml se per qualunque motivo fosse stato rimosso
     if config_backup is not None and not config_file.exists():
@@ -1367,11 +1352,13 @@ def _extract_and_install(tarball: Path, dest: Path) -> None:
         config_file.write_bytes(config_backup)
         logger.warning("arfea.yml ripristinato dopo update (era stato rimosso)")
 
-    shutil.rmtree(tmpdir, ignore_errors=True)
-
 
 def _deploy_openhab_files(skeleton_dir: Path) -> None:
-    """Copia i file skeleton-openhab nelle directory di OpenHAB (owner 9001:9001)."""
+    """Copia i file skeleton-openhab nelle directory di OpenHAB (owner 9001:9001).
+
+    Ogni file passa da una copia nascosta accanto e un rename (ota_install.
+    atomic_copy): un'interruzione di corrente non lascia una regola JS vuota. I
+    file gia' uguali non si riscrivono, cosi' OpenHAB non ricarica per niente."""
     data_path = Path(config_manager.config.controller.data_path)
     openhab_base = data_path / "openhab"
     OH_UID = 9001
@@ -1387,9 +1374,8 @@ def _deploy_openhab_files(skeleton_dir: Path) -> None:
             relative = src_file.relative_to(skeleton_conf)
             dst_file = openhab_conf / relative
             _mkdirs_owned(dst_file.parent, OH_UID, OH_GID)
-            shutil.copy2(src_file, dst_file)
-            os.chown(dst_file, OH_UID, OH_GID)
-            logger.info("OpenHAB updated: conf/%s", relative)
+            if ota_install.atomic_copy(src_file, dst_file, OH_UID, OH_GID):
+                logger.info("OpenHAB updated: conf/%s", relative)
 
     # cont-init.d/ → /opt/docker_store/openhab/cont-init.d/
     skeleton_init = skeleton_dir / "cont-init.d"
@@ -1399,10 +1385,8 @@ def _deploy_openhab_files(skeleton_dir: Path) -> None:
         for src_file in skeleton_init.iterdir():
             if src_file.is_file():
                 dst_file = openhab_init / src_file.name
-                shutil.copy2(src_file, dst_file)
-                dst_file.chmod(0o755)
-                os.chown(dst_file, OH_UID, OH_GID)
-                logger.info("OpenHAB updated: cont-init.d/%s", src_file.name)
+                if ota_install.atomic_copy(src_file, dst_file, OH_UID, OH_GID, 0o755):
+                    logger.info("OpenHAB updated: cont-init.d/%s", src_file.name)
 
 
 def _mkdirs_owned(path: Path, uid: int, gid: int) -> None:
@@ -1703,22 +1687,83 @@ def _trigger_rebuild() -> None:
     nuovo resta in stato "Created" e non parte mai (controller giù, versione
     invariata). `systemd-run` registra il comando come servizio gestito da PID 1,
     fuori dal cgroup del container: sopravvive alla recreate e completa l'avvio.
+
+    Il lavoro lo fa il guardiano sull'host (arfea-controller-guard rebuild,
+    Redmine #355): tiene l'immagine in uso come arfea-controller:prev, fa sync
+    dopo la build, controlla il codice nell'immagine e aspetta /api/health; se
+    il controller nuovo non parte torna a :prev. Toglie immagini e cache orfane
+    solo a controller nuovo sano (sulla .19 erano ~2,4 GB su una eMMC da 16 GB).
+    Se il guardiano non si installa, resta il comando di prima, con il sync.
     """
+    dest = _install_dir()
+    ok, msg = ota_install.install_host_guard(dest)
+    if ok:
+        cmd = ["/bin/bash", ota_install.GUARD_BIN, "rebuild", "--delay"]
+    else:
+        logger.warning("Rebuild senza guardiano: %s", msg)
+        cmd = ["bash", "-c",
+               f"sleep 2 && cd {dest} && sync "
+               "&& docker compose up -d --build --force-recreate 2>&1 | logger -t arfea-update; "
+               "sync; docker image prune -f 2>&1 | logger -t arfea-update; "
+               "docker builder prune -f 2>&1 | logger -t arfea-update"]
     subprocess.Popen([
         "nsenter", "-t", "1", "-m", "-u", "-i", "-n", "-p", "--",
         "systemd-run",
         "--unit=arfea-selfupdate",
         "--collect",            # rimuove l'unità a fine esecuzione (nome riusabile)
-        "bash", "-c",
-        "sleep 2 && cd /opt/docker_store/arfea-controller "
-        "&& docker compose up -d --build --force-recreate 2>&1 "
-        "| logger -t arfea-update; "
-        # Ogni rebuild lascia l'immagine vecchia e la cache di build: sulla .19
-        # erano ~2,4 GB su una eMMC da 16 GB piena al 100%. Solo roba orfana
-        # (dangling): le immagini in uso e la cache ancora valida restano.
-        "docker image prune -f 2>&1 | logger -t arfea-update; "
-        "docker builder prune -f 2>&1 | logger -t arfea-update",
+        f"--setenv=ARFEA_DIR={dest}",
+        *cmd,
     ])
+
+
+def _install_dir() -> Path:
+    return Path(config_manager.config.controller.data_path) / "arfea-controller"
+
+
+def _startup_ota_housekeeping() -> None:
+    """All'avvio, prima del controllo aggiornamenti (Redmine #355): conferma
+    l'aggiornamento in sospeso verso questa versione, porta nelle riparazioni
+    quello che il guardiano ha fatto mentre il controller non c'era, e
+    installa o aggiorna il guardiano sull'host."""
+    dest = _install_dir()
+    try:
+        if ota_install.confirm(dest, VERSION):
+            logger.info("Aggiornamento alla %s confermato: hash registrato", VERSION)
+    except OSError as exc:
+        logger.warning("Conferma dell'aggiornamento non riuscita: %s", exc)
+    for at, msg in ota_install.take_guard_events(dest):
+        heal.record(config_manager, "guardiano", f"{msg} (alle {at})")
+    ok, msg = ota_install.install_host_guard(dest)
+    (logger.info if ok else logger.warning)("Guardiano sull'host: %s", msg)
+
+
+def _repair_install() -> None:
+    """File della cartella del controller diversi dal MANIFEST: si riscarica il
+    tarball e, se e' della versione in esecuzione, si reinstalla (niente
+    rebuild: l'immagine che gira e' buona, altrimenti non saremmo qui)."""
+    dest = _install_dir()
+    bad = ota_install.verify_installed(dest)
+    if not bad:
+        return
+    logger.error("File del controller rotti (%d): %s", len(bad), ", ".join(bad[:10]))
+    what = f"{len(bad)} file del controller rotti ({', '.join(bad[:3])}{', ...' if len(bad) > 3 else ''})"
+    update_url = config_manager.config.controller.update_url
+    try:
+        subprocess.run(["curl", "-fsSL", "-o", str(_UPDATE_TARBALL), update_url],
+                       check=True, capture_output=True, timeout=60)
+        ver = _tarball_version(_UPDATE_TARBALL)
+        if ver != VERSION:
+            _UPDATE_TARBALL.unlink(missing_ok=True)
+            heal.record(config_manager, "controller", f"{what}: il tarball pubblicato e' la {ver or '?'}, "
+                        f"non la {VERSION}, quindi non li reinstallo: serve script/ripara-controller.sh")
+            return
+        new_hash = _compute_file_hash(_UPDATE_TARBALL)
+        _extract_and_install(_UPDATE_TARBALL, dest)
+        ota_install.write_text_atomic(_get_hash_file(), new_hash)
+        heal.record(config_manager, "controller", f"{what}: reinstallati dal tarball della {VERSION}")
+    except Exception as exc:
+        _UPDATE_TARBALL.unlink(missing_ok=True)
+        heal.record(config_manager, "controller", f"{what}, reinstallazione non riuscita: {exc}")
 
 
 def _nsenter_available() -> bool:
@@ -1776,7 +1821,21 @@ def _check_startup_update() -> bool:
                 "Tarball OTA versione %s <= versione in esecuzione %s: nessun "
                 "aggiornamento (niente downgrade).", tarball_ver, VERSION,
             )
-            hash_file.write_text(new_hash)
+            ota_install.write_text_atomic(hash_file, new_hash)
+            _UPDATE_TARBALL.unlink(missing_ok=True)
+            return False
+
+        # Un tarball che per due volte non e' arrivato a far partire il
+        # controller nuovo (build fallita, crash, ritorno a :prev del guardiano)
+        # non si riprova a ogni avvio: si aspetta il prossimo (Redmine #355).
+        dest = _install_dir()
+        tried = ota_install.attempts(dest, new_hash)
+        if tried >= ota_install.MAX_ATTEMPTS:
+            logger.warning(
+                "Tarball OTA %s gia' tentato %d volte senza arrivare alla %s: non lo "
+                "riprovo, aspetto il prossimo (o l'aggiornamento a mano).",
+                new_hash[:12], tried, tarball_ver or "?",
+            )
             _UPDATE_TARBALL.unlink(missing_ok=True)
             return False
 
@@ -1791,18 +1850,28 @@ def _check_startup_update() -> bool:
             return False
 
         logger.info("Nuovo aggiornamento trovato, applicazione in corso...")
-        dest = Path(config_manager.config.controller.data_path) / "arfea-controller"
-
-        hash_file.write_text(new_hash)
+        # L'hash va in .update_hash solo quando la versione nuova e' partita
+        # (ota_install.confirm): un'installazione interrotta si riprende.
+        ota_install.write_pending(dest, {"hash": new_hash, "version": tarball_ver,
+                                         "attempts": tried + 1,
+                                         "at": datetime.now().isoformat(timespec="seconds")})
+        _set_update_status(SelfUpdateState.INSTALLING, f"Aggiornamento alla {tarball_ver} all'avvio...",
+                           from_version=VERSION, to_version=tarball_ver,
+                           started_at=datetime.now(), completed_at=None)
         _extract_and_install(_UPDATE_TARBALL, dest)
 
         logger.info("Aggiornamento applicato, rebuild e restart...")
+        _set_update_status(SelfUpdateState.REBUILDING,
+                           "Ricostruzione dell'immagine in corso, puo' richiedere alcuni minuti...")
         _trigger_rebuild()
         return True
 
     except Exception as exc:
         logger.warning("Controllo aggiornamenti fallito: %s", exc)
         _UPDATE_TARBALL.unlink(missing_ok=True)
+        if _update_status.state in (SelfUpdateState.INSTALLING, SelfUpdateState.REBUILDING):
+            _set_update_status(SelfUpdateState.FAILED, f"Aggiornamento fallito: {exc}",
+                               completed_at=datetime.now())
         return False
 
 
@@ -1810,7 +1879,7 @@ def _do_self_update() -> None:
     """Background task: estrae il tarball GIÀ scaricato/verificato, rebuild e restart."""
     global _update_in_progress
     try:
-        dest = Path(config_manager.config.controller.data_path) / "arfea-controller"
+        dest = _install_dir()
         logger.info("Update: estrazione e installazione...")
         _set_update_status(SelfUpdateState.INSTALLING, "Installazione dei file...")
         _extract_and_install(_UPDATE_TARBALL, dest)
@@ -1872,13 +1941,17 @@ async def self_update(background_tasks: BackgroundTasks):
         _set_update_status(SelfUpdateState.IDLE, msg, completed_at=datetime.now())
         return OperationResponse(success=False, message=msg)
     if tarball_ver and _version_tuple(tarball_ver) == _version_tuple(VERSION):
-        _get_hash_file().write_text(_compute_file_hash(_UPDATE_TARBALL))
+        ota_install.write_text_atomic(_get_hash_file(), _compute_file_hash(_UPDATE_TARBALL))
         _UPDATE_TARBALL.unlink(missing_ok=True)
         _set_update_status(SelfUpdateState.IDLE, f"Già aggiornato alla versione {VERSION}.",
                            completed_at=datetime.now())
         return OperationResponse(success=False, message=f"Già aggiornato alla versione {VERSION}.")
 
-    _get_hash_file().write_text(_compute_file_hash(_UPDATE_TARBALL))
+    # Una richiesta a mano riparte da capo coi tentativi; l'hash va in
+    # .update_hash solo quando la versione nuova e' partita (Redmine #355).
+    ota_install.write_pending(_install_dir(), {
+        "hash": _compute_file_hash(_UPDATE_TARBALL), "version": tarball_ver, "attempts": 1,
+        "at": datetime.now().isoformat(timespec="seconds")})
     _set_update_status(SelfUpdateState.INSTALLING, f"Aggiornamento alla {tarball_ver} avviato...",
                        to_version=tarball_ver)
     _update_in_progress = True

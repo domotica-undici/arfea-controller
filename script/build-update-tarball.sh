@@ -25,6 +25,8 @@
 #     migrations/             # Script di migrazione versione (release certificate)
 #     script/                 # Script utili (fallback manuali)
 #       import-ui-components.sh
+#       arfea-controller-guard.sh # guardiano sull'host (lo installa il controller)
+#     MANIFEST.sha256         # sha256 di ogni file (config/ esclusa)
 #
 # Uso:
 #   ./script/build-update-tarball.sh
@@ -116,10 +118,22 @@ cp "$REPO_DIR/script/migrate-to-controller.sh" "$STAGING/script/"
 # Passaggio della rete a NetworkManager (gestione LAN/wifi/AP dalla Web UI):
 # sugli impianti gia' installati arriva con l'OTA e si lancia a mano.
 cp "$REPO_DIR/script/arfea-network-nm.sh" "$STAGING/script/"
+# Guardiano sull'host (Redmine #355): il controller lo installa in
+# /usr/local/sbin con un timer, e lo usa per il rebuild del self-update.
+cp "$REPO_DIR/script/arfea-controller-guard.sh" "$STAGING/script/"
 
 # ── Pulizia file non necessari ──
 find "$STAGING" -name "__pycache__" -type d -exec rm -rf {} + 2>/dev/null || true
 find "$STAGING" -name "*.pyc" -delete 2>/dev/null || true
+
+# ── MANIFEST.sha256 (Redmine #355) ──
+# sha256 di ogni file, config/ esclusa (l'aggiornamento non la tocca). Il
+# controller controlla con questo i file estratti prima di installarli, e i suoi
+# file a ogni avvio; il guardiano sull'host prima di ogni build.
+( cd "$STAGING" && find . -type f ! -path './config/*' -printf '%P\n' | LC_ALL=C sort \
+    | xargs -d '\n' sha256sum ) > "$STAGING_DIR/MANIFEST.sha256"
+mv "$STAGING_DIR/MANIFEST.sha256" "$STAGING/MANIFEST.sha256"
+echo "  MANIFEST.sha256: $(wc -l < "$STAGING/MANIFEST.sha256") file"
 
 # ── Creazione tarball ──
 tar -cJf "$OUTPUT_DIR/$TARBALL_NAME" -C "$STAGING_DIR" arfea-controller
