@@ -35,6 +35,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Callable
 
+import yaml
+
 logger = logging.getLogger(__name__)
 
 _MAX_RECORDS = 50
@@ -235,6 +237,205 @@ def _fix_zigbee2mqtt(cfg, docker, data: Path, mosquitto_on: bool) -> None:
         record(cfg, "zigbee2mqtt", f"broker {old} -> mosquitto")
 
 
+# ---------------------------------------------------------------------------
+# Rete Zigbee (Redmine #387)
+# ---------------------------------------------------------------------------
+#
+# Senza network_key, pan_id ed ext_pan_id nella config zigbee2mqtt usa i suoi
+# valori predefiniti (lib/util/settings.ts), uguali su ogni installazione: la
+# chiave e' pubblica e tutti gli impianti ARFEA nati dal template di prima
+# avevano la stessa rete. Due centraline in laboratorio si sono prese i
+# dispositivi a vicenda appena un coordinatore si e' fermato. Il template ora
+# ha GENERATE (valori casuali al primo avvio). Una rete predefinita gia' in
+# esercizio NON si tocca da soli: si segnala (log all'avvio, Web UI) e si
+# rifa' solo su richiesta di chi e' sull'impianto, perche' vuol dire
+# riassociare tutti i dispositivi.
+
+_Z2M_DEFAULTS = {
+    "network_key": [1, 3, 5, 7, 9, 11, 13, 15, 0, 2, 4, 6, 8, 10, 12, 13],
+    "pan_id": 0x1A62,
+    "ext_pan_id": [0xDD] * 8,
+}
+# Stato della rete: si spostano nella copia quando si fa una rete nuova.
+_Z2M_NETWORK_FILES = ("database.db", "database.db.backup", "coordinator_backup.json", "state.json")
+
+
+def _z2m_dir(data: Path) -> Path:
+    return data / "zigbee2mqtt" / "data"
+
+
+def _z2m_devices(d: Path) -> int | None:
+    """Dispositivi associati (coordinatore escluso) nel database di
+    zigbee2mqtt: una riga JSON per dispositivo. None se non si legge."""
+    db = d / "database.db"
+    if not db.exists():
+        return 0
+    n = 0
+    try:
+        for line in db.read_text().splitlines():
+            if line.strip() and json.loads(line).get("type") != "Coordinator":
+                n += 1
+    except (OSError, ValueError, AttributeError):
+        return None
+    return n
+
+
+def zigbee_network(data: Path) -> dict:
+    """Rete di zigbee2mqtt, per la Web UI e per le riparazioni. La chiave non
+    esce mai: solo se e' quella predefinita.
+
+    config: c'e' configuration.yaml; default: la chiave e' quella predefinita
+    (None se la config non si legge); fields: campi coi valori predefiniti;
+    pan_id, ext_pan_id: come stanno nella config (GENERATE prima del primo
+    avvio); devices: dispositivi associati (None se non si sa)."""
+    d = _z2m_dir(data)
+    path = d / "configuration.yaml"
+    res = {"config": path.is_file(), "default": None, "fields": [],
+           "pan_id": None, "ext_pan_id": None, "devices": _z2m_devices(d)}
+    if not path.is_file():
+        return res
+    try:
+        doc = yaml.safe_load(path.read_text())
+    except (OSError, yaml.YAMLError):
+        return res
+    doc = {} if doc is None else doc
+    if not isinstance(doc, dict):
+        return res
+    adv = doc.get("advanced") or {}
+    if not isinstance(adv, dict):
+        return res
+    res["fields"] = [f for f, dflt in _Z2M_DEFAULTS.items() if adv.get(f) in (None, dflt)]
+    res["default"] = "network_key" in res["fields"]
+    pan, ext = adv.get("pan_id", _Z2M_DEFAULTS["pan_id"]), adv.get("ext_pan_id", _Z2M_DEFAULTS["ext_pan_id"])
+    res["pan_id"] = f"0x{pan:04X}" if isinstance(pan, int) else str(pan)
+    if isinstance(ext, list) and all(isinstance(b, int) for b in ext):
+        res["ext_pan_id"] = "0x" + "".join(f"{b:02x}" for b in ext)
+    else:
+        res["ext_pan_id"] = str(ext)
+    return res
+
+
+def _z2m_set_generate(text: str, fields: list[str]) -> str | None:
+    """Il testo della config con GENERATE ai campi dati, sotto advanced (i
+    valori che avevano si tolgono, anche se su piu' righe). Modifica di testo,
+    non un dump di PyYAML: il resto del file resta com'e'. None se il risultato
+    non e' quello atteso (advanced scritto in linea, YAML insolito)."""
+    lines = text.splitlines(keepends=True)
+    start = next((i for i, line in enumerate(lines)
+                  if re.fullmatch(r"advanced:\s*(#.*)?", line.rstrip("\r\n"))), None)
+    if start is None:
+        if re.search(r"(?m)^advanced\s*:", text):
+            return None
+        sep = "" if not text or text.endswith("\n") else "\n"
+        new = text + sep + "advanced:\n" + "".join(f"  {f}: GENERATE\n" for f in fields)
+    else:
+        end, indent = start + 1, None
+        while end < len(lines):
+            s = lines[end].strip()
+            if s and not s.startswith("#"):
+                ind = len(lines[end]) - len(lines[end].lstrip(" "))
+                if ind == 0:
+                    break
+                indent = indent or ind
+            end += 1
+        indent = indent or 2
+        kept, i = [], start + 1
+        while i < end:
+            line = lines[i]
+            m = re.match(r"( *)([A-Za-z_]+)\s*:", line)
+            if m and len(m.group(1)) == indent and m.group(2) in fields:
+                i += 1
+                # righe del valore: piu' rientrate, o elementi di lista allo stesso livello
+                while i < end:
+                    s = lines[i].strip()
+                    ind = len(lines[i]) - len(lines[i].lstrip(" "))
+                    if s and not (ind > indent or (ind == indent and s.startswith("-"))):
+                        break
+                    i += 1
+                continue
+            kept.append(line)
+            i += 1
+        new = "".join(lines[:start + 1] + [f"{' ' * indent}{f}: GENERATE\n" for f in fields]
+                      + kept + lines[end:])
+    try:
+        before = yaml.safe_load(text) or {}
+        after = yaml.safe_load(new) or {}
+    except yaml.YAMLError:
+        return None
+    if not (isinstance(before, dict) and isinstance(after, dict)):
+        return None
+    adv_b, adv_a = before.pop("advanced", None) or {}, after.pop("advanced", None) or {}
+    if not (isinstance(adv_b, dict) and isinstance(adv_a, dict)):
+        return None
+    if any(adv_a.pop(f, None) != "GENERATE" for f in fields):
+        return None
+    for f in fields:
+        adv_b.pop(f, None)
+    return new if (before == after and adv_b == adv_a) else None
+
+
+def _z2m_new_network(d: Path, keep: Path) -> bool:
+    """Config con GENERATE a chiave, PAN e PAN esteso; database e stato della
+    rete vecchia spostati in keep, con una copia della config (il backup del
+    coordinatore, rimasto li', ricreerebbe la rete vecchia su alcuni adattatori)."""
+    path = d / "configuration.yaml"
+    new = _z2m_set_generate(path.read_text(), list(_Z2M_DEFAULTS))
+    if new is None:
+        logger.warning("zigbee2mqtt: %s non modificabile in sicurezza, rete non rifatta", path)
+        return False
+    keep.mkdir(parents=True, exist_ok=True)
+    shutil.copy2(path, keep / "configuration.yaml")
+    for name in _Z2M_NETWORK_FILES:
+        if (d / name).exists():
+            (d / name).rename(keep / name)
+    tmp = path.with_name(".configuration.yaml.tmp")
+    tmp.write_text(new)
+    shutil.copymode(path, tmp)
+    st = path.stat()
+    try:
+        os.chown(tmp, st.st_uid, st.st_gid)
+    except OSError:
+        pass
+    tmp.replace(path)
+    return True
+
+
+def warn_zigbee_network(data: Path) -> None:
+    """All'avvio: rete Zigbee predefinita solo segnalata, mai cambiata da
+    soli (anche senza dispositivi: la centralina e' in esercizio)."""
+    st = zigbee_network(data)
+    if st["default"]:
+        n = "?" if st["devices"] is None else st["devices"]
+        logger.warning("zigbee2mqtt: rete Zigbee predefinita (chiave pubblica, PAN 0x1A62), %s "
+                       "dispositivi associati. Non la cambio da solo: Web UI, Impianto, Rete Zigbee "
+                       "(Redmine #387)", n)
+
+
+def new_zigbee_network(cfg, docker, data: Path) -> tuple[bool, str]:
+    """Rete Zigbee nuova anche con dispositivi associati (POST
+    /api/system/zigbee-network/new, pulsante della Web UI): si staccano tutti e
+    vanno riassociati. I nomi restano (zigbee2mqtt li lega all'IEEE nella
+    sezione devices della config); database e stato della rete vecchia vanno in
+    una cartella accanto, per tornare indietro."""
+    st = zigbee_network(data)
+    if not st["config"]:
+        return False, "zigbee2mqtt non ha ancora una configurazione"
+    d = _z2m_dir(data)
+    keep = d / f"rete-precedente-{datetime.now().strftime('%Y%m%d-%H%M%S')}"
+    devices = st["devices"]
+
+    def edit() -> bool:
+        return _z2m_new_network(d, keep)
+
+    if not _edit_stopped(docker, "zigbee2mqtt", edit):
+        return False, "configuration.yaml di zigbee2mqtt non modificabile in sicurezza: rete non cambiata"
+    record(cfg, "zigbee2mqtt", f"rete Zigbee nuova su richiesta (era {'predefinita' if st['default'] else 'propria'}, "
+                               f"PAN {st['pan_id']}); rete vecchia in {keep.name}")
+    n = "?" if devices is None else devices
+    return True, (f"Rete Zigbee nuova creata. I {n} dispositivi vanno riassociati uno per uno "
+                  f"(permit join e reset del dispositivo): i nomi restano. Rete vecchia in {keep}")
+
+
 def repair_configs(cfg, docker) -> None:
     """Config dei servizi: gira all'avvio, prima di start_all_enabled. Un
     errore non ferma l'avvio del controller."""
@@ -248,6 +449,7 @@ def repair_configs(cfg, docker) -> None:
         ("mosquitto", lambda: _fix_mosquitto_listener(cfg, docker, data)),
         ("zwave-js-ui", lambda: _fix_zwave(cfg, docker, data, mosquitto_on)),
         ("zigbee2mqtt", lambda: _fix_zigbee2mqtt(cfg, docker, data, mosquitto_on)),
+        ("zigbee2mqtt", lambda: warn_zigbee_network(data)),
     ]
     for name, step in steps:
         if not effective.get(name):

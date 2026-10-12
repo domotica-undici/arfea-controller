@@ -15,6 +15,13 @@ serial:
   port: /dev/zigbee
   adapter: ember
 advanced:
+  # Rete Zigbee propria per ogni impianto (Redmine #387): al primo avvio
+  # zigbee2mqtt sostituisce GENERATE con valori casuali e li scrive qui.
+  # Senza, vale la rete predefinita: chiave pubblica e stesso PAN su ogni
+  # impianto, e due centraline vicine si prendono i dispositivi.
+  network_key: GENERATE
+  pan_id: GENERATE
+  ext_pan_id: GENERATE
   log_level: warn
   timestamp_format: YYYY-MM-DD HH:mm:ss
   log_directory: /var/log/zigbee2mqtt/%TIMESTAMP%

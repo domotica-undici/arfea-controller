@@ -524,7 +524,14 @@ logger = logging.getLogger(__name__)
 #          ogni import). POST /api/system/import-ui non ferma piu' le altre API
 #          mentre aspetta OpenHAB: install.sh lo chiama al posto del suo import,
 #          che senza PyYAML sull'host saltava ogni componente in silenzio.
-VERSION = "1.8.18"
+#   1.8.19 FIX rete Zigbee predefinita su ogni impianto (Redmine #387): il
+#          template di zigbee2mqtt non dava chiave e PAN, e zigbee2mqtt usava i
+#          suoi valori fissi (chiave pubblica, PAN 0x1A62): due centraline vicine
+#          si sono prese i dispositivi. Template con GENERATE: le reti nuove
+#          sono casuali. Una rete predefinita gia' in esercizio non si tocca da
+#          soli: log all'avvio e avviso nella Web UI, che la rifa' solo su
+#          richiesta (GET /api/system/zigbee-network, POST .../new).
+VERSION = "1.8.19"
 
 # -- Globals initialised at startup -----------------------------------------
 
@@ -943,6 +950,28 @@ def system_repairs():
     """Riparazioni automatiche fatte dal controller (Redmine #335), la piu'
     recente per prima: at, area, message."""
     return heal.repairs(config_manager)
+
+
+@app.get("/api/system/zigbee-network", dependencies=[Depends(verify_api_key)])
+def zigbee_network_status():
+    """Rete Zigbee di zigbee2mqtt (Redmine #387). default: chiave predefinita,
+    cioe' pubblica e uguale a ogni impianto che non l'ha cambiata; devices:
+    dispositivi associati; enabled: zigbee2mqtt acceso. La chiave non esce mai."""
+    st = heal.zigbee_network(Path(config_manager.config.controller.data_path))
+    st["enabled"] = bool(config_manager.resolve_effective_enabled().get("zigbee2mqtt"))
+    return st
+
+
+@app.post("/api/system/zigbee-network/new", response_model=OperationResponse, dependencies=[Depends(verify_api_key)])
+def zigbee_network_new():
+    """Rete Zigbee nuova (chiave e PAN casuali): tutti i dispositivi si
+    staccano e vanno riassociati, i nomi restano. Rete vecchia in una cartella
+    rete-precedente-* accanto alla config."""
+    ok, msg = heal.new_zigbee_network(config_manager, docker_manager,
+                                      Path(config_manager.config.controller.data_path))
+    if not ok:
+        raise HTTPException(409, msg)
+    return OperationResponse(success=True, message=msg)
 
 
 @app.get("/api/system/serial-devices/warnings", dependencies=[Depends(verify_api_key)])

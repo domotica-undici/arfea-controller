@@ -731,6 +731,10 @@ del template, cioè quelle della release certificata.
   **con il percorso interno**: se zigbee2mqtt vedeva la chiavetta come
   `/dev/ttyUSB0` resta `/dev/ttyUSB0`, perché è quello scritto nella sua
   `configuration.yaml` (prima si forzava `/dev/zigbee` e Zigbee non partiva).
+- **Rete Zigbee predefinita** (Redmine #387): se la `configuration.yaml` di
+  zigbee2mqtt non ha una `network_key` propria, il resoconto finale lo mette fra le
+  cose da verificare. Lo script non la cambia: la rete nuova si fa dalla Web UI e
+  i dispositivi vanno riassociati (§6.6).
 - **Script `cont-init.d` dell'host** (Redmine #322): se il vecchio compose montava una
   cartella dell'host su `/etc/cont-init.d` (su un impianto `/etc/cont-init.d` con lo
   script che installava `ffmpeg`, che serve al binding ipcamera per le istantanee), il
@@ -1178,6 +1182,38 @@ Nella pagina di onboarding → serial:
 - nome porta = `/dev/zigbee`
 - stack = `ember`
 
+**Ogni impianto ha la sua rete Zigbee** (Redmine #387). Senza `network_key`,
+`pan_id` ed `ext_pan_id` in `configuration.yaml` zigbee2mqtt usa i suoi valori
+fissi: chiave pubblica (scritta nei suoi sorgenti), PAN `0x1A62`, PAN esteso
+`0xDDDDDDDDDDDDDDDD`, uguali su ogni impianto che non li cambia. Due centraline
+vicine sono allora la stessa rete: appena un coordinatore si ferma (riavvio,
+aggiornamento, chiavetta staccata) i suoi dispositivi passano all'altro, ed è
+successo con due centraline in laboratorio. Con la chiave pubblica, poi, chiunque
+nel raggio radio legge e falsifica i messaggi.
+
+- Il template del controller ha `GENERATE` per tutti e tre: al primo avvio
+  zigbee2mqtt li sostituisce con valori casuali e li scrive nel file. Vale per le
+  centraline nuove e per zigbee2mqtt acceso per la prima volta (la config si copia
+  dal template solo se manca).
+- Una rete predefinita già in esercizio il controller **non la cambia mai da sé**:
+  la segnala nel log all'avvio e nella Web UI (*Impianto → Rete Zigbee*, avviso
+  rosso in *Stato*). Cambiarla vuol dire riassociare tutti i dispositivi, e lo
+  decide chi è sull'impianto.
+- **Rete nuova** (pulsante *Crea una rete Zigbee nuova*, o
+  `POST /api/system/zigbee-network/new`): zigbee2mqtt si ferma, la config prende
+  `GENERATE` e database, stato e backup del coordinatore vanno in
+  `zigbee2mqtt/data/rete-precedente-<data>/` con una copia della config (per
+  tornare indietro). Al riavvio la chiavetta forma la rete nuova. I nomi dei
+  dispositivi restano: zigbee2mqtt li lega all'indirizzo IEEE nella sezione
+  `devices:` della config, che non si tocca, e OpenHAB non vede differenze.
+- **Riassociazione:** dal frontend (porta 8090) *Permit join (All)*, poi reset di un
+  dispositivo alla volta (Aqara: tasto premuto circa 5 s finché il LED lampeggia).
+  Durante l'interview gli Aqara si addormentano: un tocco al tasto ogni 2-3 secondi
+  finché zigbee2mqtt non la dà per finita.
+- La cartella `zigbee2mqtt/data` non si copia mai da un impianto a un altro: si
+  porta dietro la rete, chiave compresa. Si riusa solo sulla stessa centralina o
+  sulla centralina che la sostituisce.
+
 ### 6.7 Node-RED (opzionale, porta 1880)
 Flussi low-code. Attivabile da UI/widget.
 
@@ -1359,8 +1395,8 @@ aperta in arancione.
 
 | Sezione | Cosa c'è |
 |---|---|
-| **Stato** | *Da guardare*: gli avvisi che chiedono attenzione (servizio fermo, aggiornamento disponibile o in corso, scelta in sospeso, backup non riuscito, rete da sistemare, HABApp senza token, porta seriale mappata con un nome che può cambiare al riavvio); un tocco porta alla sezione giusta. Poi servizi con riavvio, dati della centralina e IP, riavvio del sistema operativo. |
-| **Impianto** | HABApp (funzioni attive), configurazione dell'impianto (`params/*.yml`), porte seriali dei dispositivi, telefono di emergenza. |
+| **Stato** | *Da guardare*: gli avvisi che chiedono attenzione (servizio fermo, aggiornamento disponibile o in corso, scelta in sospeso, backup non riuscito, rete da sistemare, HABApp senza token, porta seriale mappata con un nome che può cambiare al riavvio, rete Zigbee predefinita); un tocco porta alla sezione giusta. Poi servizi con riavvio, dati della centralina e IP, riavvio del sistema operativo. |
+| **Impianto** | HABApp (funzioni attive), configurazione dell'impianto (`params/*.yml`), porte seriali dei dispositivi, rete Zigbee (con zigbee2mqtt acceso: rete propria o predefinita, rete nuova su richiesta, §6.6), telefono di emergenza. |
 | **Rete** | LAN, wifi, access point di emergenza; installazione di NetworkManager se manca. |
 | **Aggiornamenti** | Versioni dei software (release certificate, con avanzamento e scelta *continua senza backup / ferma*), controller, pacchetto addon offline. |
 | **Backup** | Backup manuale, ripristino (elenco aggiornato all'apertura della sezione), download di un backup locale (freccia accanto al backup), destinazione WebDAV (URL, utente, password). |
@@ -1393,6 +1429,8 @@ Base: `http://<IP>:8888/api` — documentazione interattiva su `http://<IP>:8888
 | POST | `/api/system/update` | Self-update del controller |
 | GET/POST | `/api/system/releases/check` · `/apply` · `/status` | Aggiornamento immagini |
 | POST | `/api/system/import-ui` | Reimporta widget/pages |
+| GET | `/api/system/zigbee-network` | Rete di zigbee2mqtt: predefinita o propria, PAN, dispositivi (la chiave non esce mai) |
+| POST | `/api/system/zigbee-network/new` | Rete Zigbee nuova: i dispositivi vanno riassociati (§6.6) |
 | GET | `/api/openhab/addons` | Stato del pacchetto addon offline (+ avanzamento download) |
 | POST | `/api/openhab/addons/download?force=` | Scarica il pacchetto addon (background) |
 | POST | `/api/backup/run` · GET `/status` · `/list` | Backup |
@@ -1562,6 +1600,8 @@ bridge trusted; reboot da remoto via OpenHAB Cloud → regola JS → localhost.
 - [ ] OpenVPN/WireGuard configurato per l'accesso remoto
 - [ ] `update_url` punta a un server **fidato** (il tarball viene estratto ed
       eseguito) e non è vuoto: senza, la centralina non riceve più l'OTA
+- [ ] Con zigbee2mqtt: rete Zigbee propria, non quella predefinita (Web UI →
+      *Impianto → Rete Zigbee*, §6.6)
 - [ ] Access point di emergenza: password annotata (o cambiata) e rete in
       `192.168.0.0/16`, così dall'AP la API key resta obbligatoria (10.x e
       172.16.x sono reti fidate, senza key: il validatore le rifiuta)

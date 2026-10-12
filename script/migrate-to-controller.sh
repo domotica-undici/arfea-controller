@@ -831,6 +831,25 @@ if os.path.isfile(p):
 PY
 }
 
+# Rete Zigbee predefinita (Redmine #387): senza network_key in configuration.yaml
+# zigbee2mqtt usa la sua chiave fissa, pubblica e uguale su ogni impianto che non
+# l'ha cambiata. Qui solo una nota: cambiarla vuol dire riassociare i dispositivi,
+# e si decide sull'impianto (il controller la segnala e non la tocca).
+zigbee_network_note() {
+  local d="$DATA_PATH/zigbee2mqtt/data" key
+  [[ -f "$d/configuration.yaml" ]] || return 0
+  key=$(awk '
+    /^advanced:/ {adv=1; next}
+    adv && /^[^[:space:]#]/ {adv=0}
+    adv && /^[[:space:]]+network_key:/ {k=1; sub(/^[^:]*:/, ""); buf=$0; next}
+    k && /^[[:space:]]+-/ {buf=buf "," $0; next}
+    k {k=0}
+    END {gsub(/[^0-9A-Za-z,]/, "", buf); sub(/^,+/, "", buf); print buf}' "$d/configuration.yaml")
+  if [[ -z "$key" || "$key" == "1,3,5,7,9,11,13,15,0,2,4,6,8,10,12,13" ]]; then
+    UPGRADE_NOTES+=("zigbee2mqtt usa la rete Zigbee predefinita (chiave pubblica, uguale ad altri impianti): Web UI, Impianto, «Crea una rete Zigbee nuova», poi riassociare i dispositivi")
+  fi
+}
+
 # Mosquitto nativo: i retained stanno nel suo mosquitto.db (il pacchetto Debian ha
 # la persistenza accesa). Senza, dopo la migrazione gli item MQTT di OpenHAB
 # restano NULL finche' ogni nodo zwave non ritrasmette: ore, per le testine a
@@ -1687,6 +1706,7 @@ except Exception as e:
   fi
   log "arfea.yml configurato (API key: $ARFEA_API_KEY)"
   fix_container_ip_refs
+  zigbee_network_note
   deasy_backup_exclude
 
   # 5. Avvia stack
@@ -2278,6 +2298,7 @@ run_native_migration() {
   collect_upgrade_notes
   configure_yml_native
   fix_container_ip_refs
+  zigbee_network_note
   copy_native_mosquitto
   deasy_backup_exclude
 

@@ -271,6 +271,13 @@
             <div id="devProgress"></div>
             <button class="btn btn-green btn-block" id="btnSaveDevices" onclick="saveDevices()">Salva e applica</button>
           </div>
+          <div class="card" id="zigbeeNetCard" style="display:none">
+            <h2>Rete Zigbee</h2>
+            <div id="zigbeeNetStatus" class="status-bar status-idle">Caricamento...</div>
+            <p class="hint">Ogni impianto ha la sua rete Zigbee, con chiave e PAN casuali. Una rete nuova stacca tutti i dispositivi: vanno riassociati uno per uno, i nomi restano.</p>
+            <div id="zigbeeNetProgress"></div>
+            <button class="btn btn-blue btn-block" id="btnZigbeeNet" onclick="newZigbeeNetwork()">Crea una rete Zigbee nuova</button>
+          </div>
           <div class="card span-2">
             <h2>Configurazione impianto</h2>
             <p class="card-sub">Termostati, zone, carichi: la definizione dell'impianto per la funzione HABApp scelta. Al salvataggio HABApp riparte da solo.</p>
@@ -611,6 +618,7 @@ function refreshAll() {
   refreshServices();
   refreshDeviceServices();
   refreshSerialWarnings();
+  refreshZigbeeNetwork();
   refreshHabapp();
   refreshNetwork();
   refreshSystem();
@@ -1425,6 +1433,59 @@ function useStableDevice(i) {
   if (!w) return;
   devList[i] = w.suggested;
   renderDevices();
+}
+
+// ── Rete Zigbee ───────────────────────────────────────────
+
+// Rete predefinita di zigbee2mqtt = stessa chiave (pubblica) e stesso PAN su
+// ogni impianto: due centraline vicine si prendono i dispositivi (Redmine
+// #387). Il controller non la cambia mai da solo: serve la riassociazione dei
+// dispositivi, e la decide chi e' sull'impianto.
+function refreshZigbeeNetwork() {
+  apiGet('/system/zigbee-network').then(function(st) {
+    var show = !!(st && st.enabled && st.config);
+    var bad = show && st.default === true;
+    document.getElementById('zigbeeNetCard').style.display = show ? '' : 'none';
+    setAlert('zigbee', bad ? 'err' : null,
+      'zigbee2mqtt usa la rete Zigbee predefinita: chiave pubblica, uguale ad altri impianti', 'impianto');
+    if (!show) return;
+    var n = (st.devices === null || st.devices === undefined) ? '?' : st.devices;
+    var el = document.getElementById('zigbeeNetStatus');
+    if (bad) {
+      el.className = 'status-bar status-failed';
+      el.textContent = 'Rete predefinita (chiave pubblica, PAN ' + st.pan_id + ') con ' + n +
+        ' dispositivi: crea una rete nuova e riassociali.';
+    } else if (st.default === false) {
+      el.className = 'status-bar status-completed';
+      el.textContent = st.pan_id === 'GENERATE'
+        ? 'Rete propria: chiave e PAN si generano al primo avvio di zigbee2mqtt.'
+        : 'Rete propria (PAN ' + st.pan_id + ', ' + n + ' dispositivi).';
+    } else {
+      el.className = 'status-bar status-idle';
+      el.textContent = 'Configurazione di zigbee2mqtt non leggibile.';
+    }
+  }).catch(function() { /* controller senza l'endpoint: nessun avviso */ });
+}
+
+function newZigbeeNetwork() {
+  if (!confirm('Creare una rete Zigbee nuova?\n\nTutti i dispositivi Zigbee si staccano e vanno ' +
+      'riassociati uno per uno (i nomi restano). La rete vecchia resta in una copia ' +
+      'nella cartella di zigbee2mqtt.')) return;
+  var btn = document.getElementById('btnZigbeeNet');
+  btn.disabled = true;
+  setProgress('zigbeeNetProgress', 40, 'running');
+  apiPost('/system/zigbee-network/new').then(function(r) {
+    setProgress('zigbeeNetProgress', 100, r.success ? 'completed' : 'failed');
+    alert(r.message || 'Errore');
+  }).catch(function(e) {
+    setProgress('zigbeeNetProgress', 100, 'failed');
+    alert('Errore: ' + e.message);
+  }).finally(function() {
+    btn.disabled = false;
+    setTimeout(function() { clearProgress('zigbeeNetProgress'); }, 1500);
+    refreshZigbeeNetwork();
+    refreshServices();
+  });
 }
 
 // ── HABApp ────────────────────────────────────────────────
