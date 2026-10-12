@@ -516,7 +516,15 @@ logger = logging.getLogger(__name__)
 #          gran parte dei 654 MB del backup.
 #          Guardiano: dopo il ritorno a :prev toglie l'immagine rotta, rimasta
 #          orfana (sulla centralina di test 1,1 GB di disco).
-VERSION = "1.8.17"
+#   1.8.18 FIX pagina «Arfea controller» mai creata su una centralina nuova
+#          (Redmine #384): l'import dei widget si tentava solo all'avvio, quando
+#          OpenHAB non e' ancora pronto o l'admin non c'e'. Ora, finche' non
+#          riesce, si ritenta a ogni giro delle card semantiche (10 minuti), col
+#          token admin coniato una volta sola e poi riusato (prima uno nuovo a
+#          ogni import). POST /api/system/import-ui non ferma piu' le altre API
+#          mentre aspetta OpenHAB: install.sh lo chiama al posto del suo import,
+#          che senza PyYAML sull'host saltava ogni componente in silenzio.
+VERSION = "1.8.18"
 
 # -- Globals initialised at startup -----------------------------------------
 
@@ -1511,60 +1519,66 @@ def _import_ui_components(wait_ready: bool = True) -> tuple[bool, str]:
     if not _oh_rest_ready():
         return (False, "OpenHAB REST non raggiungibile")
 
-    token, mint_err = docker_manager.mint_oh_token("OTA")
-    if not token:
-        return (False, f"Impossibile generare il token admin OpenHAB: {mint_err}")
-
-    ok, ko = 0, 0
+    files = []
     for yml in sorted(ui_dir.glob("*.yaml")):
+        if yml.name.startswith("widget_"):
+            files.append((yml, "ui:widget"))
+        elif yml.name.startswith("page_"):
+            files.append((yml, "ui:page"))
+
+    # Il token admin lo conia _oh_rest_auth alla prima risposta 401/403 e poi lo
+    # riusa: chi ritenta l'import ogni 10 minuti non lascia un token nuovo in
+    # OpenHAB a ogni giro.
+    ok, ko, why = 0, 0, ""
+    for yml, ctype in files:
         try:
             data = yaml.safe_load(yml.read_text())
             uid = data["uid"]
-            if yml.name.startswith("widget_"):
-                ctype = "ui:widget"
-            elif yml.name.startswith("page_"):
-                ctype = "ui:page"
-            else:
-                continue
-            with tempfile.NamedTemporaryFile("w", suffix=".json", delete=False) as tf:
-                json.dump(data, tf)
-                tf_path = tf.name
             # PUT aggiorna un componente esistente ma ritorna 404 se non c'è:
             # in quel caso lo si CREA con POST sul namespace. (Il PUT-solo non
             # creava mai i componenti nuovi al primo import.)
-            def _curl(method: str, url: str) -> str:
-                r = _nsenter_net([
-                    "curl", "-s", "-o", "/dev/null", "-w", "%{http_code}", "-X", method,
-                    url,
-                    "-H", f"Authorization: Bearer {token}",
-                    "-H", "Content-Type: application/json",
-                    "-d", f"@{tf_path}",
-                ])
-                return r.stdout.strip()
-
-            code = _curl("PUT", f"http://localhost:8080/rest/ui/components/{ctype}/{uid}")
+            code, text = _oh_rest_auth("PUT", f"/rest/ui/components/{ctype}/{uid}", data)
             if code == "404":
-                code = _curl("POST", f"http://localhost:8080/rest/ui/components/{ctype}")
-            os.unlink(tf_path)
+                code, text = _oh_rest_auth("POST", f"/rest/ui/components/{ctype}", data)
             if code in ("200", "201"):
                 ok += 1
                 logger.info("UI import: %s (%s) OK", yml.name, ctype)
-            else:
-                ko += 1
-                logger.warning("UI import: %s FALLITO (HTTP %s)", yml.name, code)
+                continue
+            # I fallimenti finiscono nel dettaglio che torna al chiamante:
+            # _maybe_import_ui lo scrive nei log solo quando cambia.
+            if code in ("401", "403"):
+                # Token non coniato (admin che non c'e', console non pronta): gli
+                # altri file andrebbero uguale, e ognuno riproverebbe la console.
+                ko = len(files) - ok
+                why = f"nessun token admin: {text.strip()[:200]}"
+                break
+            ko += 1
+            why = f"{yml.name}: HTTP {code}"
         except Exception as exc:
             ko += 1
-            logger.warning("UI import: %s errore: %s", yml.name, exc)
+            why = f"{yml.name}: {exc}"
+    if why:
+        logger.debug("UI import: %s", why)
 
     if ok and not ko:
         _ui_hash_file().write_text(_compute_ui_hash())
-    return (ko == 0, f"UI importati: {ok} ok, {ko} falliti")
+    detail = f"UI importati: {ok} ok, {ko} falliti"
+    return (ko == 0, f"{detail} ({why})" if ko and why else detail)
 
 
-def _maybe_import_ui() -> None:
-    """All'avvio: reimporta i widget solo se sono cambiati dall'ultimo import
-    (hash), tipicamente dopo un OTA che porta interfacce nuove. Eseguito in un
-    thread per non ritardare la disponibilità del controller."""
+# Esito dell'ultimo import fallito: nei log si scrive solo quando cambia, non a
+# ogni giro.
+_ui_import_failed = ""
+
+
+def _maybe_import_ui(wait_ready: bool = True) -> None:
+    """Reimporta i widget solo se sono cambiati dall'ultimo import riuscito
+    (hash): all'avvio, tipicamente dopo un OTA che porta interfacce nuove, e poi
+    a ogni giro delle card semantiche finche' non riesce. Su una centralina
+    appena installata, al primo avvio del controller OpenHAB non e' pronto o
+    l'admin non c'e' ancora: con un solo tentativo la pagina «Arfea controller»
+    non nasceva piu' (Redmine #384)."""
+    global _ui_import_failed
     try:
         current = _compute_ui_hash()
         if not current:
@@ -1572,11 +1586,17 @@ def _maybe_import_ui() -> None:
         stored = _ui_hash_file().read_text().strip() if _ui_hash_file().exists() else ""
         if current == stored:
             return
-        logger.info("Widget UI cambiati: reimport in OpenHAB...")
-        ok, detail = _import_ui_components(wait_ready=True)
-        logger.info("Reimport UI: %s", detail)
+        if not _ui_import_failed:
+            logger.info("Widget UI cambiati: reimport in OpenHAB...")
+        ok, detail = _import_ui_components(wait_ready=wait_ready)
+        if ok:
+            logger.info("Reimport UI: %s", detail)
+            _ui_import_failed = ""
+        elif detail != _ui_import_failed:
+            logger.warning("Reimport UI: %s. Si ritenta ogni %d minuti", detail, _SEMANTIC_INTERVAL // 60)
+            _ui_import_failed = detail
     except Exception as exc:
-        logger.warning("Reimport UI all'avvio fallito: %s", exc)
+        logger.warning("Reimport UI fallito: %s", exc)
 
 
 # ---------------------------------------------------------------------------
@@ -1684,10 +1704,12 @@ def _sync_semantic_cards() -> str:
 
 
 def _semantic_cards_loop() -> None:
-    """Gira per sempre nel thread di avvio: un errore non ferma i giri dopo."""
+    """Gira per sempre nel thread di avvio: un errore non ferma i giri dopo.
+    Ritenta anche l'import dei widget, se l'ultimo non e' riuscito (#384)."""
     while True:
         try:
             if _oh_rest_ready():
+                _maybe_import_ui(wait_ready=False)
                 msg = _sync_semantic_cards()
                 if msg:
                     logger.info("Card semantiche: %s", msg)
@@ -2072,10 +2094,12 @@ def releases_decision(body: ReleaseDecisionRequest):
 
 
 @app.post("/api/system/import-ui", response_model=OperationResponse, dependencies=[Depends(verify_api_key)])
-async def import_ui():
+def import_ui():
     """Reimporta i widget/pagine UI in OpenHAB (dal set skeleton bundlato).
     Serve dopo un OTA che porta widget nuovi: l'OTA lo chiama da solo, questo è
-    l'aggancio manuale."""
+    l'aggancio manuale, e install.sh lo usa a fine installazione. Sincrona
+    (FastAPI la esegue in un thread): l'attesa di OpenHAB, fino a qualche
+    minuto, non deve fermare le altre API."""
     ok, detail = _import_ui_components()
     return OperationResponse(success=ok, message=detail)
 

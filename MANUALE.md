@@ -89,6 +89,17 @@ skeleton OpenHAB, avvia lo stack, crea l'utente admin OpenHAB (password
 **generata** e salvata solo in locale in
 `/opt/docker_store/arfea-controller/.credentials`, chmod 600) e importa i widget UI.
 
+Prima di creare l'admin l'installer aspetta che la console di OpenHAB esegua
+davvero i comandi `openhab:*` (al primo avvio per un po' rispondono «Command not
+found»). Se l'admin c'è già, perché qualcuno l'ha creato dalla UI di OpenHAB
+mentre l'installazione girava, la password resta quella scelta lì e in
+`.credentials` non ne finisce una inventata (`OPENHAB_ADMIN_STATE=esistente`).
+La pagina **«Arfea controller»** e il suo widget li importa il controller
+(`POST /api/system/import-ui`): sull'host non serve PyYAML. Se in quel momento
+non ci riesce (OpenHAB lento al primo avvio, admin non ancora creato), dal
+controller **1.8.18** ritenta da solo ogni 10 minuti finché non riesce (Redmine
+#384).
+
 **Installazione non-interattiva** (automazioni/provisioning):
 
 ```bash
@@ -493,7 +504,8 @@ elenca i tag certificati e opzionalmente `controller_min` e `migrations`.
   Le centraline migrate con `migrate-to-controller.sh` fino alla 1.8.1 lo avevano
   vuoto di proposito: vanno sistemate a mano (vedi §4.2).
 - **Widget "Aggiornamenti" mancante:** dalla 1.3.0 viene reimportato da solo dopo
-  un OTA. Per forzare: `curl -s -X POST localhost:8888/api/system/import-ui`.
+  un OTA, e dalla 1.8.18 si ritenta ogni 10 minuti finché l'import non riesce.
+  Per forzare: `curl -s -X POST localhost:8888/api/system/import-ui`.
 
 ### 4.7 Migrazione da centralina esistente → arfea-controller
 
@@ -1297,7 +1309,8 @@ nuova senza cavo). Il watchdog del controller:
 
 Per configurare una rete nuova tramite l'AP:
 1. dal telefono/PC collegati alla rete `ARFEA-XXXX` (nome e password nella Web
-   UI, sezione *Access point*, e in `/root/arfea-credentials.txt`);
+   UI, sezione *Access point*, in `/root/arfea-credentials.txt` e nel pannello
+   info di arfea-manager dopo una scansione);
 2. apri `http://192.168.200.1:8888` e inserisci la API key;
 3. *Wifi* → *Cerca reti* (con l'AP acceso l'elenco è quello dell'ultima
    scansione; *Aggiorna* spegne l'AP per ~15 s e poi ti ricolleghi), scegli la

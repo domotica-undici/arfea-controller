@@ -300,72 +300,76 @@ start_stack() {
   while [[ "$(docker inspect -f '{{.State.Running}}' openhab 2>/dev/null)" != "true" ]]; do sleep 2; done
 }
 
+# Comando nella console Karaf di OpenHAB. Va passato via STDIN: come argomento
+# (client -p habopen "cmd") su OpenHAB 5.x non viene eseguito (stampa solo
+# "Closed"). Il client esce sempre con rc=0, anche sugli errori: l'esito si
+# legge nell'output, e qui un exec fallito da' un output vuoto.
+karaf() {
+  { docker exec openhab sh -c "echo '$1' | /openhab/runtime/bin/client -p habopen" 2>/dev/null || true; } | tr -d '\r'
+}
+
 wait_openhab_rest() {
   log "Attesa REST API OpenHAB (fino a ~8 min)..."
   local t=0 code
   while true; do
     code=$(curl -s -o /dev/null -w "%{http_code}" --connect-timeout 3 --max-time 5 \
-      "http://localhost:8080/rest/systeminfo" 2>/dev/null || echo 000)
+      "http://127.0.0.1:8080/rest/systeminfo" 2>/dev/null || echo 000)
     [[ "$code" == "200" || "$code" == "401" ]] && break
     t=$((t+1)); [[ $t -ge 240 ]] && { log "ATTENZIONE: REST non pronta (code=$code)"; return 1; }
     sleep 2
   done
-  # NB: il comando Karaf va passato via STDIN; come argomento (client -p habopen
-  # "cmd") su OpenHAB 5.x non viene eseguito (stampa solo "Closed"). Il prompt
-  # "openhab>" nel banner conferma che la console risponde.
-  local k=0
-  while ! docker exec openhab sh -c "echo 'shell:info' | /openhab/runtime/bin/client -p habopen" 2>/dev/null | grep -q 'openhab>'; do
-    k=$((k+1)); [[ $k -ge 36 ]] && { log "ATTENZIONE: console Karaf non pronta"; return 1; }
+  # La console risponde prima che parta il bundle dei comandi openhab:*: in
+  # quella finestra dice "Command not found", e un 'users add' lanciato li' non
+  # crea l'admin (pagina «Arfea controller» mai importata, Redmine #384). Si
+  # aspetta il comando vero, non il prompt.
+  local k=0 out
+  while true; do
+    out=$(karaf 'openhab:users list')
+    [[ "$out" == *'openhab>'* && "$out" != *'Command not found'* ]] && break
+    k=$((k+1)); [[ $k -ge 120 ]] && { log "ATTENZIONE: console Karaf non pronta"; return 1; }
     sleep 5
   done
   log "OpenHAB REST + Karaf pronti"
 }
 
-# ── Admin OpenHAB (password generata) + token + import UI ────────────────────
-OH_ADMIN_PASS=""; OH_ADMIN_TOKEN=""
+# ── Admin OpenHAB (password generata) + import UI ────────────────────────────
+# OH_ADMIN_STATE: creato | esistente (fatto dalla UI di OpenHAB, la password e'
+# quella scelta li') | fallito. La password si salva solo se l'ha messa lo script.
+OH_ADMIN_PASS=""; OH_ADMIN_STATE="fallito"
 setup_openhab_admin() {
-  OH_ADMIN_PASS=$(openssl rand -hex 12)
-  # Comandi Karaf via STDIN (vedi nota in wait_openhab_rest). 'users add' fallisce
-  # in modo innocuo se admin esiste già (es. creato dal wizard web): quel che conta
-  # è il token, che si conia comunque per l'utente admin esistente.
-  docker exec openhab sh -c \
-    "echo 'openhab:users add ${OH_ADMIN_USER} ${OH_ADMIN_PASS} administrator' | /openhab/runtime/bin/client -p habopen" &>/dev/null || true
-  local out
-  out=$(docker exec openhab sh -c \
-    "echo 'openhab:users addApiToken ${OH_ADMIN_USER} arfeaInstall arfea' | /openhab/runtime/bin/client -p habopen" 2>/dev/null | tr -d '\r')
-  # Il token ha forma oh.<nome>.<segreto>: lo estraiamo ignorando banner/prompt.
-  OH_ADMIN_TOKEN=$(echo "$out" | grep -oE 'oh\.[A-Za-z0-9._-]+' | tail -1)
-  [[ -n "$OH_ADMIN_TOKEN" ]] || { log "ATTENZIONE: token admin non generato, salto import UI"; return 1; }
-  log "utente admin OpenHAB creato e token generato"
+  local pass out i
+  pass=$(openssl rand -hex 12)
+  for i in $(seq 1 12); do
+    out=$(karaf "openhab:users add ${OH_ADMIN_USER} ${pass} administrator")
+    case "$out" in
+      *"User created."*)
+        OH_ADMIN_PASS="$pass"; OH_ADMIN_STATE="creato"
+        log "utente admin OpenHAB creato"; return 0 ;;
+      *"already exists"*)
+        OH_ADMIN_STATE="esistente"
+        log "utente admin OpenHAB gia' presente (creato dalla UI): la password resta quella scelta li'"
+        return 0 ;;
+    esac
+    sleep 10
+  done
+  log "ATTENZIONE: utente admin OpenHAB non creato: $(echo "$out" | grep -v '^\s*$' | tail -1)"
+  return 1
 }
 
+# Pagine e widget li importa il controller (POST /api/system/import-ui), con lo
+# stesso codice che usa dopo un OTA: qui non serve PyYAML sull'host, che su
+# Armbian puo' mancare (prima ogni componente veniva saltato in silenzio,
+# Redmine #384). Se non riesce, il controller ritenta da solo ogni 10 minuti.
 import_ui() {
-  local UI_DIR="$CTRL_DIR/skeleton-openhab/ui"
-  [[ -d "$UI_DIR" && -n "$OH_ADMIN_TOKEN" ]] || return 0
-  local yml uid ctype json code
-  for yml in "$UI_DIR"/*.yaml; do
-    [[ -f "$yml" ]] || continue
-    case "$(basename "$yml")" in
-      widget_*) ctype="ui:widget" ;;
-      page_*)   ctype="ui:page" ;;
-      *) continue ;;
-    esac
-    uid=$(python3 -c "import yaml;print(yaml.safe_load(open('$yml'))['uid'])" 2>/dev/null) || continue
-    json=$(python3 -c "import yaml,json;print(json.dumps(yaml.safe_load(open('$yml'))))" 2>/dev/null) || continue
-    # PUT aggiorna un componente esistente ma dà 404 se non c'è: in quel caso lo
-    # si CREA con POST sul namespace. (Il PUT-solo non creava mai i componenti.)
-    code=$(curl -s -o /dev/null -w "%{http_code}" -X PUT \
-      "http://localhost:8080/rest/ui/components/${ctype}/${uid}" \
-      -H "Authorization: Bearer ${OH_ADMIN_TOKEN}" \
-      -H "Content-Type: application/json" -d "$json")
-    if [[ "$code" == "404" ]]; then
-      code=$(curl -s -o /dev/null -w "%{http_code}" -X POST \
-        "http://localhost:8080/rest/ui/components/${ctype}" \
-        -H "Authorization: Bearer ${OH_ADMIN_TOKEN}" \
-        -H "Content-Type: application/json" -d "$json")
-    fi
-    log "UI $(basename "$yml"): HTTP $code"
-  done
+  [[ -d "$CTRL_DIR/skeleton-openhab/ui" ]] || return 0
+  local resp msg
+  resp=$(curl -s --max-time 420 -X POST "http://127.0.0.1:8888/api/system/import-ui" 2>/dev/null || true)
+  msg=$(echo "$resp" | sed -n 's/.*"message":"\([^"]*\)".*/\1/p')
+  if [[ "$resp" == *'"success":true'* ]]; then
+    log "UI OpenHAB: ${msg}"
+  else
+    log "ATTENZIONE: import UI non riuscito (${msg:-controller non raggiungibile}): il controller ritenta da solo ogni 10 minuti"
+  fi
 }
 
 save_credentials() {
@@ -376,6 +380,8 @@ save_credentials() {
 ARFEA_API_KEY=$ARFEA_API_KEY
 OPENHAB_ADMIN_USER=$OH_ADMIN_USER
 OPENHAB_ADMIN_PASS=$OH_ADMIN_PASS
+# creato | esistente (password scelta nella UI di OpenHAB) | fallito
+OPENHAB_ADMIN_STATE=$OH_ADMIN_STATE
 EOF
   chmod 600 "$f"
   log "credenziali salvate in $f (chmod 600)"
@@ -387,7 +393,11 @@ final_info() {
   echo " Installazione completata."
   echo "  Controller:  http://<ip-lan>:8888   (docs: /docs)"
   echo "  OpenHAB:     http://<ip-lan>:8080"
-  echo "  Admin OpenHAB: utente '$OH_ADMIN_USER' (password in $CTRL_DIR/.credentials)"
+  case "$OH_ADMIN_STATE" in
+    creato)    echo "  Admin OpenHAB: utente '$OH_ADMIN_USER' (password in $CTRL_DIR/.credentials)" ;;
+    esistente) echo "  Admin OpenHAB: utente '$OH_ADMIN_USER' gia' creato dalla UI (password scelta li')" ;;
+    *)         echo "  Admin OpenHAB: NON creato: crealo al primo accesso alla UI di OpenHAB" ;;
+  esac
   echo "  API Key controller: in $CTRL_DIR/.credentials"
   echo "======================================================"
 }
