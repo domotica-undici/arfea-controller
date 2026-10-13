@@ -735,6 +735,15 @@ del template, cioè quelle della release certificata.
   zigbee2mqtt non ha una `network_key` propria, il resoconto finale lo mette fra le
   cose da verificare. Lo script non la cambia: la rete nuova si fa dalla Web UI e
   i dispositivi vanno riassociati (§6.6).
+- **Frontend di zigbee2mqtt** (Redmine #393): il controller pubblica la 8090
+  dell'host sulla 8080 del container. Un vecchio compose che teneva il frontend
+  sulla 8090 anche dentro il container (`frontend.port: 8090`) lasciava
+  zigbee2mqtt acceso ma la sua pagina irraggiungibile (#389). Lo script porta
+  `frontend.port` alla porta mappata, con l'originale in
+  `configuration.yaml.prima-della-migrazione`. Un impianto migrato prima si
+  corregge a mano, a container fermo:
+  `sed -i '/^frontend:/,/^[^ ]/ s/^\(  port:\) 8090$/\1 8080/'` sulla config, poi
+  `docker start zigbee2mqtt`.
 - **Script `cont-init.d` dell'host** (Redmine #322): se il vecchio compose montava una
   cartella dell'host su `/etc/cont-init.d` (su un impianto `/etc/cont-init.d` con lo
   script che installava `ffmpeg`, che serve al binding ipcamera per le istantanee), il

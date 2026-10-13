@@ -850,6 +850,42 @@ zigbee_network_note() {
   fi
 }
 
+# Frontend di zigbee2mqtt (Redmine #393): il controller pubblica la 8090 dell'host
+# sulla porta del container scritta in arfea.yml (8080 nel template). Un vecchio
+# compose che pubblicava zigbee2mqtt con la stessa porta dentro e fuori lascia
+# nella config frontend.port: 8090, e dopo la migrazione zigbee2mqtt gira ma la sua
+# pagina non risponde (#389). La porta del frontend diventa quella mappata.
+fix_zigbee_frontend_port() {
+  local p="$DATA_PATH/zigbee2mqtt/data/configuration.yaml"
+  [[ -f "$p" ]] || return 0
+  python3 - "$p" "$DATA_PATH/arfea-controller/config/arfea.yml" <<'PY' \
+    || warn "porta del frontend di zigbee2mqtt non corretta: se la sua pagina non risponde, frontend.port in $p deve essere 8080"
+import os, re, shutil, sys, yaml
+p, yml = sys.argv[1], sys.argv[2]
+host, want = "8090", 8080
+try:
+    ports = (yaml.safe_load(open(yml))["services"]["zigbee2mqtt"].get("ports") or [])
+    if ports:
+        host, _, ct = str(ports[0]).split("/")[0].rpartition(":")
+        want = int(ct)
+except Exception:
+    pass
+fe = (yaml.safe_load(open(p)) or {}).get("frontend")
+# Frontend spento, «true» di zigbee2mqtt 1.x o senza porta (8080 di default): niente da fare
+if not isinstance(fe, dict) or fe.get("port") is None or str(fe["port"]) == str(want):
+    sys.exit(0)
+s = open(p).read()
+new, n = re.subn(r"(?m)^(frontend:[ \t]*\n(?:[ \t]+.*\n|[ \t]*\n)*?[ \t]+port:[ \t]*)['\"]?\d+['\"]?",
+                 lambda m: m.group(1) + str(want), s, count=1)
+if not n:
+    sys.exit(1)
+if not os.path.exists(p + ".prima-della-migrazione"):
+    shutil.copy2(p, p + ".prima-della-migrazione")
+open(p, "w").write(new)
+print(f"  zigbee2mqtt: frontend.port {fe['port']} -> {want} (la pagina resta sulla {host or want} dell'host)")
+PY
+}
+
 # Mosquitto nativo: i retained stanno nel suo mosquitto.db (il pacchetto Debian ha
 # la persistenza accesa). Senza, dopo la migrazione gli item MQTT di OpenHAB
 # restano NULL finche' ogni nodo zwave non ritrasmette: ore, per le testine a
@@ -1706,6 +1742,7 @@ except Exception as e:
   fi
   log "arfea.yml configurato (API key: $ARFEA_API_KEY)"
   fix_container_ip_refs
+  fix_zigbee_frontend_port
   zigbee_network_note
   deasy_backup_exclude
 
@@ -2298,6 +2335,7 @@ run_native_migration() {
   collect_upgrade_notes
   configure_yml_native
   fix_container_ip_refs
+  fix_zigbee_frontend_port
   zigbee_network_note
   copy_native_mosquitto
   deasy_backup_exclude
