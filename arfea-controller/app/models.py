@@ -104,6 +104,12 @@ class ControllerSettings(BaseModel):
         "https://openhab.jfrog.io/artifactory/libs-release/org/openhab/distro/"
         "openhab-addons/{version}/openhab-addons-{version}.kar"
     )
+    # Dove finiscono i log dei container: "json-file" (file accanto al
+    # container, max log_max_size) o "journald" (il journal dell'host). Sulle
+    # centraline su microSD (Raspberry) il journal sta in RAM, e i log dei
+    # container non scrivono sulla scheda (Redmine #403). Vale per i container
+    # creati o ricreati dopo il cambio.
+    log_driver: Literal["json-file", "journald"] = "json-file"
 
 
 class AccessPointConfig(BaseModel):

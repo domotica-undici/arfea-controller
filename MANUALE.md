@@ -165,7 +165,14 @@ controller:
   update_url:   "https://.../ota/arfea-controller.tar.xz"  # self-update codice
   releases_url: "https://.../ota/releases.json"            # versioni immagini
   release: "2026.06"
+  log_driver: "json-file"   # o "journald": log dei container nel journal (dal 1.8.20)
 ```
+
+`log_driver` dice dove finiscono i log dei container che crea il controller:
+`json-file` (default) in un file accanto al container, al massimo `log_max_size`;
+`journald` nel journal dell'host. Sulle Raspberry il journal sta in RAM e così i log
+non consumano la microSD ([§4.9](#49-raspberry-pi-col-controller)). Vale per i
+container creati o ricreati dopo il cambio.
 
 **network** — rete Docker dei servizi
 ```yaml
@@ -477,6 +484,14 @@ Più semplice ancora, dal PC: `./script/ripara-controller.sh --centralina <alias
    - Lo stesso avanzamento si vede nella Web UI del controller (`http://<IP>:8888`,
      card *"Aggiornamento software"*), che resta raggiungibile anche mentre OpenHAB
      si riavvia.
+
+**Centraline a 32 bit (dal controller 1.8.20).** Se un'immagine della release non esiste
+per l'architettura della centralina (OpenHAB 5 esce solo per amd64 e arm64), la release
+non si propone: la Web UI dice *«La release … non si installa su questa centralina: …
+non esiste per la sua architettura (arm)»*, e un apply chiesto lo stesso si ferma prima
+del backup. Prima l'aggiornamento partiva, fermava l'impianto per il backup e falliva al
+download. Conta l'architettura di Docker, non del kernel: un Raspberry Pi OS a 32 bit
+gira spesso su un kernel a 64 bit ([§4.9](#49-raspberry-pi-col-controller)).
 
 > ⚠️ **OpenHAB 5.2.0 e controller fino alla 1.8.2:** i pulsanti del widget ARFEA non
 > fanno niente (la regola riceve l'azione vuota: nel log `ARFEA action=` e `unknown
@@ -999,7 +1014,9 @@ controller: le immagini OpenHAB 5.x escono solo per arm64 e amd64 (servirebbe
 reinstallare il sistema a 64 bit), 1 GB di RAM è poco per OpenHAB 5 con Java 21, docker
 e controller, una SD da 8 GB non regge il pacchetto addon (~600 MB più l'estrazione) e
 HABApp (~1,2 GB), e da OpenHAB 2.x le regole che chiamano script dell'host con `sudo`
-(access point, LCD) vanno riscritte. Si passano al controller cambiando la centralina.
+(access point, LCD) vanno riscritte. Si passano al controller cambiando la centralina,
+oppure reinstallando la Raspberry con Raspberry Pi OS a 64 bit su una microSD nuova
+([§4.9](#49-raspberry-pi-col-controller)).
 
 **Pulizia:** [script/pulizia-raspberry.sh](script/pulizia-raspberry.sh) (Redmine #325),
 dal PC o dallo Script Hub con `--centralina <alias>` (ripetibile), oppure sulla Raspberry
@@ -1034,6 +1051,138 @@ ogni altro cambio a `cmdline.txt` o `config.txt` lo segnala da controllare prima
 riavviare. Con `--apply` dal PC lo script gira sulla Raspberry in un'unità
 `systemd-run` (log in `/var/tmp/pulizia-raspberry.log`): se la VPN cade, apt non resta a
 metà.
+
+### 4.9 Raspberry Pi col controller
+
+Con **Raspberry Pi OS a 64 bit** (Debian 12 o 13) una Raspberry Pi 3 o 4 regge il
+controller con OpenHAB 5. Provato su una 3B+ da 1 GB, rimettendo su dal suo backup un
+impianto col vecchio docker-compose (Redmine #403). Si parte da una microSD nuova (almeno
+16 GB) flashata con Raspberry Pi Imager (utente, ssh, rete). Lo script è
+`preparaArfea-raspberry.sh`, nella repo privata, e vuole accanto `install.sh`
+(fase 1 e setup interattivo) e, per il ripristino, `migrate-to-controller.sh`:
+
+```bash
+sudo bash preparaArfea-raspberry.sh                        # fase 1: poi riavvia da sola
+sudo bash preparaArfea-raspberry.sh                        # fase 2: setup interattivo
+sudo bash preparaArfea-raspberry.sh --ripristina backup.tar.gz   # fase 2: da un vecchio impianto
+sudo bash preparaArfea-raspberry.sh --ottimizza            # solo i ritocchi, su una già installata
+sudo bash preparaArfea-raspberry.sh --misura 10            # MB scritti sulla SD in 10 minuti
+```
+
+**La microSD.** Una scheda si consuma con le scritture, e su una centralina quasi tutte
+sono periodiche: log, journal, swap. Lo script le toglie dalla scheda:
+
+- journal di sistema **solo in RAM** (`Storage=volatile`, al massimo 48 MB): si perde a
+  ogni riavvio;
+- swap **solo zram** (compresso in RAM). Raspberry Pi OS 13 di serie usa `zram+file`, che
+  scrive le pagine ferme su `/var/swap`; sul 12 `dphys-swapfile` è un file di swap sulla
+  SD e lascia il posto a `systemd-zram-generator`;
+- log dei container nel journal, cioè in RAM: `log_driver: journald` in `arfea.yml`
+  (controller ≥ 1.8.20, [§3](#3-configurazione-arfeayml)) e, per il controller stesso, un
+  `docker-compose.override.yml` che l'OTA non tocca. `docker logs` funziona come prima;
+- log di OpenHAB (`userdata/logs`, 64 MB), HABApp (`conf/habapp/log`) e zwave-js-ui
+  (`zwave-js-ui/logs`) in **tmpfs**, montati da `/etc/fstab` prima che Docker parta, e
+  log4j2 di OpenHAB a file da 4 MB con 2 copie (di serie 16 MB e 7). Un servizio acceso
+  dopo dalla Web UI vuole un `--ottimizza`;
+- **persistenza rrd4j di OpenHAB in RAM**, come lo zram di openHABian. Senza un
+  `rrd4j.persist` OpenHAB salva ogni minuto tutti gli item numerici: sulla 3 della prova
+  101 file riscritti ogni minuto, 120 MB all'ora, l'85% di tutto quello che arrivava
+  sulla SD dopo aver tolto i log. La cartella `userdata/persistence/rrd4j` sta in tmpfs
+  (`arfea-ram-persistenza.service`, che parte prima di Docker e si ferma dopo) e si copia
+  sulla SD ogni 6 ore e a ogni spegnimento pulito, file per file con un rename. Il
+  prezzo: se manca la corrente si perdono al massimo le ultime 6 ore dei grafici. mapdb
+  (gli stati che OpenHAB ripristina all'avvio) resta sulla SD: scrive solo quando un
+  valore cambia;
+- timer di apt e di man-db spenti (le liste di apt erano decine di MB al giorno),
+  `noatime`.
+
+**La RAM.** Con 1 GB OpenHAB ha `-Xms192m -Xmx320m` (i valori di openHABian),
+`-XX:TieredStopAtLevel=1 -XX:ReservedCodeCacheSize=64m` (solo il compilatore C1: C2 a
+ogni compilazione prende decine di MB) e `-XX:+ExitOnOutOfMemoryError`. Senza schermo
+`gpu_mem=16` dà circa 50 MB in più a Linux (`--display` per lasciarlo), e il cgroup della
+memoria si accende in `cmdline.txt` (il kernel della Raspberry lo tiene spento, e Docker
+senza non misura la memoria dei container). Raspberry Pi OS accende di serie il
+**watchdog hardware** (`RuntimeWatchdogSec=1m`): un sistema che resta bloccato un minuto,
+per esempio a forza di swap, si resetta da solo. Sulla 3 della prova è successo una volta
+con OpenHAB senza le opzioni di C1. Col journal in RAM un reset non lascerebbe traccia:
+lo script tiene un registro degli avvii in `/var/log/arfea-avvii.log`, che dice se prima
+dell'avvio lo spegnimento è stato pulito o no (watchdog, corrente, blocco). Nel
+ripristino si portano solo i servizi che lavoravano: un HABApp senza regole o un
+Node-RED con un flow di prova costano 100-150 MB l'uno. Si accendono dopo dalla Web UI,
+se servono (`--servizi` per sceglierli subito).
+
+**Il ripristino** (`--ripristina`) prende il tar.gz di `/opt/docker_store` di un impianto
+col vecchio docker-compose, anche uno stack di Portainer: legge il compose
+dall'archivio, estrae i dati senza cache e tmp di OpenHAB e senza Portainer né frontail
+(restano solo nel backup: Portainer non fa parte di un impianto ARFEA, e sul sistema
+nuovo non arriva mai), e lancia `migrate-to-controller.sh` col compose ridotto ai
+servizi scelti. La migrazione ricava dagli IP fissi del compose la vecchia rete (che
+sulla Raspberry nuova non c'è) e porta i broker MQTT a `mosquitto`/`localhost`; a 64 bit
+OpenHAB passa subito alla versione del template, e l'userdata lo aggiorna OpenHAB al
+primo avvio. I ritocchi ad `arfea.yml` e le cartelle di log li fa prima del primo avvio
+(`MIGRATE_HOOK`): fermare OpenHAB mentre aggiorna l'userdata non si deve. I servizi che
+il controller non conosce (un bridge fatto in casa, per esempio) non si portano: lo
+script li elenca a fine lavoro.
+
+**Raspbian 9 (stretch) e 10 (buster): l'avanzamento del sistema.** Le Raspberry in giro
+non si possono riflashare, e su stretch Docker e il controller non vanno. Prima della fase
+1 lo script porta il sistema a **bullseye** (Debian 11), un passo e un riavvio per volta
+(stretch → buster → bullseye), restando a 32 bit:
+
+```bash
+sudo bash preparaArfea-raspberry.sh            # su stretch/buster: dice cosa farebbe, non tocca niente
+sudo bash preparaArfea-raspberry.sh --avanza   # un passo, poi riavvia; si rilancia fino a bullseye
+```
+
+Con `--avanza` lo script si sposta da solo in un'unità systemd (`arfea-avanzamento`, log
+in `/root/arfea-avanzamento/avanzamento.log`): se cade la connessione apt non resta a metà.
+La **VPN** è l'unica strada per la centralina, e non si ferma mai:
+
+- apt non ferma né riavvia openvpn, la rete (dhcpcd, NetworkManager, wpa_supplicant) e ssh:
+  per tutto l'aggiornamento lo vieta una `policy-rc.d`, e fino al riavvio gira il processo
+  di prima;
+- una sentinella, ogni 5 secondi, fa ripartire openvpn se si ferma e rimette com'erano i
+  file di `/etc/openvpn` che nessun pacchetto possiede (configurazioni e chiavi) se
+  cambiano o spariscono. La cartella intera è fotografata in `/root/arfea-avanzamento`;
+- i repository di altri (il vecchio OpenHAB, Zulu, NodeSource) si spengono, quelli di
+  Raspbian passano alla versione nuova (`legacy.raspbian.org` per stretch e buster);
+- prima del riavvio l'openvpn nuovo prova la configurazione in uno spazio di rete
+  isolato, senza collegarsi: opzioni tolte (`ns-cert-type` dalla 2.5), certificati
+  rifiutati dal livello di sicurezza di OpenSSL, cifrari che mancano. Se non la accetta
+  lo script prova le correzioni note su una copia; se nemmeno così passa, **non
+  riavvia**. Controlla anche che i moduli di rete del kernel che partirà ci siano, che
+  `config.txt` e `cmdline.txt` siano quelli di prima e che un NetworkManager arrivato con
+  l'aggiornamento non prenda la rete a dhcpcd;
+- **paracadute**: l'openvpn di prima, con le sue librerie, resta in
+  `/opt/arfea-openvpn-<versione>`. Dopo il riavvio un timer (a 4, 8, 15 e 30 minuti)
+  guarda se il tunnel ha l'indirizzo di prima; se no ferma il nuovo openvpn e fa partire
+  quello vecchio con la configurazione di prima. Se ne va da solo a fine fase 2, con la
+  VPN nuova su.
+
+Provato in un container Raspbian stretch su una Raspberry, con la configurazione VPN di
+una centralina vera (ma `remote 127.0.0.1`, per non collegarsi): stretch → buster →
+bullseye in 12 minuti, openvpn mai riavviato (stesso processo da capo a fondo: apt ci ha
+provato e `policy-rc.d` l'ha fermato), `/etc/openvpn` intatta, la configurazione
+accettata da OpenVPN 2.4.7 e 2.5.1, il paracadute di stretch funzionante sopra bullseye,
+dhcpcd al suo posto e nessun NetworkManager. Il riavvio vero e il kernel nuovo un
+container non li prova: il primo impianto si avanza con qualcuno raggiungibile vicino.
+
+Servono 1500 MB liberi su `/` e 20 MB su `/boot` (lo script lo controlla prima). Su una
+Raspberry con OpenHAB nativo, dopo la fase 1 la fase 2 è `--migra`: l'impianto passa al
+controller sul posto (`migrate-to-controller.sh`, flusso nativo) invece del setup da zero,
+che si scontrerebbe col nativo sulla porta 8080. Da OpenHAB 2.x le regole vanno riguardate
+come in ogni migrazione da 2.x. Oltre bullseye (`--fino-a bookworm|trixie`) lo script va,
+tenendo kernel e firmware di bullseye (Raspberry Pi non prevede il passaggio sul posto a
+bookworm: cambiano i pacchetti del kernel e `/boot/firmware`), ma non è provato su una
+Raspberry vera: prima su una di prova.
+
+**A 32 bit** OpenHAB si ferma alla **4.3.11** (la 5 esce solo per amd64 e arm64) e
+Node-RED alla **4.1** con Node 22: lo script li mette in `arfea.yml`. Docker viene dal
+repository Debian armhf (quello per Raspbian si è fermato alla 28). Il controller dal
+1.8.20 si costruisce anche su arm a 32 bit e non propone le release con immagini che
+non esistono per la centralina ([§4.4](#44-aggiornare-le-versioni-software-dallapp-non-tecnico)):
+gli aggiornamenti di OpenHAB lì si fermano. Per OpenHAB 5 e per le release certificate
+serve il sistema a 64 bit.
 
 ---
 

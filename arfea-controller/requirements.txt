@@ -1,5 +1,11 @@
 fastapi==0.115.0
-uvicorn[standard]==0.30.0
+# uvicorn[standard] senza uvloop e httptools: li installa il Dockerfile solo dove
+# hanno le wheel (amd64, arm64). Su arm a 32 bit andrebbero compilati, e l'immagine
+# slim non ha il compilatore (Redmine #340, #403); senza, uvicorn usa asyncio.
+uvicorn==0.30.0
+websockets>=10.4
+watchfiles>=0.13
+python-dotenv>=0.13
 docker==7.1.0
 pyyaml==6.0.1
 httpx==0.27.0

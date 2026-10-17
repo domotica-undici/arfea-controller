@@ -58,6 +58,8 @@
 # Variabili:
 #   MIGRATE_MODE=native|docker     forza il flusso
 #   MIGRATE_SKIP_SPACE_CHECK=1     prosegue anche se la stima dello spazio non basta
+#   MIGRATE_HOOK="comando"         gira con arfea.yml scritto, prima dell'avvio dei
+#                                  servizi (preparaArfea-raspberry.sh)
 #   ARFEA_UPDATE_URL=…             URL OTA del controller (default: cloud domoticaundici)
 ###############################################################################
 
@@ -669,6 +671,39 @@ collect_old_subnets() {
       if [[ "$s" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+/[0-9]+$ ]]; then OLD_DOCKER_SUBNETS+=("$s"); fi
     done < <(docker network inspect -f '{{range .IPAM.Config}}{{println .Subnet}}{{end}}' "$net" 2>/dev/null || true)
   done
+  # Vecchio compose senza piu' le sue reti (ripristino da un backup su una
+  # centralina nuova, Redmine #403): gli IP fissi dei servizi dicono quali
+  # indirizzi possono stare nelle config (172.11.0.7 di mosquitto in zwave-js-ui
+  # e nei .things). Una /24 per indirizzo, come le reti dei vecchi compose.
+  if [[ -n "$OLD_COMPOSE_PATH" && -f "$OLD_COMPOSE_PATH" ]]; then
+    local line
+    while IFS= read -r line; do
+      case "$line" in
+        net\ *) s="${line#net }"
+                [[ " ${OLD_DOCKER_SUBNETS[*]} " == *" $s "* ]] || OLD_DOCKER_SUBNETS+=("$s") ;;
+        openhab\ *) [[ -n "$OLD_OH_IP" ]] || OLD_OH_IP="${line#openhab }" ;;
+      esac
+    done < <(python3 - "$OLD_COMPOSE_PATH" <<'PY' 2>/dev/null || true
+import ipaddress, sys, yaml
+cfg = yaml.safe_load(open(sys.argv[1])) or {}
+nets = set()
+for net in (cfg.get("networks") or {}).values():
+    for c in (((net or {}).get("ipam") or {}).get("config") or []):
+        if c.get("subnet"):
+            nets.add(str(ipaddress.ip_network(c["subnet"], strict=False)))
+for name, svc in (cfg.get("services") or {}).items():
+    for net in ((svc or {}).get("networks") or {}).values() if isinstance((svc or {}).get("networks"), dict) else []:
+        ip = (net or {}).get("ipv4_address")
+        if ip:
+            nets.add(str(ipaddress.ip_network(ip + "/24", strict=False)))
+            if (svc.get("container_name") or name) == "openhab":
+                print("openhab", ip)
+for n in sorted(nets):
+    if ipaddress.ip_network(n).version == 4:
+        print("net", n)
+PY
+)
+  fi
   return 0
 }
 
@@ -1032,6 +1067,16 @@ extract_tarball() {
     echo "Contenuto del tarball:"; tar -tJf "$TARBALL_PATH" | head -20
     die "arfea.yml non trovato dopo l'estrazione del tarball"
   }
+}
+
+# Ritocchi di chi lancia lo script, con arfea.yml scritto e i servizi non ancora
+# creati: preparaArfea-raspberry.sh ci mette i log dei container nel journal, le
+# cartelle di log in RAM e l'heap di Java (Redmine #403). Dopo, OpenHAB andrebbe
+# fermato a meta' del suo primo avvio.
+run_migrate_hook() {
+  [[ -n "${MIGRATE_HOOK:-}" ]] || return 0
+  log "Ritocchi prima dell'avvio: $MIGRATE_HOOK"
+  bash -c "$MIGRATE_HOOK" || warn "ritocchi non riusciti ($MIGRATE_HOOK): proseguo"
 }
 
 # ═════════════════════════════════════════════════════════════════════════════
@@ -1745,6 +1790,7 @@ except Exception as e:
   fix_zigbee_frontend_port
   zigbee_network_note
   deasy_backup_exclude
+  run_migrate_hook
 
   # 5. Avvia stack
   echo ""
@@ -2356,6 +2402,7 @@ run_native_migration() {
   zigbee_network_note
   copy_native_mosquitto
   deasy_backup_exclude
+  run_migrate_hook
 
   echo ""; log "[6/7] Build e avvio arfea-controller..."
   # Non hard-fail: i servizi nativi sono già fermi; in caso di errore proseguo

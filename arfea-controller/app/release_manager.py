@@ -221,6 +221,22 @@ class ReleaseManager:
         idle = {svc: img for svc, img in pending.items() if not effective.get(svc)}
         return active, idle
 
+    def _foreign_images(self, images: dict[str, str]) -> list[str]:
+        """Immagini che il registro non ha per l'architettura di questa
+        centralina (OpenHAB 5 su un sistema a 32 bit, Redmine #403). Una
+        risposta che manca (registro irraggiungibile) non blocca: il pull, se
+        l'immagine non c'e', fallisce comunque prima di toccare i container."""
+        return [f"{svc} ({img})" for svc, img in images.items()
+                if self.docker.image_runs_here(img) is False]
+
+    def _foreign_message(self, latest: str, foreign: list[str]) -> str:
+        return (
+            f"La release {latest} non si installa su questa centralina: "
+            f"{', '.join(foreign)} non esiste per la sua architettura "
+            f"({self.docker.daemon_arch() or '?'}). I servizi restano "
+            f"alle versioni di adesso."
+        )
+
     def _has_migrations(self, path: list[str]) -> bool:
         """True se almeno una release del percorso ha uno script di migrazione."""
         base = self._migrations_dir()
@@ -267,6 +283,16 @@ class ReleaseManager:
                     current_image=installed_code or "(nessuno)",
                     target_image=target_code["version"],
                 )
+            )
+
+        # Release con immagini che su questa architettura non esistono: non si
+        # propone, e il motivo va dove la Web UI mostra gli errori
+        foreign = self._foreign_images(
+            {svc: img for svc, img in pending.items() if effective.get(svc)})
+        if foreign:
+            return ReleaseCheckResult(
+                current_release=current, latest_release=latest, path=path,
+                error=self._foreign_message(latest, foreign),
             )
 
         notes_parts = []
@@ -426,6 +452,13 @@ class ReleaseManager:
                 f"La release {latest} richiede controller >= {min_ctrl} "
                 f"(attuale {VERSION}). Aggiorna prima il controller."
             )
+            return self.status
+
+        # Prima del backup: un'immagine che su questa architettura non esiste
+        # fermerebbe l'aggiornamento al pull, dopo il fermo dell'impianto
+        foreign = self._foreign_images(pending)
+        if foreign:
+            self._fail(self._foreign_message(latest, foreign))
             return self.status
 
         migrate = full_upgrade and bool(path)

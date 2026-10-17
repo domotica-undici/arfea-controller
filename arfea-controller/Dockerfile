@@ -12,7 +12,14 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 WORKDIR /app
 
 COPY requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt
+# uvloop e httptools (gli extra "standard" di uvicorn) solo dove hanno le wheel: su
+# arm a 32 bit andrebbero compilati, e la slim non ha il compilatore (Redmine #403).
+# Conta l'architettura dei pacchetti dell'immagine: su un kernel a 64 bit anche
+# un'immagine armhf vede "aarch64" da uname e da platform.machine().
+RUN pip install --no-cache-dir -r requirements.txt \
+ && case "$(dpkg --print-architecture)" in \
+      amd64|arm64) pip install --no-cache-dir "uvloop>=0.14.0,!=0.15.0,!=0.15.1" "httptools>=0.5.0" ;; \
+    esac
 
 COPY app/ ./app/
 

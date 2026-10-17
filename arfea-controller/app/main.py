@@ -531,7 +531,14 @@ logger = logging.getLogger(__name__)
 #          sono casuali. Una rete predefinita gia' in esercizio non si tocca da
 #          soli: log all'avvio e avviso nella Web UI, che la rifa' solo su
 #          richiesta (GET /api/system/zigbee-network, POST .../new).
-VERSION = "1.8.19"
+#   1.8.20 Raspberry Pi (Redmine #403): controller.log_driver "journald" manda i
+#          log dei container nel journal dell'host, che sulle centraline su
+#          microSD sta in RAM (default "json-file", come prima). Il controller si
+#          costruisce anche su armv7 (uvloop e httptools, senza wheel a 32 bit,
+#          restano fuori). Una release con un'immagine che il registro non ha per
+#          l'architettura della centralina (OpenHAB 5 su un sistema a 32 bit) non
+#          si propone e non si applica: prima si fermava al pull, dopo il backup.
+VERSION = "1.8.20"
 
 # -- Globals initialised at startup -----------------------------------------
 

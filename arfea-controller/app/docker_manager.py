@@ -69,6 +69,10 @@ class DockerManager:
         # recreate_service passa da stop_service e create_and_start.
         self._svc_locks: dict[str, threading.RLock] = {}
         self._svc_locks_guard = threading.Lock()
+        # Esito per immagine del controllo di piattaforma (image_runs_here): i
+        # tag delle release sono esatti, e ogni domanda al registro conta come
+        # un pull nei limiti di Docker Hub.
+        self._platform_cache: dict[str, Optional[bool]] = {}
 
     def _svc_lock(self, name: str) -> threading.RLock:
         with self._svc_locks_guard:
@@ -831,6 +835,47 @@ class DockerManager:
             path = os.path.normpath(os.path.join(os.path.dirname(path), target))
         return path if path.startswith("/dev/") else ""
 
+    def _log_config(self, svc: ServiceDefinition) -> LogConfig:
+        """Log del container: file json accanto al container, oppure il journal
+        dell'host (controller.log_driver), che sulle Raspberry sta in RAM e non
+        consuma la microSD (Redmine #403)."""
+        if self.cfg.config.controller.log_driver == "journald":
+            return LogConfig(type=LogConfig.types.JOURNALD, config={"tag": svc.container_name})
+        return LogConfig(type=LogConfig.types.JSON, config={"max-size": svc.log_max_size})
+
+    def daemon_arch(self) -> str:
+        """Architettura delle immagini che questo Docker esegue (amd64, arm64,
+        arm), vuota se il demone non risponde."""
+        try:
+            return (self.client.version().get("Arch") or "").lower()
+        except Exception:
+            return ""
+
+    def image_runs_here(self, image: str) -> Optional[bool]:
+        """Il registro ha ``image`` per l'architettura di questo Docker? True o
+        False; None se non si sa (registro irraggiungibile, immagine senza
+        piattaforme dichiarate). Su una centralina a 32 bit (Raspberry, Odroid
+        XU4) OpenHAB 5 non esiste: la release che lo porta fallirebbe al pull,
+        dopo il backup (Redmine #340, #403). Conta l'architettura del demone
+        (GOARCH: amd64, arm64, arm), non quella del kernel: un Raspberry Pi OS a
+        32 bit gira spesso su un kernel a 64 bit."""
+        if image in self._platform_cache:
+            return self._platform_cache[image]
+        arch = self.daemon_arch()
+        try:
+            platforms = self.client.images.get_registry_data(image).attrs.get("Platforms") or []
+        except Exception as exc:
+            logger.info("Piattaforme di %s non verificate: %s", image, exc)
+            return None
+        archs = {(p.get("architecture") or "").lower() for p in platforms
+                 if (p.get("os") or "linux") == "linux"}
+        if not arch or not archs - {""}:
+            result = None
+        else:
+            result = arch in archs
+        self._platform_cache[image] = result
+        return result
+
     def _build_run_kwargs(self, name: str, svc: ServiceDefinition) -> dict:
         kwargs: dict = {
             "image": svc.image,
@@ -839,9 +884,7 @@ class DockerManager:
             "detach": True,
             "labels": {MANAGED_LABEL: "true", "arfea.service": name},
             "restart_policy": {"Name": svc.restart_policy, "MaximumRetryCount": 0},
-            "log_config": LogConfig(
-                type=LogConfig.types.JSON, config={"max-size": svc.log_max_size}
-            ),
+            "log_config": self._log_config(svc),
         }
 
         # Network
