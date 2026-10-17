@@ -24,10 +24,14 @@
 #     se nessun container la monta piu';
 #   - cache apt, journal oltre 200 MB (e un tetto fisso di 200 MB, se nessuno ne
 #     ha messo uno), log ruotati;
-#   - con --nativo: OpenHAB/HABApp/frontail nativi (pacchetti senza purge,
-#     /etc/openhab, /var/lib/openhab, /usr/share/openhab, /var/log/openhab,
-#     /opt/habapp) e i mount /srv/openhab-* di openHABian. Dopo, tornare al
-#     nativo non e' piu' possibile;
+#   - il repository apt di NodeSource quando nodejs non c'e' (o se ne va con --pacchetti);
+#   - con --nativo, solo col container openhab sano: OpenHAB/HABApp/frontail nativi,
+#     2.x compreso (pacchetti senza purge, cartelle, conffile rimasti, unita'), il
+#     repository apt di OpenHAB con la sua chiave, openHABian (/opt/openhabian,
+#     openhabian-config, /etc/openhabian.conf, il .bash_profile che al login da'
+#     "openhab3_is_installed: command not found") e i mount /srv/openhab-*. Alla
+#     fine controlla che non resti niente. Dopo, tornare al nativo non e' piu'
+#     possibile. Senza --nativo dice cosa resta del nativo;
 #   - con --pacchetti: i pacchetti che al controller non servono, ognuno solo se
 #     la sua condizione regge (OpenJDK se niente di nativo usa Java, linux-firmware
 #     col kernel Hardkernel 4.9 senza wifi/BT, nodejs, samba, ModemManager senza
@@ -131,6 +135,45 @@ drop_alternatives() {
   done
   return 0
 }
+# un processo dell'host (come host_proc) la cui riga di comando corrisponde a $1 (regex)
+host_cmd() {
+  local p a=()
+  for p in /proc/[0-9]*; do
+    [[ "$(readlink "$p/ns/mnt" 2>/dev/null)" == "$host_ns" ]] || continue
+    mapfile -d '' -t a 2>/dev/null <"$p/cmdline" || continue
+    [[ "${a[*]}" =~ $1 ]] && return 0
+  done
+  return 1
+}
+apt_sources() { ls -d /etc/apt/sources.list /etc/apt/sources.list.d/*.list /etc/apt/sources.list.d/*.sources 2>/dev/null; }
+# Toglie i repository apt il cui URL corrisponde a $1 (regex): un file che ha solo loro
+# si toglie, in uno misto le righe si commentano (un .sources misto resta). Con loro la
+# chiave signed-by, se nessun pacchetto la possiede e nessun'altra sorgente la usa
+drop_repo() {
+  local re="$1" f k keys=() gone=()
+  for f in $(apt_sources); do
+    grep -qE "^[^#]*($re)" "$f" || continue
+    if [[ "$f" == *.sources ]]; then
+      if grep -E '^URIs:' "$f" | grep -qvE "$re"; then echo "repository apt: $f resta, ha anche altre sorgenti"; continue; fi
+      keys+=($(awk '$1 == "Signed-By:" && $2 ~ /^\// {print $2}' "$f"))
+      gone+=("$f"); echo "repository apt: $f"; run rm -f "$f"
+    else
+      keys+=($(grep -E "^[^#]*($re)" "$f" | grep -oE 'signed-by=[^] ]+' | cut -d= -f2))
+      if [[ "$f" != /etc/apt/sources.list ]] && ! grep -E '^[[:space:]]*deb' "$f" | grep -qvE "$re"; then
+        gone+=("$f"); echo "repository apt: $f"; run rm -f "$f"
+      else
+        echo "repository apt: righe commentate in $f: $(grep -E "^[^#]*($re)" "$f" | tr '\n' ' ')"
+        run sed -i -E "\%^[^#]*($re)%s%^%# pulizia-post-migrazione: %" "$f"
+      fi
+    fi
+  done
+  for k in $(printf '%s\n' "${keys[@]}" | sort -u); do
+    [[ -f "$k" ]] && ! dpkg -S "$k" >/dev/null 2>&1 || continue
+    apt_sources | grep -vxF -f <(printf '%s\n' "${gone[@]}") | xargs -r cat 2>/dev/null \
+      | grep -v '^[[:space:]]*#' | grep -vE "$re" | grep -qF "$k" && continue
+    echo "repository apt: chiave $k"; run rm -f "$k"
+  done
+}
 
 before=$(df -h / | tail -1 | awk '{print $5" ("$4" liberi)"}')
 
@@ -165,38 +208,136 @@ if compgen -G "$UB/*.tar" >/dev/null; then
   fi
 fi
 
-# 2. OpenHAB nativo
+# 2. OpenHAB nativo (2.x e successivi) e openHABian, con --nativo e solo col container
+#    openhab sano. I pacchetti si tolgono senza purge: il purge cancella l'utente
+#    openhab, che su openHABian possiede /opt e /srv. I conffile rimasti, il
+#    repository apt e la sua chiave si tolgono a mano. Alla fine si controlla che non
+#    resti niente; senza --nativo si dice cosa c'e' ancora
+OH_REPO='openhab\.jfrog\.io|bintray\.com/openhab'
+OH_PROC='openhab\.home=|/usr/share/openhab2?/|/opt/habapp/bin/|frontail'
+OH_PATHS=(/etc/openhab /etc/openhab2 /var/lib/openhab /var/lib/openhab2 /usr/share/openhab /usr/share/openhab2
+          /var/log/openhab /var/log/openhab2 /opt/habapp /etc/default/openhab /etc/default/openhab2 /etc/openhab-cli
+          /etc/profile.d/openhab*.sh* /etc/systemd/system/habapp.service /etc/systemd/system/frontail.service
+          /etc/systemd/system/openhab.service /etc/systemd/system/openhab2.service
+          /etc/systemd/system/openhab.service.d /etc/systemd/system/openhab2.service.d
+          /root/.firemotd-cache /home/*/.firemotd-cache)
+OHB_PATHS=(/opt/openhabian /usr/local/bin/openhabian-config /etc/openhabian.conf* /opt/openHABian-install-*)
+# copia dell'init di raspi-config: all'avvio mette il governor della CPU a ondemand
+OHB_INIT=/etc/init.d/openhabian-config
+init_on() { compgen -G '/etc/rc[S0-6].d/S[0-9]*openhabian-config' >/dev/null; }
+# il ~/.bash_profile di openHABian: carica /opt/openhabian e al login stampa il logo con
+# gli errori "openhab3_is_installed: command not found" e version.properties (Redmine #399)
+ohb_logins() { grep -lsF /opt/openhabian /root/.bash_profile /home/*/.bash_profile /etc/skel/.bash_profile; return 0; }
+# chi nomina ancora openHABian, oltre ai file che questa pulizia toglie o rinomina
+ohb_users() {
+  grep -rlsIE '/opt/openhabian|openhabian-config' /etc /usr/local/bin /usr/local/sbin /var/spool/cron \
+      /root/.bashrc /root/.profile /root/.bash_login /root/.bash_aliases \
+      /home/*/.bashrc /home/*/.profile /home/*/.bash_login /home/*/.bash_aliases \
+    | grep -vE '^/etc/(openhabian\.conf|init\.d/openhabian-config$|profile\.d/openhab|skel/\.bash_profile$)|\.disabled-arfea$' \
+    | tr '\n' ' '
+}
+oh_pkgs() {
+  dpkg-query -W -f='${Package} ${Status}\n' 'openhab*' 2>/dev/null \
+    | awk '$4 != "not-installed" && $4 != "config-files" {print $1}'
+}
+# cio' che resta dell'OpenHAB nativo e di openHABian, una voce per riga
+nat_left() {
+  local p
+  dpkg-query -W -f='${Package} ${Status} ${Version}\n' 'openhab*' 2>/dev/null \
+    | awk '$4 != "not-installed" && $4 != "config-files" {print "pacchetto " $1 " " $5 " (" $4 ")"}'
+  for p in openhab openhab2 habapp frontail; do
+    systemctl is-active --quiet "$p" 2>/dev/null && echo "servizio $p attivo"
+  done
+  host_cmd "$OH_PROC" && echo "un processo di OpenHAB, HABApp o frontail sull'host"
+  for p in "${OH_PATHS[@]}" "${OHB_PATHS[@]}"; do
+    [[ -e "$p" || -L "$p" ]] && echo "$p ($(size_of "$p"))"
+  done
+  [[ -e "$OHB_INIT" ]] && echo "$OHB_INIT$(init_on && echo ", attivo all'avvio")"
+  ohb_logins | sed 's/$/ (banner di openHABian al login)/'
+  ls -d /etc/systemd/system/srv-openhab* 2>/dev/null
+  mount | grep -q ' /srv/openhab' && echo "mount /srv/openhab-* attivi"
+  for p in $(apt_sources); do grep -qE "^[^#]*($OH_REPO)" "$p" && echo "repository apt di OpenHAB in $p"; done
+  return 0
+}
+NATIVO_ASKED=$NATIVO
+nat=$(nat_left)
 if $NATIVO; then
-  for s in openhab habapp frontail; do
-    if systemctl is-active --quiet "$s"; then
-      echo "ERRORE: $s nativo ancora attivo, il nativo non si tocca"; NATIVO=false
+  health=$(docker inspect -f '{{.State.Health.Status}}' openhab 2>/dev/null </dev/null)
+  if [[ -z "$nat" ]]; then
+    echo "OpenHAB nativo: niente da togliere"; NATIVO=false
+  elif [[ "$health" != healthy ]]; then
+    echo "OpenHAB nativo: resta, il container openhab non c'e' o non e' sano (${health:-assente})"; NATIVO=false
+  else
+    for s in openhab openhab2 habapp frontail; do
+      if systemctl is-active --quiet "$s"; then
+        echo "ERRORE: $s nativo ancora attivo, il nativo non si tocca"; NATIVO=false
+      fi
+    done
+    if $NATIVO && host_cmd "$OH_PROC"; then
+      echo "ERRORE: sull'host gira ancora un OpenHAB, HABApp o frontail nativo, il nativo non si tocca"; NATIVO=false
     fi
-  done
+    # anche una sorgente che e' un link verso una cartella nativa
+    msrc=$(docker ps -aq </dev/null | xargs -r docker inspect -f '{{range .Mounts}}{{println .Source}}{{end}}' 2>/dev/null \
+           | sed '/^$/d' | while read -r s; do echo "$s"; readlink -f "$s"; done)
+    for p in "${OH_PATHS[@]}" "${OHB_PATHS[@]}"; do
+      if [[ -e "$p" ]] && grep -qE "^$p(/|$)" <<<"$msrc"; then
+        echo "ERRORE: un container monta $p, il nativo non si tocca"; NATIVO=false
+      fi
+    done
+  fi
 fi
 if $NATIVO; then
-  found=false
-  for d in /etc/openhab /var/lib/openhab /usr/share/openhab /var/log/openhab /opt/habapp; do
-    [[ -e "$d" ]] && { echo "nativo: $d ($(size_of "$d"))"; found=true; }
-  done
-  dpkg -l openhab openhab-addons 2>/dev/null | grep -qE "^(ii|hi)" && found=true
-  ls /etc/systemd/system/srv-openhab* >/dev/null 2>&1 && found=true
-  $found || { echo "nativo: niente da togliere"; NATIVO=false; }
-fi
-if $NATIVO; then
-  if $APPLY; then
-    for u in 'srv-openhab\x2daddons.mount' 'srv-openhab\x2dconf.mount' 'srv-openhab\x2dsys.mount' 'srv-openhab\x2duserdata.mount'; do
-      systemctl stop "$u" 2>/dev/null || true; systemctl disable "$u" 2>/dev/null || true
-      rm -f "/etc/systemd/system/$u"
+  grep -v '^repository apt' <<<"$nat" | sed 's/^/OpenHAB nativo: /'
+  # apt non deve togliere altro che i pacchetti di OpenHAB; se non li toglie, i loro
+  # file restano (sotto un pacchetto installato non si cancella niente)
+  go=true
+  pk=$(oh_pkgs | tr '\n' ' ')
+  if [[ -n "${pk// /}" ]]; then
+    extra=$(LC_ALL=C apt-get -s remove $pk </dev/null 2>/dev/null | awk '/^Remv/{print $2}' | grep -vxF -f <(tr ' ' '\n' <<<"$pk") | tr '\n' ' ')
+    if [[ -n "${extra// /}" ]]; then echo "OpenHAB nativo: resta, apt toglierebbe anche $extra"; go=false; fi
+  fi
+  ohb_keep=$(ohb_users)
+  [[ -n "$ohb_keep" ]] && echo "openHABian: resta, lo nomina ancora $ohb_keep"
+  init_on && echo "openHABian: $OHB_INIT resta, e' attivo all'avvio (governor della CPU): update-rc.d openhabian-config remove, poi si toglie"
+  if $go && $APPLY && [[ -n "${pk// /}" ]]; then
+    apt-mark unhold $pk >/dev/null 2>&1 || true
+    if out=$(DEBIAN_FRONTEND=noninteractive apt-get remove -y -q $pk </dev/null 2>&1); then
+      echo "OpenHAB nativo: pacchetti tolti: $pk"
+    else
+      echo "ERRORE: apt non ha tolto $pk, il resto del nativo non si tocca:"; grep -E "^(E:|dpkg)" <<<"$out" | head -5 | sed 's/^/  /'
+      go=false
+    fi
+  fi
+  if $go && $APPLY; then
+    for f in /etc/systemd/system/srv-openhab*.mount; do
+      [[ -e "$f" ]] || continue
+      systemctl stop "${f##*/}" 2>/dev/null || true; systemctl disable "${f##*/}" 2>/dev/null || true
+      rm -f "$f"
     done
     rmdir /srv/openhab-addons /srv/openhab-conf /srv/openhab-sys /srv/openhab-userdata 2>/dev/null || true
-    apt-mark unhold openhab openhab-addons >/dev/null 2>&1 || true
-    DEBIAN_FRONTEND=noninteractive apt-get remove -y -qq openhab openhab-addons </dev/null >/dev/null 2>&1 \
-      && echo "pacchetti openhab rimossi"
-    rm -rf /etc/openhab /var/lib/openhab /usr/share/openhab /var/log/openhab /opt/habapp
-    rm -rf /etc/systemd/system/habapp.service /etc/systemd/system/frontail.service /etc/systemd/system/openhab.service.d
-    systemctl daemon-reload; systemctl reset-failed 2>/dev/null || true
-    echo "mount /srv/openhab rimasti: $(mount | grep -c /srv/openhab || true)"
+    for p in "${OH_PATHS[@]}"; do rm -rf "$p"; done
+    find /etc/systemd/system -xtype l \( -name 'openhab*.service' -o -name habapp.service -o -name frontail.service \
+      -o -name 'srv-openhab*.mount' \) -delete 2>/dev/null
+    # bash torna a ~/.profile, che il .bash_profile di openHABian caricava in fondo
+    for f in $(ohb_logins); do
+      mv "$f" "$f.disabled-arfea" && echo "openHABian: $f rinominato in $f.disabled-arfea"
+    done
+    if [[ -z "$ohb_keep" ]]; then for p in "${OHB_PATHS[@]}"; do rm -rf "$p"; done; fi
+    init_on || rm -f "$OHB_INIT"
   fi
+  $go && drop_repo "$OH_REPO"
+  if $APPLY; then
+    systemctl daemon-reload; systemctl reset-failed 2>/dev/null || true
+    # il controllo: dell'OpenHAB nativo non deve restare niente
+    nat=$(nat_left)
+    if [[ -z "$nat" ]]; then
+      echo "OpenHAB nativo: tolto, sull'host non restano pacchetti, servizi, processi, cartelle, openHABian ne' repository"
+    else
+      echo "ATTENZIONE: dell'OpenHAB nativo resta ancora:"; sed 's/^/  /' <<<"$nat"
+    fi
+  fi
+elif ! $NATIVO_ASKED && [[ -n "$nat" ]]; then
+  echo "OpenHAB nativo ancora sull'host (lo toglie --nativo):"; sed 's/^/  /' <<<"$nat"
 fi
 
 # 3. Immagini docker che nessun container usa e che arfea.yml non nomina
@@ -376,7 +517,7 @@ if $PACCHETTI || $UNDICI; then
 fi
 
 # 8. Pacchetti che a una centralina col controller non servono, ognuno con la sua condizione
-ROOTS=()
+ROOTS=(); GONE=""
 if $PACCHETTI; then
   jdk=()
   for x in $(dpkg-query -W -f='${Package}\n' 'openjdk-*' 'default-jre*' 'default-jdk*' ca-certificates-java 2>/dev/null); do
@@ -505,6 +646,7 @@ if [[ ${#ROOTS[@]} -gt 0 ]]; then
     echo "pacchetti: $(wc -w <<<"$FINAL") da togliere, circa $((kb/1024)) MB: $FINAL"
     # apt non deve togliere nulla oltre l'elenco
     sim=$(remv $FINAL | tr '\n' ' ')
+    [[ "$sim" == "$FINAL" ]] && GONE=" $FINAL"
     if [[ "$sim" != "$FINAL" ]]; then
       echo "pacchetti: NON tolti, apt toglierebbe anche: $(comm -13 <(tr ' ' '\n' <<<"$FINAL" | sort) <(tr ' ' '\n' <<<"$sim" | sort) | tr '\n' ' ')"
     elif $APPLY; then
@@ -524,6 +666,13 @@ fi
 if $UNDICI; then
   run systemctl daemon-reload
   [[ -L /etc/alternatives/java && ! -e /etc/alternatives/java ]] && run rm -f /etc/alternatives/java /usr/bin/java
+fi
+
+# 8b. Il repository NodeSource (openHABian lo metteva per frontail) quando nodejs non
+#     c'e', o se ne va adesso: da li' non viene altro
+if [[ "$(dpkg-query -W -f='${Status}' nodejs 2>/dev/null)" != *" installed" ]] \
+   || { ! $APPLY && [[ "$GONE" == *" nodejs "* ]]; }; then
+  drop_repo 'deb\.nodesource\.com'
 fi
 
 # 9. Cache apt, journal, log ruotati

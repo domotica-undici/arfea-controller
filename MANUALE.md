@@ -261,6 +261,28 @@ servizio: se le porte si sono già scambiate, il by-id proposto sarebbe quello
 sbagliato e va scelto l'altro. Lo stesso elenco arriva da
 `GET /api/system/serial-devices/warnings`.
 
+**ODROID-C4 con Armbian: `/dev/ttyAML1`.** La UART dei pin 8 e 10 (modulo Z-Wave,
+XBee di Undici) esiste solo con l'overlay che mette `install.sh`
+(`meson-g12b-odroid-uart-ee-a.dtbo`). Lo script lo copiava in
+`/boot/dtb/amlogic/overlay/`, la cartella del pacchetto del kernel: dopo un
+`apt upgrade` col kernel nuovo, al riavvio la seriale non c'era più e zwave-js-ui
+restava senza controller (Redmine #397). Ora sta in `/boot/overlay-user/` con
+`user_overlays=` in `/boot/armbianEnv.txt`, dove un aggiornamento non lo tocca. Per
+le centraline installate prima, e dopo ogni giro di aggiornamenti:
+```bash
+./script/ripara-ttyaml1.sh --ip 10.0.0.2-70            # prova a vuoto: chi l'ha persa, chi la perderà
+./script/ripara-ttyaml1.sh --ip 10.0.0.2-70 --apply    # overlay in overlay-user, riavvio dove manca
+```
+L'`--apply` prova prima l'overlay sul dtb del kernel installato (`fdtoverlay`), tiene
+una copia di `armbianEnv.txt` in `/root`, riavvia solo dove `/dev/ttyAML1` manca (non
+durante backup, release o self-update) e aspetta la centralina. Il riavvio da solo non
+basta: zwave-js-ui, creato dal controller mentre la seriale mancava, è nato senza
+`/dev/zwave` e Docker fa ripartire quello (`Failed to open the serial port ... cannot
+open /dev/zwave`, Redmine #388). Lo script confronta i servizi che in `arfea.yml`
+mappano ttyAML1 coi loro container, ricrea dal controller quelli rimasti senza e
+controlla nei log che aprano la seriale. Si lancia anche su una centralina sola (`--centralina <alias>`)
+o dalla centralina stessa (`sudo bash ripara-ttyaml1.sh --qui`).
+
 > Modificare `devices`/`environment` richiede un **recreate** del container, non
 > un semplice restart (vedi [§5.4](#54-restart-vs-recreate)).
 
@@ -581,9 +603,20 @@ vecchio OpenHAB in docker ci scriveva comandi che un ciclo eseguiva da root) se 
 container la monta più, la cache apt, il journal oltre 200 MB e i log ruotati. Al journal
 mette anche un tetto fisso di 200 MB (`/etc/systemd/journald.conf.d/arfea.conf`), se nessuno
 ne ha già messo uno: ridurlo una volta non basta, perché un servizio che riparte in ciclo lo
-riporta a 1 GB in pochi giorni (Redmine #367). Con `--nativo`
-toglie anche l'OpenHAB nativo, mount `/srv/openhab-*` di openHABian compresi: dopo non si
-torna più al nativo. Con `--pacchetti` toglie i pacchetti che al controller non servono,
+riporta a 1 GB in pochi giorni (Redmine #367). Toglie anche il repository apt di NodeSource
+(openHABian lo metteva per frontail) quando nodejs non c'è o se ne va con `--pacchetti`. Con
+`--nativo`, solo col container `openhab` sano, toglie l'OpenHAB nativo, 2.x compreso: i
+pacchetti `openhab*` senza purge (il purge cancellerebbe l'utente `openhab`, che su openHABian
+possiede `/opt` e `/srv`), le cartelle, i conffile rimasti (`/etc/default/openhab`,
+`/etc/openhab-cli`, `/etc/profile.d/openhab.sh`), le unità, i mount `/srv/openhab-*`, il
+repository apt di OpenHAB con la sua chiave e openHABian (`/opt/openhabian`,
+`openhabian-config`, `/etc/openhabian.conf`). Il `~/.bash_profile` di openHABian, che al
+login dà `openhab3_is_installed: command not found` e gli errori di `version.properties`,
+diventa `.bash_profile.disabled-arfea` (Redmine #398, #399). openHABian resta se qualcos'altro
+lo nomina ancora, e `/etc/init.d/openhabian-config` (mette il governor della CPU) se è attivo
+all'avvio: lo script lo dice. Alla fine controlla che del nativo non resti niente (pacchetti,
+servizi, processi, cartelle, repository) e scrive cosa è rimasto; senza `--nativo` elenca
+cosa c'è ancora. Dopo non si torna più al nativo. Con `--pacchetti` toglie i pacchetti che al controller non servono,
 ognuno solo se regge la sua condizione: OpenJDK se niente di nativo usa Java (Undici,
 OpenHAB, un altro servizio), `linux-firmware` col kernel Hardkernel 4.9 e nessun dispositivo
 wifi o bluetooth (da `/media/boot` si avvia senza, e il pacchetto non ha script di rimozione),
@@ -821,8 +854,11 @@ del template, cioè quelle della release certificata.
    servizi nativi (così al boot parte **solo** lo stack Docker). In caso contrario
    NON disabilita nulla e stampa le istruzioni di rollback.
 6. **Pulizia banner openhabian**: disattiva gli script di login in `/etc/profile.d` e
-   `/etc/update-motd.d`, svuota `/etc/motd`, rimuove le righe `FireMotD`/`version.properties`
-   da `bashrc`/`profile` — elimina gli errori al login SSH (`FireMotD: command not found`,
+   `/etc/update-motd.d`, svuota `/etc/motd`, rinomina in `.bash_profile.disabled-arfea` il
+   `~/.bash_profile` di openHABian (carica `/opt/openhabian` e stampa il logo: togliergli
+   solo delle righe lasciava `openhab3_is_installed: command not found`, Redmine #399),
+   rimuove le righe `FireMotD`/`version.properties` da `bashrc`/`profile` — elimina gli
+   errori al login SSH (`FireMotD: command not found`,
    `sed: can't read .../version.properties`, welcome ASCII di openHAB). Tutto
    **reversibile**: i file toccati sono copiati in `arfea-controller/backups/login-banners-*`.
 
@@ -1742,6 +1778,8 @@ all'hardware:
    ```
    Rimedio: mappare per by-id ([§3](#device-seriali-importante)); dal controller 1.8.8
    la Web UI lo segnala da sola.
+   Su una ODROID-C4 con Armbian, `/dev/ttyAML1` che manca dopo un aggiornamento del
+   kernel è l'overlay perso: `script/ripara-ttyaml1.sh` ([§3](#device-seriali-importante)).
 1. **Device mappato nel container?**
    ```bash
    docker exec openhab ls -l /dev/ttyUSB0     # deve esistere DENTRO il container

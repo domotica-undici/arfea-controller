@@ -1858,8 +1858,25 @@ cleanup_login_banners() {
     log "  banner: svuotato /etc/motd"
   fi
 
-  # 3) righe che invocano FireMotD / version.properties nei bashrc/profile
-  local files=(/etc/bash.bashrc /etc/profile) h
+  # 3) il ~/.bash_profile di openHABian: carica /opt/openhabian/functions/helpers.bash
+  #    e stampa il logo con la versione dell'OpenHAB nativo. Togliere le sue righe di
+  #    FireMotD e version.properties non bastava: al login restavano
+  #    "openhab3_is_installed: command not found" e il logo vuoto (Redmine #399).
+  #    Si rinomina: bash torna a ~/.profile, che lui stesso caricava in fondo
+  local h
+  for h in /root /home/*; do
+    f="$h/.bash_profile"
+    if [[ -f "$f" ]] && grep -qF /opt/openhabian "$f"; then
+      cp -a "$f" "$bak/$(echo "$f" | tr / _)" 2>/dev/null || true
+      if mv "$f" "$f.disabled-arfea"; then
+        touched=true
+        log "  banner: disattivato $f"
+      fi
+    fi
+  done
+
+  # 4) righe che invocano FireMotD / version.properties nei bashrc/profile
+  local files=(/etc/bash.bashrc /etc/profile)
   for h in /root /home/*; do
     [[ -d "$h" ]] || continue
     files+=("$h/.bashrc" "$h/.profile" "$h/.bash_profile")
