@@ -1351,6 +1351,17 @@ si definisce nei `params/*.yml`, editabili dalla Web UI (validazione YAML +
 riavvio automatico di HABApp). Non serve più mettere le mani nei file via Samba.
 Il controller non li sovrascrive mai: se manca, ne crea uno vuoto (`{}`).
 
+**Priorità del distacco dei carichi.** `params/loads.yml` dice solo quali carichi
+si possono staccare; l'ordine sta nell'item `loads_setup`, scritto dall'utente.
+La regola scorre l'elenco dal primo: il primo carico acceso è il primo a staccarsi,
+e quando la potenza torna disponibile si riattaccano in ordine inverso. Lo si
+imposta dal widget **`widget_loadsManager`** (dal controller 1.8.21 lo importa il
+controller su ogni impianto; va aggiunto a una pagina): massima potenza
+disponibile, poi si toccano i carichi dal meno importante e **SALVA**. Senza
+widget basta mandare a `loads_setup` un comando con i nomi degli item separati da
+virgola, nello stesso ordine (`a1_lineaCondizionatore,a2_forno`): la regola
+ricostruisce l'elenco e accoda i carichi non nominati.
+
 **Log.** `logging.yml` è deployato solo se manca, con livello **WARN**. Se lo
 alzi a DEBUG per diagnosticare un impianto, un riavvio del container non te lo
 riporta a WARN.
@@ -1965,6 +1976,28 @@ all'hardware:
      /sys/bus/usb/drivers/usb/unbind` poi `.../bind` (trova `<busid>` in
      `/sys/bus/usb/devices/`).
    - Dopo il ripristino hardware, **recreate** di openhab così riprende il device fresco.
+
+**Chiavetta Z-Wave Aeotec Z-Stick Gen5 (ZW090)** (Redmine #483, su una Raspberry 3B+):
+
+- **Niente «Soft reset» da zwave-js-ui.** Dopo un soft reset la chiavetta è rimasta in
+  uno stato che ha mandato la centralina in un giro di reset del watchdog (una ventina in
+  due ore, il ping solo ogni tanto: sulla 3B+ anche la scheda di rete sta sull'USB). Un
+  riavvio non basta, perché l'USB resta alimentato: si **toglie corrente** alla centralina
+  e la si riaccende. Il registro `/var/log/arfea-avvii.log` mostra i riavvii «NON puliti».
+- **Ripristino della memoria della chiavetta** (Backup → Restore NVM): il restore normale
+  si ferma con «Did not find a matching NVM 500 parser implementation … SDK 6.61 or higher»
+  (ZW0280), perché la Gen5 ha un firmware troppo vecchio per la conversione. Con un
+  backup **della stessa chiavetta** si spunta «skip compatibility check» e va. Prima di
+  scrivere conviene fermare OpenHAB (memoria libera: un reset a metà scrittura lascia la
+  chiavetta da ripristinare di nuovo). Su un impianto la chiavetta aveva perso 4 nodi
+  (spariti dalla sua memoria, non solo da zwave-js-ui): il backup del 2023 li ha riportati
+  con gli stessi numeri.
+- Gli strumenti di zwave-js (`nvmedit`) non leggono la memoria della Gen5. Per confrontare
+  due backup: la tabella dei nodi parte dall'offset 248, 5 byte per nodo (nodo *n* a
+  248 + 5·(*n*−1): capacità, sicurezza, riservato, classe generica, specifica; tutto a zero
+  = nodo assente). Il primo byte col bit 0x80 acceso vuol dire «sempre in ascolto»: un
+  modulo alimentato che zwave-js vede come «a batteria» ha lì la scheda sbagliata, e si
+  corregge copiando nel backup quella di un nodo identico prima del restore.
 
 ### 10.4 Backup
 

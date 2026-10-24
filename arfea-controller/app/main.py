@@ -538,7 +538,13 @@ logger = logging.getLogger(__name__)
 #          restano fuori). Una release con un'immagine che il registro non ha per
 #          l'architettura della centralina (OpenHAB 5 su un sistema a 32 bit) non
 #          si propone e non si applica: prima si fermava al pull, dopo il backup.
-VERSION = "1.8.20"
+#   1.8.21 Skeleton: il widget del controllo carichi (widget_loadsManager: potenza
+#          disponibile e ordine di distacco in loads_setup) passa da develop/
+#          allo skeleton, e il controller lo importa su ogni impianto; prima
+#          nessun impianto lo riceveva (Redmine #513). Tolti lanIp e vpnIp da conf/scripts,
+#          uscita del vecchio get_ip che tornava a ogni aggiornamento (Redmine
+#          #512).
+VERSION = "1.8.21"
 
 # -- Globals initialised at startup -----------------------------------------
 

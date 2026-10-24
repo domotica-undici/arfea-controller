@@ -1,0 +1,82 @@
+# Controllo carichi di HABApp: potenza disponibile (maxPower) e ordine di
+# distacco (loads_setup). Si toccano i carichi nell'ordine voluto, dal meno
+# importante (il primo a staccarsi), e SALVA manda a loads_setup l'elenco dei
+# nomi separati da virgola: la regola rules/loads ne ricostruisce il JSON e
+# accoda i carichi non scelti. Sugli impianti senza la funzione loads l'item
+# manca e l'elenco resta vuoto.
+uid: widget_loadsManager
+tags: []
+props:
+  parameters: []
+  parameterGroups: []
+component: f7-block
+config:
+  class:
+    - no-padding
+    - no-margin
+  style:
+    -moz-user-select: None
+    -ms-user-select: None
+    -webkit-user-select: None
+    position: relative
+    user-select: None
+  title: Controllo carichi
+slots:
+  default:
+    - component: oh-list-card
+      config:
+        title: Gestione carichi
+      slots:
+        default:
+          - component: oh-stepper-item
+            config:
+              item: maxPower
+              max: 150
+              min: 3
+              step: 0.1
+              title: Massima potenza disponibile (KW)
+    - component: oh-list-card
+      config:
+        sortable: false
+        sortableEnabled: false
+        title: Priorità (dal meno importante)
+      slots:
+        default:
+          - component: oh-repeater
+            config:
+              for: load
+              in: "=(items['loads_setup'].state + '').startsWith('[') ? JSON.parse(items['loads_setup'].state) : []"
+              sourceType: array
+            slots:
+              default:
+                - component: oh-list-item
+                  config:
+                    action: variable
+                    actionVariable: newLoadsPriority
+                    actionVariableValue: "=(vars.newLoadsPriority === undefined ? loop.load['name']
+                      : vars.newLoadsPriority.includes(loop.load['name']) ?
+                      vars.newLoadsPriority : vars.newLoadsPriority + ',' +
+                      loop.load['name'])"
+                    after: =loop.load["priority"]
+                    listButton: true
+                    title: =loop.load["name"]
+    - component: oh-label-card
+      config:
+        label: =vars.newLoadsPriority
+        title: Nuovo ordine di priorità
+        visible: true
+    - component: oh-button
+      config:
+        action: command
+        actionCommand: =vars.newLoadsPriority
+        actionItem: loads_setup
+        class:
+          - display-flex
+          - flex-direction-column
+          - padding-top-half
+        clearVariable: newLoadsPriority
+        outline: true
+        style:
+          --f7-button-border-color: var(--f7-card-outline-border-color)
+          height: auto
+        text: SALVA
