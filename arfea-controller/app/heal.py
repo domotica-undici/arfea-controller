@@ -13,11 +13,12 @@ Due tempi:
   - repair_configs(): config dei servizi, lette dai container solo all'avvio.
     Gira prima di start_all_enabled; un container acceso si ferma, si corregge
     il file e si riavvia (zigbee2mqtt e zwave-js-ui riscrivono le loro config);
-  - OpenHABWatch: indirizzo primario di OpenHAB, ffmpeg per ipcamera e un
-    controllo ogni 5 minuti che riavvia OpenHAB quando resta bloccato.
+  - OpenHABWatch: indirizzo primario di OpenHAB, ffmpeg per ipcamera, tag della
+    vecchia aasystem/arfea.py sui gruppi aggregatori e un controllo ogni 5
+    minuti che riavvia OpenHAB quando resta bloccato.
 
-Le correzioni di HABApp (url di OpenHAB, regola legacy aasystem/arfea.py) stanno
-in habapp_manager e le chiama _heal_habapp di main.py.
+Le correzioni di HABApp (url di OpenHAB, broker MQTT, regole superate come
+aasystem/arfea.py) stanno in habapp_manager e le chiama _heal_habapp di main.py.
 """
 
 from __future__ import annotations
@@ -497,6 +498,21 @@ fi
 """
 _FFMPEG_NAME = "30-arfea-ffmpeg"
 
+# Tag semantici che la vecchia regola aasystem/arfea.py (tutte le versioni)
+# metteva sui gruppi aggregatori: ogni membro risultava anche parte di un
+# equipment che non esiste (una luce dentro «Luci» oltre che nella sua stanza).
+# Gli aggregatori restano gruppi funzionali, senza tag (Redmine #519).
+_LEGACY_AGGREGATOR_TAGS = {
+    "gLights": ("Lightbulb",),
+    "gShutters": ("Blinds",),
+    "gPlugs": ("PowerOutlet",),
+    "gDoorWindowSensors": ("Window",),
+    "gMotionSensors": ("Motion",),
+    "gAlarms": ("Alarm",),
+    "gSmokeSensors": ("Smoke", "Alarm"),
+    "gFloodSensors": ("Water", "Alarm"),
+}
+
 
 def _host(cmd: list[str], timeout: int = 15) -> str:
     try:
@@ -536,14 +552,16 @@ class OpenHABWatch:
     """Controlli su OpenHAB, al primo avvio utile e poi ogni 5 minuti."""
 
     def __init__(self, cfg, docker, rest: Callable, rest_ready: Callable[[], bool],
-                 busy: Callable[[], str]):
+                 busy: Callable[[], str], legacy_rule_active: Callable[[], bool]):
         self.cfg = cfg
         self.docker = docker
         self.rest = rest            # (method, path, body=None) -> (code, text), con token admin
         self.rest_ready = rest_ready
         self.busy = busy            # motivo per non toccare nulla ("" = libero)
+        self.legacy_rule_active = legacy_rule_active    # aasystem/arfea.py puo' ancora girare
         self._seen: dict[str, float] = {}
         self._ffmpeg_done = False
+        self._aggregators_done = False
 
     def start(self) -> None:
         threading.Thread(target=self._loop, name="openhab-watch", daemon=True).start()
@@ -583,6 +601,7 @@ class OpenHABWatch:
             return
         if self.rest_ready():
             self._primary_address()
+            self._aggregator_tags()
             things = self._things()
             self._ffmpeg(things)
         else:
@@ -732,6 +751,43 @@ class OpenHABWatch:
         record(self.cfg, "openhab", f"indirizzo primario {current or '(automatico)'} -> {wanted}")
         time.sleep(30)
         self._restart_if_running("habapp", "dopo il cambio di indirizzo di OpenHAB")
+
+    # -- tag della vecchia aasystem/arfea.py ----------------------------------
+
+    def _aggregator_tags(self) -> None:
+        """Toglie dai gruppi aggregatori i tag di _LEGACY_AGGREGATOR_TAGS. Solo
+        sui gruppi gestiti via REST (quelli di un .items sono una scelta di chi
+        li ha scritti) e solo quei tag. Si aspetta che la regola non possa piu'
+        girare: a ogni avvio di HABApp li rimetteva. DELETE del singolo tag:
+        OpenHAB modifica il gruppo sul posto, e lo stato resta."""
+        if self._aggregators_done or self.legacy_rule_active():
+            return
+        code, text = self.rest("GET", "/rest/items?type=Group&fields=name,tags,editable")
+        if code != "200":
+            return
+        try:
+            groups = {g["name"]: g for g in json.loads(text)}
+        except (ValueError, KeyError, TypeError):
+            return
+        for name, legacy in _LEGACY_AGGREGATOR_TAGS.items():
+            group = groups.get(name)
+            if not group or not group.get("editable"):
+                continue
+            stale = [t for t in legacy if t in (group.get("tags") or [])]
+            removed: list[str] = []
+            for tag in stale:
+                code, text = self.rest("DELETE", f"/rest/items/{name}/tags/{tag}")
+                if code not in ("200", "204"):
+                    logger.warning("Riparazioni OpenHAB: tag %s di %s non tolto (HTTP %s): %s",
+                                   tag, name, code, text[:200])
+                    break
+                removed.append(tag)
+            if removed:
+                record(self.cfg, "openhab", f"gruppo {name}: tolti i tag {', '.join(removed)} "
+                       "della vecchia regola aasystem/arfea.py")
+            if len(removed) < len(stale):
+                return
+        self._aggregators_done = True
 
     # -- ffmpeg per ipcamera -------------------------------------------------
 

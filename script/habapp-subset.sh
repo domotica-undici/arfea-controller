@@ -10,10 +10,11 @@
 # Nessuna copia intermedia: si modifica la repo e i due canali seguono.
 #
 # Cosa NON e' distribuibile e perche':
-#   rules/aasystem/      arfea.py e' legacy (buona parte gia' portata in
-#                        conf/automation/js/arfea_system.js); time.py e' stato
-#                        rimosso perche' duplicava le fasce del JS.
-#                        ECCEZIONE: tools.py, vedi HABAPP_RULE_FILES.
+#   rules/aasystem/      arfea.py e time.py sono stati rimossi: il loro lavoro
+#                        lo fanno skeleton (arfea_system.js) e controller, che
+#                        li toglie anche dagli impianti (_OBSOLETE_RULE_FILES,
+#                        Redmine #241, #519). ECCEZIONE: tools.py, vedi
+#                        HABAPP_RULE_FILES.
 #   params/              configurazione DELL'IMPIANTO, non un template: thermo.yml
 #                        e' un impianto reale. Sull'impianto i params li crea il
 #                        controller vuoti ({}) e li si edita dalla Web UI.
@@ -45,6 +46,6 @@ HABAPP_ROOT_FILES=(config.yml logging.yml)
 
 # Path (relativi alla radice della repo) esclusi dalla repo pubblica.
 # Usata da export-public.sh, che filtra l'output di `git ls-files`.
-# NB: di rules/aasystem/ si esclude arfea.py, non la cartella: tools.py e' in
-# HABAPP_RULE_FILES e deve uscire anche nel pubblico.
-HABAPP_EXCLUDE_REGEX="^habapp/${HABAPP_VER//./\\.}/habapp/(rules/aasystem/arfea\.py|params/|config/|log/)"
+# NB: rules/aasystem/ non si esclude: tools.py e' in HABAPP_RULE_FILES e deve
+# uscire anche nel pubblico.
+HABAPP_EXCLUDE_REGEX="^habapp/${HABAPP_VER//./\\.}/habapp/(params/|config/|log/)"

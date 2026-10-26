@@ -1406,6 +1406,16 @@ riporta a WARN.
 > minuto). Dal controller **1.8.8** lo si toglie da solo, all'avvio e nel
 > provisioning, se `arfea_system.js` è a bordo: diventa `time.py.obsoleto` nella
 > stessa cartella, che HABApp non carica.
+>
+> Dal controller **1.8.23** lo stesso vale per `rules/aasystem/arfea.py`, il codice
+> ARFEA 3.0.2 rimasto sugli impianti migrati: diventa `arfea.py.obsoleto`. Quello che
+> faceva (item di sistema, messaggi, livello delle batterie, wifi e indirizzi) lo
+> fanno lo skeleton e il controller. A ogni avvio di HABApp rimetteva i tag semantici
+> sui gruppi aggregatori (`gLights` come Lightbulb, `gShutters` come Blinds, …), e ogni
+> luce risultava anche parte di un equipment che non esiste: anche quei tag il
+> controller li toglie da solo (riparazioni automatiche, §10.2). Gli item che la regola aveva creato (`wifi_*`, `eth0ip`,
+> `HABApp_Ping`, …) restano: si tolgono a mano, impianto per impianto, dopo aver
+> controllato che nessun widget o regola li usi (Redmine #519).
 
 ### 6.5 Z-Wave JS UI (opzionale, porta 8091)
 Nella pagina di onboarding:
@@ -1928,8 +1938,16 @@ bridge trusted; reboot da remoto via OpenHAB Cloud → regola JS → localhost.
     ricreato (#330);
   - HABApp col broker MQTT su `localhost` (era quello nativo) → `mosquitto`, dal 1.8.15
     (#339);
-  - regola legacy `rules/aasystem/arfea.py` ferma su `ItemNotEditableError` → corretta,
-    copia dell'originale in `arfea-controller/backups`;
+  - regole HABApp superate (`rules/aasystem/time.py` e, dal 1.8.23, `rules/aasystem/arfea.py`)
+    → messe da parte come `<file>.obsoleto`, se `arfea_system.js` è a bordo (#241, #519).
+    Fino al 1.8.22 `arfea.py` invece si correggeva, perché non si fermasse su
+    `ItemNotEditableError`;
+  - tag semantici della vecchia `arfea.py` sui gruppi aggregatori (`gLights` Lightbulb,
+    `gShutters` Blinds, `gPlugs` PowerOutlet, `gDoorWindowSensors` Window,
+    `gMotionSensors` Motion, `gAlarms` Alarm, `gSmokeSensors` Smoke e Alarm,
+    `gFloodSensors` Water e Alarm) → tolti, dal 1.8.23. Solo sui gruppi creati via REST
+    (quelli di un `.items` non si toccano), solo quei tag e solo quando la regola non può
+    più rimetterli (#519);
   - `listener <porta> <IP>` di mosquitto su un IP fisso → `0.0.0.0` (#324);
   - zwave-js-ui e zigbee2mqtt col broker su un IP di container che non risponde →
     `mosquitto`; zwave-js-ui senza «retain» → acceso (senza, dopo un riavvio di OpenHAB

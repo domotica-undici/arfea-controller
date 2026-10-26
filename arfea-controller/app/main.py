@@ -551,7 +551,15 @@ logger = logging.getLogger(__name__)
 #          HABApp passa a 26.10.0 e gira sia sul motore 25.12.0 sia sul 26.10.1:
 #          questo tarball lo porta a bordo e il controller lo rideploya
 #          all'avvio anche dove l'immagine e' ancora la 25.12.0 (Redmine #516).
-VERSION = "1.8.22"
+#   1.8.23 La regola legacy aasystem/arfea.py (codice ARFEA 3.0.2) si toglie da
+#          sola come time.py: diventa arfea.py.obsoleto se arfea_system.js e' a
+#          bordo, e non si corregge piu' (patch_legacy_rules, #335, tolta). Il
+#          suo lavoro lo fanno skeleton e controller. OpenHABWatch toglie i tag
+#          semantici che metteva sui gruppi aggregatori (gLights come Lightbulb,
+#          ...), per cui ogni luce stava anche in un equipment finto: solo sui
+#          gruppi gestiti via REST e solo quando la regola non puo' piu'
+#          rimetterli. Tutto annotato fra le riparazioni (Redmine #519).
+VERSION = "1.8.23"
 
 # -- Globals initialised at startup -----------------------------------------
 
@@ -677,9 +685,10 @@ async def lifespan(app: FastAPI):
     threading.Thread(target=_startup_background, daemon=True).start()
 
     # Controlli su OpenHAB ogni 5 minuti: indirizzo primario, ffmpeg per
-    # ipcamera, OpenHAB bloccato dopo il pacchetto addon (Redmine #335).
+    # ipcamera, OpenHAB bloccato dopo il pacchetto addon (Redmine #335), tag
+    # della vecchia aasystem/arfea.py sui gruppi aggregatori (#519).
     heal.OpenHABWatch(config_manager, docker_manager, _oh_rest_auth, _oh_rest_ready,
-                      _maintenance_busy).start()
+                      _maintenance_busy, habapp_manager.legacy_arfea_rule_active).start()
 
     # Rete: password dell'AP al primo avvio e watchdog wifi/access point. Il
     # watchdog parte anche se NetworkManager non c'e' (lo segnala nello stato):
@@ -720,15 +729,6 @@ def _heal_habapp() -> None:
     if svc is None or not svc.enabled:
         return
 
-    # Regola legacy aasystem/arfea.py ferma su ItemNotEditableError dopo la
-    # migrazione (Redmine #335): HABApp ricarica da solo il file corretto.
-    try:
-        if habapp_manager.patch_legacy_rules():
-            heal.record(config_manager, "habapp", "regola legacy aasystem/arfea.py: gli item "
-                        "di arfea.items non la fermano piu' (copia in arfea-controller/backups)")
-    except OSError as exc:
-        logger.warning("HABApp: regola legacy non corretta: %s", exc)
-
     # url di OpenHAB che dal container non risponde (Redmine #330): la prova
     # dall'interno del container vuole OpenHAB su.
     url_fixed = ""
@@ -747,10 +747,13 @@ def _heal_habapp() -> None:
     except Exception as exc:
         logger.warning("HABApp: controllo dell'url di OpenHAB fallito: %s", exc)
 
-    # Regole superate rimaste a bordo (aasystem/time.py, Redmine #241): vanno
-    # tolte anche quando il codice e' gia' allineato e il provisioning non riparte.
+    # Regole superate rimaste a bordo (aasystem/time.py, Redmine #241;
+    # aasystem/arfea.py, #519): vanno tolte anche quando il codice e' gia'
+    # allineato e il provisioning non riparte.
     try:
-        habapp_manager.remove_obsolete_rules()
+        for rel in habapp_manager.remove_obsolete_rules():
+            heal.record(config_manager, "habapp", f"regola superata rules/{rel} messa da parte "
+                        f"(diventa {Path(rel).name}.obsoleto)")
     except OSError as exc:
         logger.warning("HABApp: regole superate non rimosse: %s", exc)
 

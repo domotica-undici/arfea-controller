@@ -97,28 +97,17 @@ _BASE_RULE_FILES = ["aasystem/tools.py"]
 # holidayName, adesso) le gestisce arfea_system.js dello skeleton dalla 1.6.0, ma
 # il file restava e girava insieme al JS; su un impianto andava in errore due
 # volte al minuto (Redmine #241).
+# aasystem/arfea.py: codice ARFEA 3.0.2, che il controller non porta e trova
+# sugli impianti migrati. Item di sistema, utenti, messaggi e gBatteryPowered
+# stanno in arfea.items e arfea_system.js dello skeleton, wifi e IP li gestisce
+# il controller. A ogni avvio di HABApp ricreava i gruppi aggregatori con tag
+# semantici (gLights come Lightbulb, ...): i tag li toglie heal.OpenHABWatch
+# (Redmine #519).
 _OBSOLETE_RULE_FILES = {
     "aasystem/time.py": "automation/js/arfea_system.js",
+    "aasystem/arfea.py": "automation/js/arfea_system.js",
 }
 _OBSOLETE_SUFFIX = ".obsoleto"
-
-# Regola legacy aasystem/arfea.py (codice ARFEA 3.0.2): il controller non la
-# porta, la trova sugli impianti migrati. Crea i suoi item con
-# self.openhab.create_item, ma dopo la migrazione una parte sta in arfea.items
-# (file) e via REST non si ricrea: ItemNotEditableError al primo, e la regola si
-# ferma li' (HABApp_Ping, uuid, utenti mai valorizzati). Le chiamate passano da
-# un _create_item che ignora quell'errore (Redmine #335).
-_LEGACY_ARFEA_RULE = "aasystem/arfea.py"
-_LEGACY_HELPER = """
-    # Dalla migrazione al controller alcuni item stanno in arfea.items (file):
-    # via REST non si possono ricreare, e l'errore fermava tutta la regola.
-    # Aggiunto dal controller (Redmine #335).
-    def _create_item(self, *args, **kwargs):
-        try:
-            return self.openhab.create_item(*args, **kwargs)
-        except ItemNotEditableError:
-            return False
-"""
 
 # Prova dall'interno del container HABApp: l'url di OpenHAB risponde? Un errore
 # HTTP (401, 404) vuol dire che qualcuno risponde, quindi va bene.
@@ -587,37 +576,13 @@ class HABAppManager:
             return None
         return rc == 0
 
-    def patch_legacy_rules(self) -> bool:
-        """Corregge la regola legacy aasystem/arfea.py (vedi _LEGACY_ARFEA_RULE).
-        HABApp ricarica da solo un file di regole cambiato. Copia
-        dell'originale in arfea-controller/backups. True se l'ha corretta."""
-        path = self.config_dir() / "rules" / _LEGACY_ARFEA_RULE
-        if not path.is_file():
+    def legacy_arfea_rule_active(self) -> bool:
+        """True se aasystem/arfea.py puo' ancora girare: file a bordo e HABApp
+        acceso. A ogni avvio rimetterebbe i tag sui gruppi aggregatori."""
+        if not (self.config_dir() / "rules" / "aasystem" / "arfea.py").is_file():
             return False
-        text = path.read_text()
-        if "self.openhab.create_item(" not in text or "def _create_item(" in text:
-            return False
-        anchor = "from system.utils import Utils"
-        new = text.replace("self.openhab.create_item(", "self._create_item(")
-        if anchor not in new:
-            logger.warning("HABApp: rules/%s di forma inattesa, non corretta", _LEGACY_ARFEA_RULE)
-            return False
-        new = new.replace(anchor, anchor + "\nfrom HABApp.openhab.errors import ItemNotEditableError", 1)
-        new, n = re.subn(r"(\n    def load_configuration\(self\):)",
-                         lambda mm: _LEGACY_HELPER + mm.group(1), new, count=1)
-        if n != 1:
-            logger.warning("HABApp: rules/%s senza load_configuration, non corretta", _LEGACY_ARFEA_RULE)
-            return False
-        try:
-            compile(new, str(path), "exec")
-        except SyntaxError as exc:
-            logger.warning("HABApp: correzione di rules/%s non valida: %s", _LEGACY_ARFEA_RULE, exc)
-            return False
-        backups = self._data_path / "arfea-controller" / "backups"
-        backups.mkdir(parents=True, exist_ok=True)
-        shutil.copy2(path, backups / f"aasystem-arfea.py.prima-{time.strftime('%Y%m%d_%H%M%S')}")
-        path.write_text(new)
-        return True
+        svc = self.cfg.config.services.get("habapp")
+        return svc is not None and svc.enabled
 
     def _read_token(self, cfg_file: Path) -> str:
         if not cfg_file.is_file():
