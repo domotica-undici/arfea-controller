@@ -1,0 +1,68 @@
+# Params di PROVA: un termostato per modello, attuatori di ogni tipo.
+generators:
+  heat:
+    - name: hbtCaldaia
+      type: switch
+  cool:
+    - name: hbtChiller
+      type: switch
+pumps:
+  heat:
+    - name: hbtPompaCaldo
+      type: switch
+  cool:
+    - name: hbtPompaFreddo
+      type: switch
+thermostats:
+  - name: TVirtual
+    ambient: stanzaVirtual
+    windows: [finestraVirtual]
+    onoffvalves:
+      heat: [{name: valvolaVirtualH, label: Valvola H}]
+      cool: [{name: valvolaVirtualC}]
+    pumps:
+      heat: [hbtPompaCaldo]
+      cool: [hbtPompaFreddo]
+  - name: TMh8
+    model: mh8
+    ambient: stanzaMh8
+    analogvalves: [{name: valvolaAnalogMh8, label: Valvola analogica}]
+  - name: TMh7
+    model: mh7
+    ambient: stanzaMh7
+    fancoils:
+      cool: [{name: fcViessmannMh7, model: viessmann}]
+      heat: [{name: fcViessmannMh7h, model: viessmann}]
+  - name: TMh5
+    model: mh5
+    ambient: stanzaMh5
+    radiators: [{name: radFgt001, model: fgt001}, {name: radLc13, model: lc13}]
+  - name: TIr2900
+    model: ir2900
+    ambient: stanzaIr2900
+    fancoils:
+      cool: [{name: fcDaikin, model: daikin_ac}]
+  - name: TZtemp2
+    model: ztemp2
+    ambient: stanzaZtemp2
+    fancoils:
+      cool: [{name: fcBroadlink, model: broadlink_ir, deviceID: abc123}]
+  - name: TZtemp3
+    model: ztemp3
+    ambient: stanzaZtemp3
+  - name: TZtrm6
+    model: ztrm6
+    ambient: stanzaZtrm6
+    sensor: internal
+  - name: TLstat
+    model: lstat
+    ambient: stanzaLstat
+    windows: [finestraLstat]
+    onoffvalves:
+      heat: [{name: valvolaLstatH}]
+  - name: TBac3000
+    model: bac_3000
+    ambient: stanzaBac
+  - name: TDanfoss
+    model: danfoss_014g0160
+    ambient: stanzaDanfoss

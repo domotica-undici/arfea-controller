@@ -39,7 +39,7 @@ class ThermoPlant(HABApp.Rule):
             self.openhab.create_item("String", itemName, label='')
 
 #Load configuration from yaml file
-        cfg = HABApp.DictParameter('thermo')
+        cfg = HABApp.parameters.DictParameter('thermo')
 
 #Load generators
         self._hasCoolGenerators = False

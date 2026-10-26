@@ -54,7 +54,7 @@ class Irrigation(HABApp.Rule):
         self.utils.set_stateDescription_metadata(itemName,"%s") """
 
 #Load configuration
-        cfg = HABApp.DictParameter('irrigation')    # this will get the file content
+        cfg = HABApp.parameters.DictParameter('irrigation')    # this will get the file content
 
 
 #Load plant

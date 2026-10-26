@@ -33,7 +33,7 @@ class Loads(HABApp.Rule):
         self.tools = self.get_rule('Tools') #load with this syntax otherwise timers won't works
 
 #Load configuration
-        cfg = HABApp.DictParameter('loads')    # this will get the file content
+        cfg = HABApp.parameters.DictParameter('loads')    # this will get the file content
 
         #Tutta la procedura ragiona in kW, come maxPower. Se il misuratore pubblica Watt su
         #plantPowerConsumption il confronto salta (2092 W risultano > 5 kW disponibili) e i carichi

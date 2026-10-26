@@ -544,7 +544,14 @@ logger = logging.getLogger(__name__)
 #          nessun impianto lo riceveva (Redmine #513). Tolti lanIp e vpnIp da conf/scripts,
 #          uscita del vecchio get_ip che tornava a ogni aggiornamento (Redmine
 #          #512).
-VERSION = "1.8.21"
+#   1.8.22 OpenHAB 5.2.3 e HABApp 26.10.1 sulle nuove installazioni (template
+#          arfea.yml). Gli impianti gia' installati prendono le immagini dalla
+#          release certificata 2026.10.02 di releases.json, non da questo
+#          tarball: il loro arfea.yml e' protetto dal self-update. Il codice
+#          HABApp passa a 26.10.0 e gira sia sul motore 25.12.0 sia sul 26.10.1:
+#          questo tarball lo porta a bordo e il controller lo rideploya
+#          all'avvio anche dove l'immagine e' ancora la 25.12.0 (Redmine #516).
+VERSION = "1.8.22"
 
 # -- Globals initialised at startup -----------------------------------------
 

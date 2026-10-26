@@ -1,0 +1,8 @@
+powerUnit: W
+loads:
+  - name: hbtCaricoForno
+    label: Forno
+    type: NO
+  - name: hbtCaricoClima
+    label: Clima
+    type: NC

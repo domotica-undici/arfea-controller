@@ -1,0 +1,12 @@
+pumps:
+  - name: hbtPompaIrr
+    label: Pompa irrigazione
+valves:
+  - name: hbtZonaPrato
+    label: Prato
+    type: switch
+    pump: hbtPompaIrr
+  - name: hbtZonaOrto
+    type: switch
+rain_sensors:
+  - name: hbtPioggia

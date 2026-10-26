@@ -521,7 +521,12 @@ cd /opt/docker_store/arfea-controller && docker compose logs -f --tail 50 arfea-
    5.x dal 9/6/2026), per non fare un downgrade.
 2. **Leggi i breaking change** dai repo ufficiali (OpenHAB, HABApp, zwave-js-ui,
    zigbee2mqtt, mosquitto, node-red) per il salto. Se prima il tag era mobile, la
-   versione di partenza è sconosciuta: si legge dalla prima della major.
+   versione di partenza è sconosciuta: si legge dalla prima della major. Quelli che
+   toccano gli impianti si verificano sul codice al tag: le note possono dire di più
+   o di meno (nella 2026.10.02 il proxy delle sitemap rompeva meno di quanto
+   annunciato, e la correzione di ipcamera annunciata per la 5.2.2 nel jar non
+   c'era). Se cambia il motore HABApp, il codice ARFEA deve girare **sia sul motore
+   vecchio sia sul nuovo** (vedi §6.4) e si prova in locale su entrambi.
 3. Se servono fix, scrivi gli script in `migrations/<versione>/pre.sh` (e/o
    `post.sh`) — contratto in [migrations/README.md](migrations/README.md).
    **Rigenera e ripubblica il tarball** del controller (le migrazioni viaggiano lì).
@@ -1298,6 +1303,19 @@ UI di OpenHAB come sempre.
 - Il kar **non entra nel backup**: sono MB ri-scaricabili, non dati
   dell'impianto. Dopo un ripristino lo riporta a bordo il controller.
 
+**Sitemap con immagini o video presi da un item (da OpenHAB 5.2.2).** Un
+`Image` o un `Video` di una sitemap passa dal proxy di OpenHAB (`/proxy`). Un `url=`
+scritto nella sitemap funziona come prima. Se invece l'indirizzo arriva dallo stato
+di un item String (`Image item=TelecameraUrl url="..."`), OpenHAB lo usa solo se
+l'host è nell'elenco **allowedHosts** (Impostazioni → Impostazioni di sistema →
+Sitemap; `host` o `host:porta`, separati da virgola). L'elenco è vuoto di default:
+OpenHAB ripiega sull'`url=` della sitemap e lo dice una volta in `openhab.log`
+(`URLs from item states are disabled because 'allowedHosts' is empty`). Si
+aggiunge solo l'host della telecamera: chiunque possa cambiare quell'item può far
+leggere al proxy qualunque pagina di quell'host. L'app, che mostra le sitemap, segue
+la stessa regola; le pagine della Main UI non passano dal proxy e non cambiano. Il
+controller non scrive l'elenco da solo.
+
 ### 6.2 Samba (opzionale, porte 139/445)
 Condivisione file per accesso ai `conf/` di OpenHAB da rete. Non è più core: nel
 template è spento (`enabled: false`), resta acceso sugli impianti migrati che lo
@@ -1361,6 +1379,20 @@ disponibile, poi si toccano i carichi dal meno importante e **SALVA**. Senza
 widget basta mandare a `loads_setup` un comando con i nomi degli item separati da
 virgola, nello stesso ordine (`a1_lineaCondizionatore,a2_forno`): la regola
 ricostruisce l'elenco e accoda i carichi non nominati.
+
+**Motore e codice.** L'immagine HABApp (il motore) e il codice ARFEA hanno versioni
+diverse e si aggiornano anche separati. Il codice deve girare **sul motore di prima e
+su quello nuovo**: il tarball del controller porta a bordo il codice nuovo, e il
+controller lo installa all'avvio anche dove l'immagine è ancora la vecchia, prima che
+qualcuno applichi la release. Il codice 26.10.0 (release 2026.10.02) gira su HABApp
+25.12.0 e 26.10.1. Dalla 26.x HABApp vuole Python 3.12 (l'immagine ha il 3.13),
+`Rule.get_items()` non è più statico, `MqttPublishOptions(...)` diventa
+`self.mqtt.publish_options(...)`, `HABApp.Parameter`/`DictParameter` passano a
+`HABApp.parameters.*`, e Point, HSB e RGB non si confrontano più con le tuple
+(`.to_tuple()`). Le regole scritte a mano per un impianto (`accessControl/`,
+`infraRed/`, le regole native copiate da una migrazione) il controller non le tocca:
+prima di passare un impianto a HABApp 26 si controlla che non usino quelle API.
+`./script/prova-habapp.sh` fa girare il codice in locale sui due motori.
 
 **Log.** `logging.yml` è deployato solo se manca, con livello **WARN**. Se lo
 alzi a DEBUG per diagnosticare un impianto, un riavvio del container non te lo

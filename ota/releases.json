@@ -1,7 +1,7 @@
 {
   "_commento": "Manifest delle versioni CERTIFICATE per le centraline ARFEA. Va pubblicato su controller.releases_url (es. https://cloud.domoticaundici.it/ota/releases.json). 'releases' è ordinato dalla più vecchia alla più recente: l'ordine definisce il percorso di upgrade attraversato dall'apply. 'latest' indica la versione bersaglio. Ogni release elenca i tag immagine certificati, sempre esatti (mai :latest o una major mobile come :11: l'apply scarica solo quando il tag cambia, quindi un tag mobile resta per sempre all'immagine del giorno dell'installazione); l'apply scrive SOLO questi tag in arfea.yml. Dal controller 1.8.8 i servizi spenti ricevono solo il tag, senza download: l'immagine arriva quando vengono accesi. 'controller_min' (opzionale) blocca l'upgrade se il controller è troppo vecchio. 'migrations' (opzionale) elenca le versioni che hanno script migrations/<versione>/pre.sh|post.sh bundlati nel tarball OTA. 'habapp_code' (opzionale) è il CODICE HABApp (regole+librerie) versionato a parte dall'immagine: {version, url, sha256} del tarball prodotto da script/build-habapp-tarball.sh. version = engine+revisione (es. 25.12.0 -> 25.12.1) e può avanzare anche a immagine habapp invariata. L'apply lo scarica, verifica lo sha256, lo spacchetta e ri-provisiona; nel diff/UI compare come pseudo-servizio 'habapp-code'. Assente = nessun aggiornamento di codice per quella release.",
   "channel": "stable",
-  "latest": "2026.10.01",
+  "latest": "2026.10.02",
   "releases": [
     {
       "version": "2026.07.03",
@@ -122,19 +122,39 @@
       }
     },
     {
+      "version": "2026.10.02",
+      "date": "2026-10-26",
+      "notes": "OpenHAB 5.2.3 e HABApp 26.10.1, codice HABApp 26.10.0. Z-Wave JS UI, Mosquitto, Zigbee2MQTT, Node-RED e OTBR invariati. Note di rilascio controllate anche sul codice (OpenHAB 5.2.2 e 5.2.3, HABApp 26.09.0, 26.10.0 e 26.10.1), nessuna migrazione (Redmine #516). OpenHAB: patch della 5.2 con le correzioni di sicurezza della 5.2.2 e il login da openHAB Cloud che la 5.2.2 aveva rotto, per questo si va diretti alla 5.2.3. Nelle sitemap un Image o un Video che prende l'indirizzo dallo stato di un item String lo usa solo se l'host e' nell'elenco allowedHosts (Impostazioni > Impostazioni di sistema > Sitemap), vuoto di default: senza, OpenHAB usa l'url scritto nella sitemap e lo dice una volta nel log («URLs from item states are disabled»). Un url scritto nella sitemap e le pagine della Main UI non cambiano. trustedNetworks ora guarda l'indirizzo vero del client e non piu' X-Forwarded-For, ma conta solo col ruolo utente implicito spento, che gli impianti ARFEA tengono acceso. Il login OAuth2 di /auth vuole PKCE e un redirect sulla stessa origine: le UI di OpenHAB non cambiano. Binding zwavejs: lo STOP delle tapparelle ferma nel verso giusto, canali invariati. La correzione annunciata per il binding ipcamera (/OnvifEvent) non c'e' nel jar 5.2.3, uguale al 5.2.1: nessun cambio per le telecamere. JS Scripting resta su openhab-js 5.21.0. Al primo avvio sulla 5.2.3 il controller ri-scarica in background il pacchetto addon della nuova versione (~610 MB). HABApp: l'immagine passa a Python 3.13. Il codice ARFEA 26.10.0 gira sia sul motore 25.12.0 sia sul 26.10.1 (provato in locale con ogni modello di termostato, carichi e irrigazione), cosi' codice e immagine si possono aggiornare anche separati. Le regole HABApp scritte a mano per l'impianto (fuori da thermostats, irrigation e loads) vanno controllate prima: dalla 26.x Rule.get_items() non e' piu' statico, MqttPublishOptions(...) diventa self.mqtt.publish_options(...), e Point/HSB/RGB non si confrontano piu' con le tuple.",
+      "controller_min": "1.8.8",
+      "images": {
+        "openhab": "openhab/openhab:5.2.3",
+        "habapp": "spacemanspiff2007/habapp:26.10.1",
+        "zwave-js-ui": "zwavejs/zwave-js-ui:11.24.1",
+        "mosquitto": "eclipse-mosquitto:2.1.2-alpine",
+        "zigbee2mqtt": "koenkk/zigbee2mqtt:2.14.1",
+        "node-red": "nodered/node-red:5.0.7-24-minimal",
+        "otbr": "openthread/border-router:sha-9802eb8"
+      },
+      "habapp_code": {
+        "version": "26.10.0",
+        "url": "https://cloud.domoticaundici.it/ota/habapp-26.10.0.tar.xz",
+        "sha256": "fcc694613172b6383c2b846c077981e17b8925f9163fc62e38661aa60b6d584e"
+      }
+    },
+    {
       "version": "2026.08-ESEMPIO",
       "date": "2026-08-15",
-      "notes": "ESEMPIO (non attivo: non è 'latest'). OpenHAB 5.2.1 + salto a HABApp 26.04.01 e una revisione del codice HABApp (25.12.5). Quando lo certifichi: porta 'latest' a questo valore, genera il tarball con script/build-habapp-tarball.sh e incolla url+sha256 reali in habapp_code; se servono fix immagine aggiungi migrations/2026.08-ESEMPIO/pre.sh.",
+      "notes": "ESEMPIO (non attivo: non è 'latest'). OpenHAB 5.2.3 e HABApp 26.10.1 + salto a Z-Wave JS UI 12 e una revisione del codice HABApp (26.10.1). Quando lo certifichi: porta 'latest' a questo valore, genera il tarball con script/build-habapp-tarball.sh e incolla url+sha256 reali in habapp_code; se servono fix immagine aggiungi migrations/2026.08-ESEMPIO/pre.sh.",
       "controller_min": "1.7.0",
       "migrations": ["2026.08-ESEMPIO"],
       "images": {
-        "openhab": "openhab/openhab:5.2.1",
-        "habapp": "spacemanspiff2007/habapp:26.04.01",
+        "openhab": "openhab/openhab:5.2.3",
+        "habapp": "spacemanspiff2007/habapp:26.10.1",
         "zwave-js-ui": "zwavejs/zwave-js-ui:12"
       },
       "habapp_code": {
-        "version": "25.12.5",
-        "url": "https://cloud.domoticaundici.it/ota/habapp-25.12.5.tar.xz",
+        "version": "26.10.1",
+        "url": "https://cloud.domoticaundici.it/ota/habapp-26.10.1.tar.xz",
         "sha256": "SOSTITUIRE-CON-SHA256-REALE-DA-build-habapp-tarball.sh"
       }
     }

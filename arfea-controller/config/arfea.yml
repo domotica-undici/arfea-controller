@@ -103,7 +103,7 @@ services:
   openhab:
     enabled: true
     core: true
-    image: "openhab/openhab:5.2.1"
+    image: "openhab/openhab:5.2.3"
     container_name: openhab
     restart_policy: unless-stopped
     network_mode: host
@@ -191,7 +191,7 @@ services:
   habapp:
     enabled: false
     core: false
-    image: "spacemanspiff2007/habapp:25.12.0"
+    image: "spacemanspiff2007/habapp:26.10.1"
     container_name: habapp
     restart_policy: unless-stopped
     depends_on:

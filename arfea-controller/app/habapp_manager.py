@@ -54,7 +54,7 @@ _TOKEN_PLACEHOLDER = "__ARFEA_OH_TOKEN__"
 
 # Le funzioni attivabili. La chiave e' quella che finisce in arfea.yml.
 # NB: per la termoregolazione la chiave ("thermo", che deve combaciare con
-# HABApp.DictParameter('thermo') -> params/thermo.yml) NON coincide col nome
+# HABApp.parameters.DictParameter('thermo') -> params/thermo.yml) NON coincide col nome
 # della cartella delle regole ("thermostats").
 # Deve restare allineato a script/habapp-subset.sh, che decide cosa spedire.
 _FUNCTIONS: dict[str, dict] = {
