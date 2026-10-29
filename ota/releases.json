@@ -1,7 +1,7 @@
 {
   "_commento": "Manifest delle versioni CERTIFICATE per le centraline ARFEA. Va pubblicato su controller.releases_url (es. https://cloud.domoticaundici.it/ota/releases.json). 'releases' è ordinato dalla più vecchia alla più recente: l'ordine definisce il percorso di upgrade attraversato dall'apply. 'latest' indica la versione bersaglio. Ogni release elenca i tag immagine certificati, sempre esatti (mai :latest o una major mobile come :11: l'apply scarica solo quando il tag cambia, quindi un tag mobile resta per sempre all'immagine del giorno dell'installazione); l'apply scrive SOLO questi tag in arfea.yml. Dal controller 1.8.8 i servizi spenti ricevono solo il tag, senza download: l'immagine arriva quando vengono accesi. 'controller_min' (opzionale) blocca l'upgrade se il controller è troppo vecchio. 'migrations' (opzionale) elenca le versioni che hanno script migrations/<versione>/pre.sh|post.sh bundlati nel tarball OTA. 'habapp_code' (opzionale) è il CODICE HABApp (regole+librerie) versionato a parte dall'immagine: {version, url, sha256} del tarball prodotto da script/build-habapp-tarball.sh. version = engine+revisione (es. 25.12.0 -> 25.12.1) e può avanzare anche a immagine habapp invariata. L'apply lo scarica, verifica lo sha256, lo spacchetta e ri-provisiona; nel diff/UI compare come pseudo-servizio 'habapp-code'. Assente = nessun aggiornamento di codice per quella release.",
   "channel": "stable",
-  "latest": "2026.10.02",
+  "latest": "2026.10.03",
   "releases": [
     {
       "version": "2026.07.03",
@@ -130,6 +130,26 @@
         "openhab": "openhab/openhab:5.2.3",
         "habapp": "spacemanspiff2007/habapp:26.10.1",
         "zwave-js-ui": "zwavejs/zwave-js-ui:11.24.1",
+        "mosquitto": "eclipse-mosquitto:2.1.2-alpine",
+        "zigbee2mqtt": "koenkk/zigbee2mqtt:2.14.1",
+        "node-red": "nodered/node-red:5.0.7-24-minimal",
+        "otbr": "openthread/border-router:sha-9802eb8"
+      },
+      "habapp_code": {
+        "version": "26.10.0",
+        "url": "https://cloud.domoticaundici.it/ota/habapp-26.10.0.tar.xz",
+        "sha256": "fcc694613172b6383c2b846c077981e17b8925f9163fc62e38661aa60b6d584e"
+      }
+    },
+    {
+      "version": "2026.10.03",
+      "date": "2026-10-29",
+      "notes": "Z-Wave JS UI 11.25.2 (prima 11.24.1). OpenHAB 5.2.3, HABApp 26.10.1, codice HABApp 26.10.0, Mosquitto, Zigbee2MQTT, Node-RED e OTBR invariati. Note di rilascio controllate anche sul codice (11.24.2, 11.24.3, 11.25.0, 11.25.1, 11.25.2; driver zwave-js da 15.29.0 a 15.31.2, server websocket da 3.10.2 a 3.11.0), nessuna migrazione (Redmine #526). Il server websocket arriva allo schema 51 ma accetta ancora dallo 0: il binding zwavejs di OpenHAB 5.2.3 chiede lo schema 40 e non vede differenze. Gateway MQTT: stessi topic e stessi payload; quando dalla UI si tolgono i retained di un nodo, il broker ora li cancella davvero invece di tenerci \"\". L'immagine passa da Node 22 a Node 24 (sulle ARM a 32 bit il nodejs di Alpine): un zwave-js-ui con HTTPS acceso e un certificato generato prima della 9.29 (chiave da 1024 bit) con la 11.25.0 non ripartiva, la 11.25.2 lo rigenera da sola; il template ARFEA non accende HTTPS. Driver: correzioni ai file di alcuni dispositivi; sul ripetitore IR Remotec ZXT-800 i report che il dispositivo manda alla radice finiscono sull'endpoint 1, dove stanno temperatura, modo e setpoint, e il modello e' riconosciuto anche col productType 0x0102. Provato in locale con il controller finto di zwave-js (mock-server): config del template, passaggio da 11.24.1 a 11.25.2 sullo stesso store come fa l'apply, settings.json invariato, tutti i topic ripubblicati, comandi /set e api/writeValue, websocket con lo schema 40.",
+      "controller_min": "1.8.8",
+      "images": {
+        "openhab": "openhab/openhab:5.2.3",
+        "habapp": "spacemanspiff2007/habapp:26.10.1",
+        "zwave-js-ui": "zwavejs/zwave-js-ui:11.25.2",
         "mosquitto": "eclipse-mosquitto:2.1.2-alpine",
         "zigbee2mqtt": "koenkk/zigbee2mqtt:2.14.1",
         "node-red": "nodered/node-red:5.0.7-24-minimal",

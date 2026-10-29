@@ -559,7 +559,12 @@ logger = logging.getLogger(__name__)
 #          ...), per cui ogni luce stava anche in un equipment finto: solo sui
 #          gruppi gestiti via REST e solo quando la regola non puo' piu'
 #          rimetterli. Tutto annotato fra le riparazioni (Redmine #519).
-VERSION = "1.8.23"
+#   1.8.24 Z-Wave JS UI 11.25.2 sulle nuove installazioni (template arfea.yml).
+#          Gli impianti gia' installati la prendono dalla release certificata
+#          2026.10.03 di releases.json (Redmine #526): driver zwave-js 15.31.2,
+#          server websocket 3.11.0 (il binding zwavejs chiede lo schema 40, che
+#          resta accettato), immagine su Node 24. Nessuna migrazione.
+VERSION = "1.8.24"
 
 # -- Globals initialised at startup -----------------------------------------
 

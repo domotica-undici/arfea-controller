@@ -208,7 +208,7 @@ services:
   zwave-js-ui:
     enabled: false
     core: false
-    image: "zwavejs/zwave-js-ui:11.24.1"
+    image: "zwavejs/zwave-js-ui:11.25.2"
     container_name: zwave-js-ui
     restart_policy: unless-stopped
     ports:
