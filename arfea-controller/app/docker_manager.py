@@ -118,8 +118,10 @@ class DockerManager:
 
         state = ContainerState.NOT_CREATED
         health = HealthState.NONE
+        # Niente reload(): containers.get() ha appena letto lo stato, e un secondo
+        # inspect su un container rimosso nel frattempo (recreate dell'apply)
+        # lanciava NotFound e mandava in 500 tutta GET /api/services (Redmine #527)
         if container is not None:
-            container.reload()
             raw_state = container.status
             state = _map_container_state(raw_state)
 

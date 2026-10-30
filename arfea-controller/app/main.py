@@ -564,7 +564,10 @@ logger = logging.getLogger(__name__)
 #          2026.10.03 di releases.json (Redmine #526): driver zwave-js 15.31.2,
 #          server websocket 3.11.0 (il binding zwavejs chiede lo schema 40, che
 #          resta accettato), immagine su Node 24. Nessuna migrazione.
-VERSION = "1.8.24"
+#   1.8.25 FIX (#527): GET /api/services non va piu' in 500 se un container
+#          sparisce mentre lo legge (recreate durante l'apply): lo stato di un
+#          servizio si legge con un solo inspect, senza il reload() che seguiva.
+VERSION = "1.8.25"
 
 # -- Globals initialised at startup -----------------------------------------
 
