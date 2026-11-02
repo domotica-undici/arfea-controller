@@ -23,6 +23,10 @@ Modifiche alla LAN: prima di applicarle si crea un checkpoint di NetworkManager
 con rollback automatico. Se entro CONFIRM_SECONDS nessuno conferma (dal vecchio
 o dal nuovo indirizzo), NetworkManager rimette da solo la configurazione di
 prima: un gateway sbagliato non costa una centralina irraggiungibile.
+
+DHCP bloccato: lo stesso watchdog, anche senza wifi, riattiva il profilo della
+LAN quando il cavo e' collegato ma da LAN_DHCP_GRACE manca l'indirizzo
+(Redmine #537).
 """
 from __future__ import annotations
 
@@ -36,6 +40,8 @@ import threading
 import time
 from typing import Optional
 
+from . import heal
+
 logger = logging.getLogger(__name__)
 
 LAN_CON = "arfea-lan"
@@ -45,6 +51,8 @@ AP_CON = "arfea-ap"
 CONFIRM_SECONDS = 120        # tempo per confermare una modifica alla LAN
 TICK_SECONDS = 10            # passo del watchdog
 MANUAL_AP_HOLD = 600         # un AP acceso a mano resta su almeno 10 minuti
+LAN_DHCP_GRACE = 300         # LAN col cavo, in DHCP e senza IPv4 da 5 minuti: si riattiva
+LAN_DHCP_RETRY = 1800        # se non basta, si riprova ogni mezz'ora
 
 # Passaggio a NetworkManager lanciato dalla Web UI (Redmine #199): lo stesso
 # script che si lancerebbe da SSH, in un'unita' systemd transitoria dell'host.
@@ -242,6 +250,37 @@ def _lan_up() -> bool:
     return False
 
 
+def _carrier(dev: str) -> bool:
+    """Cavo collegato (con la scheda giu' il file non si legge)."""
+    try:
+        with open(f"/proc/1/root/sys/class/net/{dev}/carrier") as f:
+            return f.read().strip() == "1"
+    except OSError:
+        return False
+
+
+def _has_ipv4(dev: str) -> bool:
+    """La scheda ha un IPv4 globale. Se ip non risponde si dice di si': nel
+    dubbio la LAN non si tocca."""
+    res = _host(["ip", "-4", "-o", "addr", "show", "dev", dev, "scope", "global"], timeout=10)
+    return res.returncode != 0 or bool(res.stdout.strip())
+
+
+def _lan_dhcp_profile(dev: str, active: str) -> Optional[str]:
+    """Il profilo da riattivare, solo se in DHCP: quello attivo sulla scheda o,
+    con la scheda ferma, un profilo cablato in autoconnect che le si applica.
+    Mai un profilo nuovo."""
+    names = [active] if active else [c["name"] for c in _connections() if c["type"] == "802-3-ethernet"]
+    for name in names:
+        s = _con_show(name, "ipv4.method,connection.autoconnect,connection.interface-name")
+        if s.get("ipv4.method") != "auto":
+            continue
+        if active or (s.get("connection.autoconnect") == "yes"
+                      and s.get("connection.interface-name", "") in ("", "--", dev)):
+            return name
+    return None
+
+
 def _dev_ip(show: dict[str, str]) -> dict:
     addrs = [a for a in show.get("IP4.ADDRESS", "").split("|") if a]
     dns = [a for a in show.get("IP4.DNS", "").split("|") if a]
@@ -333,6 +372,9 @@ class HostNetworkManager:
         self._hold_until = 0.0
         self._scan: list[dict] = []
         self._scan_at = 0.0
+        self._lan_noip_since: Optional[float] = None   # LAN col cavo ma senza IPv4 da...
+        self._lan_kick_at: Optional[float] = None      # ultima riattivazione del profilo
+        self._lan_kick_failed = False
         self.op = {"state": "idle", "message": ""}   # ultima operazione wifi/LAN
         # Passaggio a NetworkManager avviato dalla Web UI: modo e punto del log
         # da cui leggere (le righe prima sono di passaggi precedenti).
@@ -865,6 +907,7 @@ class HostNetworkManager:
             self.mode, self.note = "no-nm", msg
             return
         devs = _devices()
+        self._check_lan_dhcp(devs)
         wdev = next((d for d in devs if d["type"] == "wifi"), None)
         if not wdev:
             self.mode, self.note = "no-wifi", "Nessuna scheda wifi"
@@ -931,6 +974,63 @@ class HostNetworkManager:
             reason = (f"rete {target} non trovata" if profiles
                       else "nessuna rete wifi configurata e LAN scollegata")
             self._ap_up(dev, reason)
+
+    def _check_lan_dhcp(self, devs: list[dict]) -> None:
+        """LAN col cavo collegato, profilo in DHCP e nessun IPv4 da LAN_DHCP_GRACE:
+        si riattiva il profilo, e se non basta si riprova ogni LAN_DHCP_RETRY. Il
+        client DHCP interno di NetworkManager 1.22 (Ubuntu 20.04), dopo un rinnovo
+        fallito, non prende piu' un lease ("selecting lease failed: -131") finche'
+        il link non cade o la connessione non riparte: un impianto e' rimasto
+        fuori rete 15 giorni, finche' qualcuno non ha staccato il cavo (#537)."""
+        try:
+            lan = next((d for d in devs if d["type"] == "ethernet"
+                        and not d["state"].startswith("unmanaged")
+                        and _is_physical_wired(d["device"])), None)
+            now = time.monotonic()
+            if not lan or not _carrier(lan["device"]) or _has_ipv4(lan["device"]):
+                self._lan_noip_since = None
+                self._lan_kick_failed = False
+                return
+            if self._lan_noip_since is None:
+                self._lan_noip_since = now
+                return
+            if now - self._lan_noip_since < LAN_DHCP_GRACE:
+                return
+            if self._lan_kick_at is not None and now - self._lan_kick_at < LAN_DHCP_RETRY:
+                return
+            if self.op.get("state") == "running" or _checkpoints():
+                return       # modifica della LAN in corso: decide il suo checkpoint
+            dev = lan["device"]
+            prof = _lan_dhcp_profile(dev, lan["connection"])
+            if not prof:
+                return
+            self._lan_kick_at = now
+            minutes = int(now - self._lan_noip_since) // 60
+            logger.warning("LAN %s col cavo ma senza indirizzo da %d minuti: riattivo '%s'",
+                           dev, minutes, prof)
+            res = _nmcli("--wait", "60", "connection", "up", prof, "ifname", dev, timeout=75)
+            for _ in range(3):           # attivato puo' voler dire IPv4 ancora in arrivo
+                if _has_ipv4(dev):
+                    break
+                time.sleep(5)
+            if _has_ipv4(dev):
+                ip = _dev_ip(_device_show(dev))["addresses"]
+                heal.record(self._cfgm, "rete", f"LAN {dev} col cavo ma senza indirizzo da "
+                            f"{minutes} minuti: profilo '{prof}' riattivato, indirizzo "
+                            f"{', '.join(ip) or '?'}")
+                self._lan_noip_since = None
+                self._lan_kick_failed = False
+                return
+            why = _err(res).splitlines()[-1] if res.returncode else "nessun lease"
+            if not self._lan_kick_failed:     # nello storico solo il primo tentativo a vuoto
+                heal.record(self._cfgm, "rete", f"LAN {dev} col cavo ma senza indirizzo da "
+                            f"{minutes} minuti: profilo '{prof}' riattivato, ancora senza "
+                            f"indirizzo ({why}); si riprova ogni {LAN_DHCP_RETRY // 60} minuti")
+            else:
+                logger.warning("LAN %s ancora senza indirizzo dopo la riattivazione: %s", dev, why)
+            self._lan_kick_failed = True
+        except Exception as exc:
+            logger.warning("Controllo DHCP della LAN: %s", exc)
 
     def _try_client(self, dev: str, profiles: list[dict]) -> None:
         """Con l'AP acceso e nessuno collegato: spegne l'AP, cerca la rete e se

@@ -567,7 +567,14 @@ logger = logging.getLogger(__name__)
 #   1.8.25 FIX (#527): GET /api/services non va piu' in 500 se un container
 #          sparisce mentre lo legge (recreate durante l'apply): lo stato di un
 #          servizio si legge con un solo inspect, senza il reload() che seguiva.
-VERSION = "1.8.25"
+#   1.8.26 Rete: col cavo collegato e la LAN in DHCP ma senza indirizzo da 5
+#          minuti, il watchdog riattiva il profilo (poi al massimo ogni mezz'ora)
+#          e lo annota fra le riparazioni, anche senza wifi. NetworkManager 1.22
+#          (Ubuntu 20.04) col client interno, dopo un rinnovo fallito, non
+#          prendeva piu' un lease: un impianto e' rimasto 15 giorni fuori rete
+#          (Redmine #537). Sulle C4 con Ubuntu 20.04 il client e' gia' dhclient
+#          (script/ripara-dhcp-nm.sh): questa e' la rete di sicurezza.
+VERSION = "1.8.26"
 
 # -- Globals initialised at startup -----------------------------------------
 

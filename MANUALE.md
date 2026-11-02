@@ -1566,6 +1566,38 @@ entro 90 s il gateway non risponde, rimette tutto com'era da solo. Log in
 mostrano "NetworkManager non installato" e il resto del controller funziona
 come prima.
 
+**DHCP bloccato su Ubuntu 20.04 (Redmine #537).** NetworkManager 1.22, quello delle
+ODROID-C4 con Ubuntu 20.04, ha un client DHCP interno difettoso. Se il router non
+risponde al rinnovo del lease (spento, in riavvio) o lo rifiuta, il client non prende
+più un indirizzo: nel journal `selecting lease failed: -131` una volta al minuto, poi
+la centralina resta senza IP finché il cavo non si stacca o NetworkManager non riparte.
+Un impianto è rimasto 15 giorni fuori dalla VPN con la rete fisica sana. `dhclient`
+non ha il difetto, e su queste centraline lo mette lo script:
+
+```bash
+./script/ripara-dhcp-nm.sh --tutte                    # prova a vuoto: C4 con Ubuntu 20.04 dell'inventario
+./script/ripara-dhcp-nm.sh --tutte --apply            # dhclient e riavvio di NetworkManager
+./script/ripara-dhcp-nm.sh --centralina <alias> --apply
+```
+
+Scrive `/etc/NetworkManager/conf.d/90-arfea-dhcp.conf` (`dhcp=dhclient` e, come default,
+il client-id `mac` che usava il client interno) e riavvia NetworkManager in un'unità
+systemd. Se entro 2 minuti indirizzo, route e gateway non ci sono, toglie il file e
+torna com'era. Il 02/11/2026 è passato su 15 C4: rete di nuovo su in 5-6 secondi, 14
+con lo stesso IP. Su una il router ha dato un indirizzo nuovo, e il vecchio è rimasto
+sulla scheda fino alla scadenza del lease (24 ore). Una C4 con Ubuntu 20.04 che entra
+in flotta va passata dallo script. Dal controller 1.8.26 c'è anche una rete di
+sicurezza: col cavo collegato e la LAN in DHCP ma senza indirizzo da 5 minuti, il
+watchdog riattiva il profilo (al massimo ogni mezz'ora) e lo annota fra le riparazioni.
+
+Per capire perché una centralina sparisce dalla VPN:
+- `journalctl -u NetworkManager | grep "selecting lease failed"` trova questo guasto;
+- `read UDP [EHOSTUNREACH]` o `[ENETUNREACH]` di openvpn, col router che risponde ma
+  col DNS muto, vuol dire che manca la linea internet del cliente. La VPN si riaggancia
+  da sola;
+- `journalctl -k` vede solo l'avvio in corso: i cavi staccati degli avvii precedenti si
+  trovano con `journalctl _TRANSPORT=kernel | grep "eth0: Link is"`.
+
 **LAN (DHCP / IP statico).** Dopo *Applica* hai **2 minuti per confermare**. Se
 non confermi (per esempio perché con i nuovi valori la centralina non è più
 raggiungibile) NetworkManager rimette **da solo** la configurazione di prima
@@ -1961,7 +1993,11 @@ bridge trusted; reboot da remoto via OpenHAB Cloud → regola JS → localhost.
     ufficiali non caricati, regole JS ARFEA assenti) → un riavvio, poi HABApp. Al
     massimo uno ogni 6 ore, mai fuori da backup e aggiornamenti, e se gli stessi
     sintomi restano dopo il riavvio non si riprova: nel log «il riavvio non ha
-    risolto», da guardare a mano.
+    risolto», da guardare a mano;
+  - LAN col cavo collegato, in DHCP ma senza indirizzo da 5 minuti → profilo di
+    NetworkManager riattivato, al massimo ogni mezz'ora, dal 1.8.26 (#537). Questa non
+    aspetta l'avvio: la guarda il watchdog della rete, anche senza wifi
+    ([§6.11](#611-rete-lan-wifi-e-access-point)).
 
   Cosa ha fatto: `curl localhost:8888/api/system/repairs` (ultime 50) e nel log del
   controller le righe «Riparazione automatica». Il pacchetto addon dal 1.8.14 parte 10
