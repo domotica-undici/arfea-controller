@@ -1116,6 +1116,32 @@ ripristino si portano solo i servizi che lavoravano: un HABApp senza regole o un
 Node-RED con un flow di prova costano 100-150 MB l'uno. Si accendono dopo dalla Web UI,
 se servono (`--servizi` per sceglierli subito).
 
+**Z-Wave: binding di OpenHAB, non zwave-js-ui.** Su una Raspberry 3 zwave-js-ui molto
+probabilmente non funziona e blocca l'intera centralina. Su una 3B+ a 64 bit (kernel 6.18,
+zwave-js-ui 11.24.1, Aeotec Z-Stick Gen5) la Raspberry si pianta 15-20 secondi dopo che il
+container apre la chiavetta: niente rete, a volte senza riavvio del watchdog (Redmine #523).
+Alimentazione, memoria, `gpu_mem`, driver grafico, frequenza della CPU, soft reset e batteria
+della chiavetta sono stati esclusi uno per uno. Col binding Z-Wave di OpenHAB la stessa
+chiavetta funziona: zwave-js-ui resta spento (e mosquitto, se serviva solo a lui), la
+chiavetta si mappa nel container di OpenHAB per `/dev/serial/by-id` come `/dev/ttyACM0`
+(Web UI del controller, Dispositivi di openhab) e il controller è una thing
+`zwave:serial_zstick`. Vale finché non si trova una versione di zwave-js-ui che regge; su un
+sistema a 32 bit (armv7) non è stato provato.
+
+**La rete resta a Raspberry Pi OS.** Raspberry Pi OS ha già NetworkManager, col suo
+profilo DHCP automatico: il controller non gestisce la rete della Raspberry. Il setup
+non propone il passaggio di `arfea-network-nm.sh` ([§6.11](#611-rete-lan-wifi-e-access-point)),
+lo script su una Raspberry non fa niente, e `arfea.yml` ha l'access point di emergenza
+spento (`access_point.enabled: false`, rimesso anche da `--ottimizza`). Il passaggio,
+pensato per netplan e systemd-networkd, su una 3 ha preso per statica la LAN in DHCP e
+ha creato `arfea-lan` senza DNS (su Raspberry Pi OS `resolvectl` non c'è), togliendo il
+profilo di serie: senza DNS la VPN non trovava più il server (Redmine #522). Dove è già
+successo si tolgono `/etc/NetworkManager/conf.d/90-arfea.conf` e il profilo `arfea-lan`
+(`/etc/NetworkManager/system-connections/arfea-lan.nmconnection`, anche con la microSD
+montata sul PC) e si spegne l'access point in `arfea.yml`: al riavvio NetworkManager
+ricrea il suo profilo DHCP. La scheda **Rete** della Web UI dice che la LAN «non è
+gestita da NetworkManager» e suggerisce lo script: su una Raspberry è normale.
+
 **Il ripristino** (`--ripristina`) prende il tar.gz di `/opt/docker_store` di un impianto
 col vecchio docker-compose, anche uno stack di Portainer: legge il compose
 dall'archivio, estrae i dati senza cache e tmp di OpenHAB e senza Portainer né frontail
@@ -1538,7 +1564,9 @@ configurazione resta valida anche a controller spento.
 
 **Prerequisito: rete gestita da NetworkManager.** Armbian e Ubuntu Server
 nascono con netplan + systemd-networkd, che non sanno cercare reti wifi né fare
-da access point. Il passaggio si fa una volta per centralina.
+da access point. Il passaggio si fa una volta per centralina. **Non sulle
+Raspberry Pi**: lì la rete resta a Raspberry Pi OS e lo script non fa niente
+([§4.9](#49-raspberry-pi-col-controller), Redmine #522).
 
 **Dalla Web UI** (controller 1.8.4): se NetworkManager manca, la scheda **Rete**
 lo dice e propone *"Installa e attiva ora"* o *"Installa, attiva al prossimo

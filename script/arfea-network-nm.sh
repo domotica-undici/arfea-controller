@@ -28,6 +28,7 @@
 # cade mentre la rete si riconfigura, il lavoro (e l'eventuale rollback)
 # prosegue lo stesso. Log in /var/log/arfea-network.log.
 # Idempotente: se la LAN è già gestita da NetworkManager non fa nulla.
+# Su una Raspberry Pi non fa nulla in nessun modo: la rete resta a Raspberry Pi OS.
 ###############################################################################
 
 set -euo pipefail
@@ -58,6 +59,21 @@ case "${1:-}" in
   --restore)   MODE=restore ;;   # interno: il ripristino, dentro l'unità transitoria
   *)           usage ;;
 esac
+
+# ── Raspberry Pi: la rete resta a Raspberry Pi OS (Redmine #522) ─────────────
+# Raspberry Pi OS ha gia' NetworkManager col suo profilo DHCP: non c'e' niente da
+# passare, e il passaggio l'ha rotta (LAN DHCP presa per statica, profilo senza
+# DNS perche' resolvectl non c'e', no-auto-default che toglie il profilo di
+# serie: VPN giu'). Neanche --rollback: rimetterebbe systemd-networkd senza
+# configurazione.
+BOARD_MODEL=$(tr -d '\0' 2>/dev/null < /proc/device-tree/model || true)
+if [[ "$BOARD_MODEL" == *"Raspberry Pi"* ]]; then
+  log "$BOARD_MODEL: la rete resta a Raspberry Pi OS (NetworkManager di serie, DHCP), il controller non la gestisce"
+  if [[ -f "$NM_CONF" ]] || nmcli -g NAME connection show 2>/dev/null | grep -qx "$LAN_CON"; then
+    die "qui ci sono $NM_CONF o il profilo $LAN_CON di un passaggio precedente: vanno tolti (MANUALE §4.9)"
+  fi
+  exit 0
+fi
 
 # ── Scheda cablata ───────────────────────────────────────────────────────────
 # Quella della route di default se è cablata, altrimenti la prima scheda fisica
